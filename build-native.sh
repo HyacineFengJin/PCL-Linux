@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$project_dir"
+if [ ! -f assets/pcl-linux.png ]; then
+    ./download-icon.sh
+fi
+npm ci --prefix apps/desktop --no-audit --no-fund
+npm run build --prefix apps/desktop
+# A bounded compile avoids excessive memory use on laptops.
+cargo build --locked -p pcl-desktop -p pcl-cli --features pcl-desktop/custom-protocol -j "${PCL_BUILD_JOBS:-2}"
+mkdir -p .pcl-rust/bin
+cp target/debug/pcl-desktop .pcl-rust/bin/pcl-desktop.new
+chmod +x .pcl-rust/bin/pcl-desktop.new
+mv .pcl-rust/bin/pcl-desktop.new .pcl-rust/bin/pcl-desktop
+printf '已构建原生桌面应用。运行 ./start-native.sh\n'

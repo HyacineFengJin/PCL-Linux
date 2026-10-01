@@ -1,0 +1,11 @@
+[workspace]
+members = ["crates/auth", "crates/core", "crates/cli", "apps/desktop/src-tauri"]
+resolver = "2"
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.release]
+strip = true
+lto = "thin"

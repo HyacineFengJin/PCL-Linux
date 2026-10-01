@@ -1,0 +1,9 @@
+[package]
+name = "pcl-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pcl-core = { path = "../core" }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }

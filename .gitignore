@@ -1,0 +1,26 @@
+Minecraft/
+PCL-Linux/runtime/
+PCL-Linux/runtime-21/
+PCL-Linux/runtime-25/
+__pycache__/
+*.pyc
+*.log
+assets/pcl-ce-icon.ico
+assets/pcl-linux.png
+target/
+node_modules/
+apps/desktop/dist/
+apps/desktop/src-tauri/gen/
+.pcl-rust/
+work/
+apps/desktop/public/preview.json
+
+# Local development notes and troubleshooting tools
+/AGENTS.md
+/PORTING.md
+/docs/*_VALIDATION.md
+/docs/screenshots/
+/tools/compat/architectury/
+/docs/REWRITE_PLAN.md
+/docs/UI_SPEC.md
+/PCL-Linux/AUTHENTICATION.md

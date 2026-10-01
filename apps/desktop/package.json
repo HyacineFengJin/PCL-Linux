@@ -1,0 +1,27 @@
+{
+  "name": "pcl-linux-desktop",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "tauri": "tauri",
+    "preview:data": "node scripts/preview-data.mjs",
+    "format": "prettier --write src vite.config.ts scripts src-tauri/*.json src-tauri/capabilities/*.json"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "prettier": "^3.9.9",
+    "typescript": "^5.7.0",
+    "vite": "^7.0.0"
+  }
+}
