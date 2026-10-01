@@ -1,4 +1,5 @@
 mod accounts;
+mod downloads;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -12,7 +13,7 @@ use std::{
     },
     time::Duration,
 };
-use tauri::State;
+use tauri::{Manager, State};
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Settings {
@@ -34,9 +35,11 @@ struct RunStatus {
 struct Shared {
     project: PathBuf,
     accounts: Arc<accounts::Accounts>,
+    downloads: Arc<downloads::Downloads>,
     settings: Mutex<Settings>,
     status: Mutex<RunStatus>,
     stop: AtomicBool,
+    closing: AtomicBool,
     log: Mutex<Option<PathBuf>>,
 }
 #[derive(Serialize)]
@@ -71,8 +74,8 @@ fn persist(p: &Path, s: &Settings) -> Result<(), String> {
     fs::rename(tmp, f).map_err(|e| e.to_string())
 }
 fn validate(s: &Settings) -> Result<(), String> {
-    if !Path::new(&s.root).is_absolute() || !Path::new(&s.root).join("versions").is_dir() {
-        return Err("请选择含有 versions 文件夹的绝对游戏目录".into());
+    if !Path::new(&s.root).is_absolute() || !Path::new(&s.root).is_dir() {
+        return Err("请选择已存在的绝对游戏目录；新安装可使用空文件夹".into());
     }
     if !(3..=16).contains(&s.player.len())
         || !s
@@ -117,7 +120,13 @@ async fn bootstrap(state: State<'_, Arc<Shared>>) -> Result<Bootstrap, String> {
 #[tauri::command]
 fn save_settings(settings: Settings, state: State<'_, Arc<Shared>>) -> Result<(), String> {
     validate(&settings)?;
+    let run = state.status.lock().unwrap();
     let mut current = state.settings.lock().unwrap();
+    if settings.root != current.root
+        && (matches!(run.stage.as_str(), "preparing" | "running") || state.downloads.active())
+    {
+        return Err("请在游戏或安装任务结束后更换游戏目录".into());
+    }
     persist(&state.project, &settings)?;
     *current = settings;
     Ok(())
@@ -125,6 +134,45 @@ fn save_settings(settings: Settings, state: State<'_, Arc<Shared>>) -> Result<()
 #[tauri::command]
 fn process_status(state: State<'_, Arc<Shared>>) -> RunStatus {
     state.status.lock().unwrap().clone()
+}
+#[tauri::command]
+async fn download_catalog(
+    refresh: Option<bool>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<Vec<pcl_install::VersionEntry>, String> {
+    let downloads = state.downloads.clone();
+    tauri::async_runtime::spawn_blocking(move || downloads.catalog(refresh.unwrap_or(false)))
+        .await
+        .map_err(|_| "获取版本列表的任务失败")?
+}
+#[tauri::command]
+fn download_status(state: State<'_, Arc<Shared>>) -> downloads::DownloadStatus {
+    state.downloads.snapshot()
+}
+#[tauri::command]
+fn download_cancel(state: State<'_, Arc<Shared>>) {
+    state.downloads.cancel();
+}
+#[tauri::command]
+fn download_start(id: String, state: State<'_, Arc<Shared>>) -> Result<(), String> {
+    let run = state.status.lock().unwrap();
+    require_account_edit(&run)?;
+    let cfg = state.settings.lock().unwrap().clone();
+    let shared = state.inner().clone();
+    let root = PathBuf::from(&cfg.root);
+    if !root.is_absolute() {
+        return Err("游戏目录需要使用绝对路径，请先在设置中修改".into());
+    }
+    state.downloads.start(root, id, move |result| {
+        let mut settings = shared.settings.lock().unwrap();
+        if settings.root == cfg.root {
+            let mut next = settings.clone();
+            next.selected = Some(result.id.clone());
+            persist(&shared.project, &next)?;
+            *settings = next;
+        }
+        Ok(())
+    })
 }
 fn require_account_edit(st: &RunStatus) -> Result<(), String> {
     if st.stage == "preparing" || st.stage == "running" {
@@ -249,6 +297,9 @@ fn capture_output(
 fn launch_game(id: String, state: State<'_, Arc<Shared>>) -> Result<(), String> {
     {
         let mut st = state.status.lock().unwrap();
+        if state.downloads.active() {
+            return Err("请在安装任务结束后启动游戏".into());
+        }
         if st.stage == "preparing" || st.stage == "running" {
             return Err("已有启动任务或游戏正在运行".into());
         }
@@ -451,6 +502,7 @@ fn main() {
     };
     let state = Arc::new(Shared {
         accounts: Arc::new(accounts::Accounts::new(&project)),
+        downloads: Arc::new(downloads::Downloads::new()),
         project,
         settings: Mutex::new(cfg),
         status: Mutex::new(RunStatus {
@@ -459,10 +511,30 @@ fn main() {
             ..Default::default()
         }),
         stop: AtomicBool::new(false),
+        closing: AtomicBool::new(false),
         log: Mutex::new(None),
     });
     tauri::Builder::default()
         .manage(state)
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let state = window.state::<Arc<Shared>>();
+                if state.downloads.active() {
+                    api.prevent_close();
+                    state.downloads.cancel();
+                    if !state.closing.swap(true, Ordering::SeqCst) {
+                        let downloads = state.downloads.clone();
+                        let window = window.clone();
+                        std::thread::spawn(move || {
+                            while downloads.active() {
+                                std::thread::sleep(Duration::from_millis(100));
+                            }
+                            let _ = window.close();
+                        });
+                    }
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             save_settings,
@@ -479,7 +551,11 @@ fn main() {
             auth_select,
             auth_remove,
             auth_open_browser,
-            auth_open_help
+            auth_open_help,
+            download_catalog,
+            download_status,
+            download_start,
+            download_cancel
         ])
         .run(tauri::generate_context!())
         .expect("桌面应用运行失败");

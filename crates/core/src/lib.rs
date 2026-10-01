@@ -85,14 +85,14 @@ fn err(e: impl std::fmt::Display) -> String {
 fn text<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
 }
-fn identifier(id: &str) -> Result<()> {
+pub fn identifier(id: &str) -> Result<()> {
     if id.is_empty() || id == "." || id == ".." || id.contains(['/', '\\', ':', '\0']) {
         return Err(format!("Unsafe metadata identifier: {id:?}"));
     }
     Ok(())
 }
 /// Reject traversal and symlink escapes, including when only a parent already exists.
-fn safe_join(base: &Path, relative: impl AsRef<Path>) -> Result<PathBuf> {
+pub fn safe_join(base: &Path, relative: impl AsRef<Path>) -> Result<PathBuf> {
     let relative = relative.as_ref();
     if relative.as_os_str().is_empty()
         || relative.to_string_lossy().contains(['\\', '\0'])
@@ -410,7 +410,7 @@ fn library_path(root: &Path, artifact: &Value, name: &str) -> Result<PathBuf> {
     };
     safe_join(root, format!("libraries/{relative}"))
 }
-fn extract_natives(archive: &Path, target: &Path, excludes: &[Value]) -> Result<()> {
+pub fn extract_natives(archive: &Path, target: &Path, excludes: &[Value]) -> Result<()> {
     let file = fs::File::open(archive).map_err(err)?;
     let mut jar = zip::ZipArchive::new(file).map_err(|e| format!("{}: {e}", archive.display()))?;
     for i in 0..jar.len() {
@@ -1133,4 +1133,9 @@ mod tests {
             .unwrap_err();
         assert!(!error.contains(&identity.access_token));
     }
+}
+
+/// Apply the same Linux library rules used by launch planning.
+pub fn library_allowed(lib: &Value) -> Result<bool> {
+    RuleContext::current().library_allowed(lib)
 }

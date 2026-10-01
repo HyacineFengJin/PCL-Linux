@@ -2830,6 +2830,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "pcl-core",
+ "pcl-install",
  "serde_json",
 ]
 
@@ -2851,10 +2852,23 @@ version = "0.2.0"
 dependencies = [
  "pcl-auth",
  "pcl-core",
+ "pcl-install",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+]
+
+[[package]]
+name = "pcl-install"
+version = "0.1.0"
+dependencies = [
+ "pcl-core",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha1",
+ "tempfile",
 ]
 
 [[package]]

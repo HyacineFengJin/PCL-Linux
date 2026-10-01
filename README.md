@@ -4,13 +4,15 @@
 
 ## 功能
 
+- Minecraft 原版版本目录、搜索、下载安装和进度显示。
+- 安装任务取消、完整文件缓存复用及 SHA-1 校验。
 - 游戏版本扫描、搜索、选择与实例设置。
 - Java 自动匹配、全局和单实例内存设置。
 - 版本继承、依赖库与 Linux 原生库解析。
 - 游戏进程管理、退出状态与日志查看。
 - PCL 风格导航、账号侧栏、卡片和设置弹窗。
 
-项目仍在开发中，当前主要用于启动已安装的游戏版本。自动下载、安装和模组管理尚未提供。Microsoft 正版登录暂未开放，服务接入由项目维护者完成。
+项目仍在开发中，目前支持原版下载安装与已有游戏启动。模组加载器安装和模组管理尚未提供；部分早期版本暂不支持自动安装。Microsoft 正版登录暂未开放，服务接入由项目维护者完成。
 
 ## 构建与运行
 
@@ -23,7 +25,7 @@ cd PCL-Linux
 ./start-native.sh
 ```
 
-首次使用时，在设置中填写已有的游戏目录；Java 会根据版本要求自动选择。详细步骤见[使用指南](docs/USAGE.md)。安装桌面应用入口需提供 `desktop-file-validate` 命令：
+首次使用时，在设置中填写游戏目录，然后从「下载」安装原版，或选择目录中已有的版本。Java 会根据版本要求自动选择。详细步骤见[使用指南](docs/USAGE.md)。安装桌面应用入口需提供 `desktop-file-validate` 命令：
 
 ```sh
 ./install-desktop.sh
@@ -33,11 +35,12 @@ cd PCL-Linux
 
 - `apps/desktop/`：React 界面和 Tauri 桌面宿主。
 - `crates/core/`：版本、依赖和启动核心。
+- `crates/install/`：官方版本目录、文件下载、校验和安装。
 - `crates/auth/`：Microsoft 认证和系统密钥环。
 - `crates/cli/`：命令行入口。
 
 ```sh
-cargo test --locked -p pcl-core -p pcl-cli -p pcl-auth -p pcl-desktop --features pcl-desktop/custom-protocol
+cargo test --locked -p pcl-core -p pcl-install -p pcl-cli -p pcl-auth -p pcl-desktop --features pcl-desktop/custom-protocol
 npm run preview:data --prefix apps/desktop
 npm run dev --prefix apps/desktop
 ```
@@ -52,7 +55,7 @@ npm run dev --prefix apps/desktop
 
 ## English
 
-PCL Linux is an experimental native Linux launcher for Minecraft: Java Edition, built with Rust, Tauri 2, React, and TypeScript. It launches existing game installations, selects Java runtimes, resolves launch dependencies, and displays game logs. Automatic downloads, installation, and mod management are not yet available.
+PCL Linux is an experimental native Linux launcher for Minecraft: Java Edition, built with Rust, Tauri 2, React, and TypeScript. It downloads and installs vanilla versions, launches existing game installations, selects Java runtimes, resolves launch dependencies, and displays game logs. Downloads support cancellation, verified file reuse, and SHA-1 validation. Some legacy versions are unsupported. Mod loader installation and mod management are not yet available.
 
 Microsoft sign-in is not yet available. The project maintainers are responsible for completing the service integration.
 

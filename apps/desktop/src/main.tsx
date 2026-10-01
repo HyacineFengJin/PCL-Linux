@@ -28,6 +28,7 @@ import {
   ExternalLink,
 } from "lucide-react";
 import "./style.css";
+import { DownloadPanel, idleDownload } from "./DownloadPanel";
 type Instance = {
   id: string;
   minecraft_version: string;
@@ -104,6 +105,8 @@ async function api<T>(
     return { ...preview!, auth: preview!.auth || emptyAuth } as T;
   if (command === "auth_status") return (preview!.auth || emptyAuth) as T;
   if (command === "process_status") return preview!.status as T;
+  if (command === "download_catalog") return [] as T;
+  if (command === "download_status") return idleDownload as T;
   if (command === "save_settings") {
     preview!.settings = args!.settings as Settings;
     return undefined as T;
@@ -161,6 +164,7 @@ function App() {
     [logs, setLogs] = useState("点击刷新，读取本次启动日志。"),
     [draft, setDraft] = useState<Settings | null>(null),
     [override, setOverride] = useState(6);
+  const [downloadBusy, setDownloadBusy] = useState(false);
   const [remember, setRemember] = useState(true);
   const [clientId, setClientId] = useState("");
   const [authWorking, setAuthWorking] = useState(false);
@@ -297,7 +301,7 @@ function App() {
     }
   }
   async function launch() {
-    if (!data || !selected) return;
+    if (!data || !selected || downloadBusy) return;
     try {
       await save(data.settings);
       await api("launch_game", { id: selected.id });
@@ -512,14 +516,18 @@ function App() {
                     <>
                       <button
                         className="launch-button"
-                        disabled={!selected || !native}
+                        disabled={!selected || !native || downloadBusy}
                         onClick={launch}
                       >
                         <span>
                           <Play size={18} fill="currentColor" />
                           启动游戏
                         </span>
-                        <small>{selected?.id || "请选择游戏版本"}</small>
+                        <small>
+                          {downloadBusy
+                            ? "正在安装游戏，请稍候"
+                            : selected?.id || "请选择游戏版本"}
+                        </small>
                       </button>
                       <div className="launch-secondary">
                         <button
@@ -588,7 +596,7 @@ function App() {
               </>
             )}
           </aside>
-          <main className="content" key={tab}>
+          <main className="content">
             {tab === "launch" && (
               <>
                 <div className="page-intro">
@@ -685,7 +693,7 @@ function App() {
                 <Card title="关于这个版本" icon={<Info size={17} />}>
                   <p className="welcome-copy">PCL 风格，Linux 原生体验。</p>
                   <p className="muted">
-                    当前支持已有游戏的离线启动、版本选择和启动日志。下载、正版账户与更多管理功能正在逐步接入。
+                    支持原版下载安装、已有游戏启动与启动日志。正版登录暂未开放；模组加载器自动安装尚未开放。
                   </p>
                   <div className="notice-line">
                     <span className="tiny-dot" /> 独立实验项目 · 非 PCL CE
@@ -707,13 +715,15 @@ function App() {
                   <input
                     className="field"
                     id="game-root"
+                    disabled={downloadBusy || busy}
                     value={draft.root}
                     onChange={(e) =>
                       setDraft({ ...draft, root: e.target.value })
                     }
                   />
                   <p className="muted">
-                    选择包含 versions、libraries 和 assets 的目录。
+                    已有游戏请选择包含 versions、libraries 和 assets
+                    的目录；新安装也可使用空文件夹。
                   </p>
                 </Card>
                 <Card title="Java 与内存" icon={<Cpu size={17} />}>
@@ -750,6 +760,7 @@ function App() {
                 </Card>
                 <button
                   className="btn primary"
+                  disabled={downloadBusy || busy}
                   onClick={async () => {
                     try {
                       await save(draft);
@@ -765,31 +776,16 @@ function App() {
                 </button>
               </>
             )}
-            {tab === "download" && (
-              <>
-                <div className="page-heading">
-                  <h1>下载安装</h1>
-                  <p>游戏版本、模组与整合包</p>
-                </div>
-                <Card title="下载模块正在接入" icon={<Download size={17} />}>
-                  <p className="welcome-copy">这部分将在下一阶段开放。</p>
-                  <p className="muted">
-                    首先加入原版安装、下载任务和依赖修复，再接入 Fabric、Forge
-                    与整合包。你现在可以启动已安装的版本。
-                  </p>
-                  <button
-                    className="btn"
-                    onClick={() => {
-                      setTab("launch");
-                      setDialog("versions");
-                    }}
-                  >
-                    <Box size={16} />
-                    查看已安装版本
-                  </button>
-                </Card>
-              </>
-            )}
+            <div hidden={tab !== "download"}>
+              <DownloadPanel
+                api={api}
+                native={native}
+                installed={data.instances}
+                gameBusy={!!busy}
+                onInstalled={load}
+                onBusyChange={setDownloadBusy}
+              />
+            </div>
             {tab === "tools" && (
               <>
                 <div className="page-heading">

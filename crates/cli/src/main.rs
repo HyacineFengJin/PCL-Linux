@@ -3,12 +3,13 @@ use std::{
     fs,
     path::PathBuf,
     process::{Command, Stdio},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 #[derive(Parser)]
 #[command(
     version,
-    about = "Native Rust launcher for existing Minecraft installations (offline accounts)"
+    about = "Native Rust Minecraft launcher and vanilla installer"
 )]
 struct Cli {
     /// Project directory containing Minecraft/ and PCL-Linux/runtime/.
@@ -22,6 +23,10 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Print Mojang's official version catalog as JSON.
+    Catalog,
+    /// Install an official vanilla version without replacing existing instances.
+    Install { id: String },
     /// Print all installed instances as JSON.
     List,
     /// Validate dependencies and print a launch plan as JSON (extracts native libraries).
@@ -45,6 +50,43 @@ fn execute(cli: Cli) -> Result<i32, String> {
         .root
         .unwrap_or_else(|| project.join("Minecraft/.minecraft"));
     match cli.command {
+        Action::Catalog => {
+            let versions = pcl_install::Installer::new()?.catalog()?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&versions).map_err(|e| e.to_string())?
+            );
+            Ok(0)
+        }
+        Action::Install { id } => {
+            let last = AtomicU64::new(0);
+            let result = pcl_install::Installer::new()?.install(
+                &root,
+                &id,
+                &AtomicBool::new(false),
+                |progress| {
+                    if progress.total == 0 {
+                        eprintln!("{}", progress.message);
+                    } else {
+                        let previous = last.fetch_max(progress.completed, Ordering::Relaxed);
+                        if progress.completed > previous
+                            && (progress.completed % 100 == 0
+                                || progress.completed == progress.total)
+                        {
+                            eprintln!(
+                                "{} / {} · {}",
+                                progress.completed, progress.total, progress.message
+                            );
+                        }
+                    }
+                },
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?
+            );
+            Ok(0)
+        }
         Action::List => {
             println!(
                 "{}",

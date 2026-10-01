@@ -1137,3 +1137,110 @@ footer span {
 .auth-settings .field-label {
   margin-top: 13px;
 }
+
+.download-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #2886bd;
+  font-size: 14px;
+}
+.download-filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 15px;
+  flex-wrap: wrap;
+}
+.download-filters button {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: #8198a9;
+  padding: 6px 13px;
+}
+.download-filters button.selected {
+  background: #eaf5fd;
+  border-color: #c4e0f4;
+  color: #258dcc;
+}
+.download-filters button:hover {
+  color: var(--blue);
+  background: #f0f7fc;
+}
+.download-filters > span {
+  margin-left: auto;
+  color: #9aabb7;
+  font-size: 11px;
+}
+.download-search {
+  margin: 0 0 13px;
+}
+.download-search input {
+  width: 0;
+}
+.download-version-list {
+  padding: 0;
+  max-height: 430px;
+}
+.download-version-list .version-row:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+.download-empty {
+  padding: 30px 12px;
+  text-align: center;
+  color: #97adbc;
+  font-size: 12px;
+}
+.download-empty > svg {
+  margin: 0 auto;
+}
+.download-task.complete .download-heading {
+  color: #5c9e79;
+}
+.download-task.error .download-heading {
+  color: #bb7868;
+}
+.download-progress {
+  height: 6px;
+  border-radius: 4px;
+  background: #e7eff5;
+  overflow: hidden;
+  margin-top: 14px;
+}
+.download-progress > i {
+  display: block;
+  height: 100%;
+  background: #36a0dd;
+  border-radius: 4px;
+  transition: width 0.3s;
+}
+.download-progress.indeterminate > i {
+  width: 30%;
+  animation: download-wait 1.5s ease-in-out infinite;
+}
+.download-progress-details {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 9px;
+  font-size: 10px;
+  color: #90a6b6;
+}
+.download-confirm .muted {
+  margin: 0 0 15px;
+}
+@keyframes download-wait {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+.page-heading .download-compatibility {
+  margin-top: 7px;
+  font-size: 11px;
+  color: #98a7b2;
+}
