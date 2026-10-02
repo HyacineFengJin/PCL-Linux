@@ -1,0 +1,6 @@
+Noto Sans CJK SC, Google / Adobe, under the SIL Open Font License 1.1.
+https://github.com/notofonts/noto-cjk
+
+pcl-ui-400.woff2 and pcl-ui-600.woff2 are subsets of the original Regular
+and Bold fonts, converted to WOFF2 for the launcher interface. Glyphs
+outside the subset use the system's CJK fallback font. See LICENSE.

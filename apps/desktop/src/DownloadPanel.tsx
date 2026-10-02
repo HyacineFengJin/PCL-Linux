@@ -1,14 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Box,
+  ChevronDown,
+  ChevronUp,
   Check,
   Download,
+  Globe,
+  ListFilter,
+  ArrowUpToLine,
   LoaderCircle,
   RefreshCw,
   Search,
   TriangleAlert,
   X,
 } from "lucide-react";
+
+import grassIcon from "./assets/game-icons/grass.png";
+import commandIcon from "./assets/game-icons/command.png";
 
 export type DownloadStatus = {
   stage:
@@ -49,9 +57,11 @@ export function DownloadPanel({
   gameBusy,
   onInstalled,
   onBusyChange,
+  section = "minecraft",
 }: {
   api: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
   native: boolean;
+  section?: string;
   installed: { id: string }[];
   gameBusy: boolean;
   onInstalled: () => Promise<void>;
@@ -61,7 +71,7 @@ export function DownloadPanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState("release");
+  const [expanded, setExpanded] = useState<string[]>([]);
   const [choice, setChoice] = useState<VersionEntry | null>(null);
   const [status, setStatus] = useState<DownloadStatus>(idleDownload);
   const [working, setWorking] = useState(false);
@@ -126,14 +136,100 @@ export function DownloadPanel({
   }, []);
   const busy = active(status) || working;
   const ids = new Set(installed.map((item) => item.id));
-  const visible = catalog.filter(
-    (entry) =>
-      entry.id.toLowerCase().includes(query.toLowerCase()) &&
-      (filter === "all" ||
-        (filter === "old"
-          ? !["release", "snapshot"].includes(entry.kind)
-          : entry.kind === filter)),
-  );
+  const aprilVersions = new Set([
+    "26w14a",
+    "25w14craftmine",
+    "24w14potato",
+    "23w13a_or_b",
+    "22w13oneblockatatime",
+    "20w14infinite",
+    "3D Shareware v1.34",
+    "1.RV-Pre1",
+    "15w14a",
+    "2.0",
+  ]);
+  const groups = [
+    {
+      id: "release",
+      title: "正式版",
+      entries: catalog.filter(
+        (e) => e.kind === "release" && !aprilVersions.has(e.id),
+      ),
+    },
+    {
+      id: "snapshot",
+      title: "预览版",
+      entries: catalog.filter(
+        (e) => e.kind === "snapshot" && !aprilVersions.has(e.id),
+      ),
+    },
+    {
+      id: "old",
+      title: "远古版",
+      entries: catalog.filter(
+        (e) =>
+          !["release", "snapshot"].includes(e.kind) && !aprilVersions.has(e.id),
+      ),
+    },
+    {
+      id: "april",
+      title: "愚人节版",
+      entries: catalog.filter((e) => aprilVersions.has(e.id)),
+    },
+  ];
+  const latest = [
+    catalog.find((e) => e.kind === "release"),
+    catalog.find((e) => e.kind === "snapshot" && !aprilVersions.has(e.id)),
+  ].filter((e): e is VersionEntry => Boolean(e));
+  const resourceLabels: Record<string, string> = {
+    mods: "模组",
+    modpacks: "整合包",
+    datapacks: "数据包",
+    resourcepacks: "资源包",
+    shaders: "光影包",
+    worlds: "世界",
+    favorites: "收藏夹",
+  };
+  const community = resourceLabels[section];
+  function versionRow(entry: VersionEntry, newest = false) {
+    return (
+      <button
+        key={entry.id}
+        className={`resource-row ce-version-row ${choice?.id === entry.id ? "chosen" : ""}`}
+        disabled={busy || gameBusy || ids.has(entry.id) || !native}
+        onClick={() => setChoice(entry)}
+      >
+        <span
+          className={`resource-icon ce-minecraft-icon ${entry.kind === "release" ? "grass" : "command"}`}
+        >
+          <img
+            src={entry.kind === "release" ? grassIcon : commandIcon}
+            alt=""
+          />
+        </span>
+        <span className="ce-resource-text">
+          <strong>{entry.id}</strong>
+          <small>
+            {newest
+              ? entry.kind === "release"
+                ? "最新正式版"
+                : "最新预览版"
+              : kindName(entry.kind)}
+            ，发布于{" "}
+            {new Date(entry.release_time).toLocaleString("zh-CN", {
+              year: "numeric",
+              month: "numeric",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false,
+            })}
+          </small>
+        </span>
+        {ids.has(entry.id) && <span className="tag">已安装</span>}
+      </button>
+    );
+  }
   const progress =
     status.total > 0
       ? status.completed / status.total
@@ -163,18 +259,6 @@ export function DownloadPanel({
   }
   return (
     <>
-      <div className="page-heading">
-        <h1>下载安装</h1>
-        <p>从 Minecraft 官方目录选择原版 Java 版，安装到当前游戏目录。</p>
-        <p className="download-compatibility">
-          部分早期版本暂不支持自动安装，遇到不受支持的版本时会显示原因。
-        </p>
-      </div>
-      {!native && (
-        <div className="auth-notice">
-          请在桌面应用中获取版本目录并下载安装。
-        </div>
-      )}
       {gameBusy && (
         <div className="auth-notice">
           游戏正在准备或运行，请结束游戏后再安装新版本。
@@ -315,99 +399,424 @@ export function DownloadPanel({
           </div>
         </section>
       )}
-      <section className="card">
-        <div className="card-heading">
-          <span className="download-heading">
-            <Download size={17} />
-            Minecraft 原版
-          </span>
-          <button
-            className="text-action"
-            disabled={loading || busy || !native}
-            onClick={() => void loadCatalog(true)}
-          >
-            <RefreshCw size={13} />
-            刷新目录
-          </button>
-        </div>
-        <div className="card-content download-catalog">
-          <div className="download-filters">
-            {[
-              ["release", "正式版"],
-              ["snapshot", "快照版"],
-              ["old", "旧版"],
-              ["all", "全部"],
-            ].map(([value, label]) => (
-              <button
-                key={value}
-                className={filter === value ? "selected" : ""}
-                onClick={() => setFilter(value)}
-                aria-pressed={filter === value}
-              >
-                {label}
-              </button>
-            ))}
-            <span>{installed.length} 个已安装版本</span>
-          </div>
-          <label className="search-box download-search">
-            <Search size={15} />
-            <input
-              aria-label="搜索可安装版本"
-              placeholder="搜索版本，例如 1.21"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-          </label>
-          <div className="version-list download-version-list">
+      {community ? (
+        <CommunityCatalog
+          api={api}
+          key={section}
+          label={community}
+          query={query}
+          setQuery={setQuery}
+        />
+      ) : section !== "minecraft" ? (
+        <section className="ce-card">
+          <div className="ce-card-title">{section}</div>
+          <p className="muted">此安装包目录尚未接入。</p>
+        </section>
+      ) : (
+        <>
+          <section className="ce-card ce-catalog-latest">
+            <div className="ce-card-title">最新版本</div>
             {loading ? (
               <div className="download-empty">
                 <LoaderCircle className="spin" size={22} />
                 <p>正在获取官方版本目录…</p>
               </div>
-            ) : visible.length ? (
-              visible.map((entry) => (
-                <button
-                  key={entry.id}
-                  className={`version-row ${choice?.id === entry.id ? "chosen" : ""}`}
-                  disabled={busy || gameBusy || ids.has(entry.id)}
-                  onClick={() => setChoice(entry)}
-                >
-                  <span className="cube">
-                    <Box size={22} strokeWidth={1.5} />
-                  </span>
-                  <div>
-                    <strong>{entry.id}</strong>
-                    <small>
-                      {kindName(entry.kind)} ·{" "}
-                      {new Date(entry.release_time).toLocaleDateString("zh-CN")}
-                    </small>
-                  </div>
-                  {ids.has(entry.id) ? (
-                    <span className="tag">已安装</span>
-                  ) : (
-                    <Download size={16} />
-                  )}
-                </button>
-              ))
+            ) : latest.length ? (
+              latest.map((entry) => versionRow(entry, true))
             ) : (
               <div className="download-empty">
-                <Box size={30} strokeWidth={1.3} />
                 <p>
-                  {native
-                    ? catalog.length
-                      ? "没有符合条件的版本"
-                      : "暂未获取到版本目录"
-                    : "版本目录将在桌面应用中显示"}
+                  {native ? "暂未获取到版本目录" : "版本目录将在桌面应用中显示"}
                 </p>
-                {native && !catalog.length && (
-                  <button className="btn compact" onClick={() => void loadCatalog(true)}>
-                    重新获取
-                  </button>
-                )}
+                <button
+                  className="ce-button"
+                  disabled={!native || loading}
+                  onClick={() => void loadCatalog(true)}
+                >
+                  <RefreshCw size={14} />
+                  重新获取
+                </button>
               </div>
             )}
+          </section>
+          {groups.map((group) => (
+            <section className="ce-card ce-version-group" key={group.id}>
+              <button
+                className="ce-version-group-toggle"
+                onClick={() =>
+                  setExpanded((old) =>
+                    old.includes(group.id)
+                      ? old.filter((id) => id !== group.id)
+                      : [...old, group.id],
+                  )
+                }
+                aria-expanded={expanded.includes(group.id)}
+              >
+                <span>
+                  {group.title} ({group.entries.length})
+                </span>
+                {expanded.includes(group.id) ? (
+                  <ChevronUp size={19} />
+                ) : (
+                  <ChevronDown size={19} />
+                )}
+              </button>
+              {expanded.includes(group.id) && (
+                <div className="ce-version-group-list">
+                  {group.entries.length ? (
+                    group.entries.map((entry) => versionRow(entry))
+                  ) : (
+                    <p className="muted">暂无版本</p>
+                  )}
+                </div>
+              )}
+            </section>
+          ))}
+        </>
+      )}
+    </>
+  );
+}
+
+type ModrinthHit = {
+  project_id: string;
+  title: string;
+  description: string;
+  icon_url: string | null;
+  categories: string[];
+  display_categories: string[];
+  versions: string[];
+  downloads: number;
+  date_modified: string;
+};
+
+function CommunityCatalog({
+  api,
+  label,
+  query,
+  setQuery,
+}: {
+  api: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
+  label: string;
+  query: string;
+  setQuery: (value: string) => void;
+}) {
+  const [source, setSource] = useState("全部");
+  const [tag, setTag] = useState("全部");
+  const [sort, setSort] = useState("默认");
+  const [version, setVersion] = useState("任意");
+  const [loader, setLoader] = useState("任意");
+  const [request, setRequest] = useState<Record<string, unknown>>({
+    query: "",
+    sort: "downloads",
+  });
+  const [hits, setHits] = useState<ModrinthHit[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const apiRef = useRef(api);
+  apiRef.current = api;
+  useEffect(() => {
+    if (label !== "模组") return;
+    let disposed = false;
+    setLoading(true);
+    setError("");
+    apiRef
+      .current<{ hits: ModrinthHit[] }>("modrinth_search", request)
+      .then((result) => {
+        if (!disposed) setHits(result.hits);
+      })
+      .catch((reason) => {
+        if (!disposed) {
+          setError(String(reason));
+          setHits([]);
+        }
+      })
+      .finally(() => {
+        if (!disposed) setLoading(false);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [label, request]);
+  function search() {
+    setRequest({
+      query,
+      source,
+      sort:
+        sort === "更新时间"
+          ? "updated"
+          : sort === "默认" && query.trim()
+            ? "relevance"
+            : "downloads",
+      version: version === "任意" ? undefined : version,
+      loader: loader === "任意" ? undefined : loader.toLowerCase(),
+      tag: tag === "全部" ? undefined : tag,
+    });
+  }
+  const availableVersions = [...new Set(hits.flatMap((hit) => hit.versions))]
+    .filter((value) => /^\d+\.\d+(\.\d+)?$/.test(value))
+    .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+  const loaderNames: Record<string, string> = {
+    fabric: "Fabric",
+    forge: "Forge",
+    neoforge: "NeoForge",
+    quilt: "Quilt",
+  };
+  const categoryNames: Record<string, string> = {
+    library: "支持库",
+    optimization: "性能优化",
+    utility: "实用",
+    decoration: "装饰",
+    adventure: "冒险",
+    technology: "科技",
+    worldgen: "世界生成",
+    storage: "存储",
+    equipment: "装备",
+    magic: "魔法",
+    management: "管理",
+  };
+  const tags = [
+    ...new Set(
+      hits
+        .flatMap((hit) => hit.display_categories)
+        .filter((value) => !loaderNames[value]),
+    ),
+  ];
+  function downloads(value: number) {
+    return value >= 100000000
+      ? `${(value / 100000000).toFixed(2).replace(/0+$/, "").replace(/\.$/, "")} 亿`
+      : value >= 10000
+        ? `${(value / 10000).toFixed(1).replace(/\.0$/, "")} 万`
+        : value.toLocaleString("zh-CN");
+  }
+  function updated(value: string) {
+    const days = Math.max(
+      0,
+      Math.floor((Date.now() - new Date(value).getTime()) / 86400000),
+    );
+    return days < 1
+      ? "今天"
+      : days < 7
+        ? `${days} 天前`
+        : days < 30
+          ? `${Math.floor(days / 7)} 周前`
+          : days < 365
+            ? `${Math.floor(days / 30)} 个月前`
+            : `${Math.floor(days / 365)} 年前`;
+  }
+  function safeIcon(value: string | null) {
+    try {
+      const url = new URL(value || "");
+      return url.protocol === "https:" && url.hostname === "cdn.modrinth.com"
+        ? url.href
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  return (
+    <>
+      <form
+        className="ce-card ce-community-search"
+        onSubmit={(event) => {
+          event.preventDefault();
+          search();
+        }}
+      >
+        <Search size={19} />
+        <input
+          className="ce-search"
+          placeholder={`搜索${label}`}
+          aria-label={`搜索${label}`}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <button className="ce-button" type="submit">
+          搜索
+        </button>
+      </form>
+      <section className="ce-card ce-community-filters">
+        <label className="ce-filter-field">
+          来源
+          <select
+            className="ce-field"
+            value={source}
+            onChange={(e) => setSource(e.target.value)}
+          >
+            {["全部", "Modrinth", "CurseForge"].map((v) => (
+              <option key={v} disabled={v === "CurseForge"}>
+                {v === "CurseForge" ? "CurseForge（尚未接入）" : v}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="ce-filter-field">
+          标签
+          <select
+            className="ce-field"
+            value={tag}
+            onChange={(e) => setTag(e.target.value)}
+          >
+            <option>全部</option>
+            {tags.map((value) => (
+              <option key={value} value={value}>
+                {categoryNames[value] || value}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="ce-filter-field">
+          排序方式
+          <select
+            className="ce-field"
+            value={sort}
+            onChange={(e) => setSort(e.target.value)}
+          >
+            {["默认", "下载量", "更新时间"].map((v) => (
+              <option key={v}>{v}</option>
+            ))}
+          </select>
+        </label>
+        <button
+          className="icon-button ce-filter-reset"
+          aria-label="重置筛选"
+          onClick={() => {
+            setQuery("");
+            setSource("全部");
+            setTag("全部");
+            setSort("默认");
+            setVersion("任意");
+            setLoader("任意");
+            setRequest({ query: "", sort: "downloads" });
+          }}
+        >
+          <RefreshCw size={22} />
+        </button>
+        <label className="ce-filter-field">
+          版本
+          <select
+            className="ce-field"
+            value={version}
+            onChange={(e) => setVersion(e.target.value)}
+          >
+            <option>任意</option>
+            {availableVersions.map((value) => (
+              <option key={value}>{value}</option>
+            ))}
+          </select>
+        </label>
+        <label className="ce-filter-field">
+          加载器
+          <select
+            className="ce-field"
+            value={loader}
+            onChange={(e) => setLoader(e.target.value)}
+          >
+            {["任意", "Fabric", "Forge", "NeoForge", "Quilt"].map((v) => (
+              <option key={v}>{v}</option>
+            ))}
+          </select>
+        </label>
+      </section>
+      <section className="ce-card ce-community-results" aria-busy={loading}>
+        {loading ? (
+          <div className="download-empty">
+            <LoaderCircle size={24} className="spin" />
+            <p>正在获取模组目录…</p>
           </div>
-        </div>
+        ) : error ? (
+          <div className="download-empty" role="alert">
+            <TriangleAlert size={24} />
+            <p>{error}</p>
+            <button className="ce-button" onClick={search}>
+              重试
+            </button>
+          </div>
+        ) : label !== "模组" || !hits.length ? (
+          <div className="download-empty">
+            <Search size={30} strokeWidth={1.3} />
+            <p>
+              {label !== "模组"
+                ? `${label}目录尚未接入。`
+                : "没有符合条件的模组"}
+            </p>
+          </div>
+        ) : (
+          hits.map((hit) => {
+            const loaders = hit.categories
+              .filter((value) => loaderNames[value])
+              .map((value) => loaderNames[value]);
+            const releases = hit.versions
+              .filter((value) => /^\d+\.\d+(\.\d+)?$/.test(value))
+              .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+            const versions =
+              releases.length > 1
+                ? `${releases[0]} – ${releases[releases.length - 1]}`
+                : releases[0] || hit.versions[0] || "";
+            const icon = safeIcon(hit.icon_url);
+            return (
+              <article
+                className="ce-mod-row"
+                key={hit.project_id}
+                title="模组安装尚未开放"
+              >
+                {icon ? (
+                  <img
+                    className="ce-mod-icon"
+                    src={icon}
+                    alt=""
+                    loading="lazy"
+                  />
+                ) : (
+                  <span className="ce-mod-icon">
+                    <Box size={32} />
+                  </span>
+                )}
+                <div className="ce-mod-body">
+                  <div className="ce-mod-title">{hit.title}</div>
+                  <div className="ce-mod-description">
+                    {hit.display_categories
+                      .filter((value) => !loaderNames[value])
+                      .slice(0, 2)
+                      .map((value) => (
+                        <span className="ce-mod-tag" key={value}>
+                          {categoryNames[value] || value}
+                        </span>
+                      ))}
+                    <span>{hit.description}</span>
+                  </div>
+                  <div className="ce-mod-meta">
+                    <span>
+                      <ListFilter size={13} />
+                      <span className="ce-mod-version">
+                        {[loaders.join(" / "), versions]
+                          .filter(Boolean)
+                          .join(", ")}
+                      </span>
+                    </span>
+                    <span>
+                      <Download size={13} />
+                      {downloads(hit.downloads)}
+                    </span>
+                    <span
+                      title={new Date(hit.date_modified).toLocaleString(
+                        "zh-CN",
+                      )}
+                    >
+                      <ArrowUpToLine size={13} />
+                      {updated(hit.date_modified)}
+                    </span>
+                    <span>
+                      <Globe size={13} />
+                      Modrinth
+                    </span>
+                  </div>
+                </div>
+              </article>
+            );
+          })
+        )}
       </section>
     </>
   );

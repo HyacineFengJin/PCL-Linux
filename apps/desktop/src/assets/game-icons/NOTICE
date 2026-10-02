@@ -1,0 +1,10 @@
+Unmodified image resources from Hello Minecraft! Launcher (HMCL):
+https://github.com/HMCL-dev/HMCL/tree/main/HMCL/src/main/resources/assets/img
+
+Source files: grass@2x.png, command@2x.png, neoforge@2x.png, forge.png.
+HMCL's accompanying GNU GPL version 3 is included as LICENSE in this directory.
+Minecraft imagery belongs to Mojang; NeoForge and Forge logos belong to their
+respective projects. Their inclusion does not imply endorsement.
+
+redstone-lamp.png is an unmodified Minecraft block texture from the game files.
+steve.png is the default Minecraft skin, from HMCLCore/assets/img/skin/wide.

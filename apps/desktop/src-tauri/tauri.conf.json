@@ -14,16 +14,19 @@
       {
         "label": "main",
         "title": "PCL Linux · 原生实验版",
-        "width": 1000,
-        "height": 650,
+        "width": 1048,
+        "height": 716,
         "minWidth": 810,
         "minHeight": 500,
         "decorations": false
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; font-src 'self' data:"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://cdn.modrinth.com; connect-src ipc: http://ipc.localhost; font-src 'self' data:"
     }
   },
-  "bundle": { "active": false, "icon": ["../../../assets/pcl-linux.png"] }
+  "bundle": {
+    "active": false,
+    "icon": ["../../../assets/pcl-linux.png"]
+  }
 }

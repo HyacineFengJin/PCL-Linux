@@ -1,5 +1,6 @@
 mod accounts;
 mod downloads;
+mod ui_data;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -451,6 +452,8 @@ fn open_folder(
             let p = state.log.lock().unwrap().clone().ok_or("还没有日志")?;
             p.parent().unwrap().to_path_buf()
         }
+        "mods" | "saves" | "screenshots" | "resourcepacks" | "shaderpacks" | "litematics"
+        | "server" => ui_data::resource_dir(&root, &id.ok_or("未选择版本")?, &kind)?,
         _ => return Err("未知目录类型".into()),
     };
     let path = path.canonicalize().map_err(|e| e.to_string())?;
@@ -537,6 +540,10 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            ui_data::system_info,
+            ui_data::java_list,
+            ui_data::instance_resources,
+            ui_data::modrinth_search,
             save_settings,
             process_status,
             inspect_instance,

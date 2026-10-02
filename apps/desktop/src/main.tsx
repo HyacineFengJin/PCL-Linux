@@ -26,9 +26,43 @@ import {
   SlidersHorizontal,
   Square,
   ExternalLink,
+  Rocket,
+  Coffee,
+  BookMarked,
+  Palette,
+  Globe,
+  MonitorCog,
+  MessageCircle,
+  ScrollText,
+  Layers,
+  Puzzle,
+  Sparkles,
+  Blocks,
+  Heart,
+  Gauge,
+  Trophy,
+  Cat,
+  FlaskConical,
+  Gift,
+  FolderInput,
+  PackagePlus,
+  Image,
+  Server,
+  ArrowRight,
+  Link2,
+  Waypoints,
 } from "lucide-react";
-import "./style.css";
 import { DownloadPanel, idleDownload } from "./DownloadPanel";
+import defaultSkin from "./assets/game-icons/steve.png";
+import { Toolbox } from "./Toolbox";
+import { SettingsPanel } from "./SettingsPanel";
+import {
+  InstancePanel,
+  InstanceSelection,
+  instancePages,
+  InstanceIcon,
+} from "./InstancesPanel";
+import "./style.css";
 type Instance = {
   id: string;
   minecraft_version: string;
@@ -89,7 +123,15 @@ type Inspection = {
   log_path: string;
 };
 const native = isTauri();
-let preview: State | undefined;
+let preview:
+  | (State & {
+      catalog?: unknown[];
+      system?: unknown;
+      java?: unknown[];
+      resources?: unknown[];
+      modrinth?: unknown;
+    })
+  | undefined;
 async function api<T>(
   command: string,
   args?: Record<string, unknown>,
@@ -105,7 +147,11 @@ async function api<T>(
     return { ...preview!, auth: preview!.auth || emptyAuth } as T;
   if (command === "auth_status") return (preview!.auth || emptyAuth) as T;
   if (command === "process_status") return preview!.status as T;
-  if (command === "download_catalog") return [] as T;
+  if (command === "download_catalog") return (preview!.catalog || []) as T;
+  if (command === "modrinth_search") return preview!.modrinth as T;
+  if (command === "system_info") return preview!.system as T;
+  if (command === "java_list") return (preview!.java || []) as T;
+  if (command === "instance_resources") return (preview!.resources || []) as T;
   if (command === "download_status") return idleDownload as T;
   if (command === "save_settings") {
     preview!.settings = args!.settings as Settings;
@@ -164,7 +210,16 @@ function App() {
     [logs, setLogs] = useState("点击刷新，读取本次启动日志。"),
     [draft, setDraft] = useState<Settings | null>(null),
     [override, setOverride] = useState(6);
+  const [screen, setScreen] = useState<"home" | "versions" | "instance">(
+    "home",
+  );
+  const [instancePage, setInstancePage] = useState("overview");
+  const [settingsPage, setSettingsPage] = useState("launch");
+  const [downloadPage, setDownloadPage] = useState("minecraft");
   const [downloadBusy, setDownloadBusy] = useState(false);
+  useEffect(() => {
+    document.querySelector(".content")?.scrollTo({ top: 0 });
+  }, [tab, screen, instancePage, settingsPage, downloadPage]);
   const [remember, setRemember] = useState(true);
   const [clientId, setClientId] = useState("");
   const [authWorking, setAuthWorking] = useState(false);
@@ -295,6 +350,7 @@ function App() {
     try {
       await save({ ...data.settings, selected: id });
       setDialog(null);
+      setScreen("home");
       setInspection(null);
     } catch (e) {
       notify(String(e));
@@ -355,13 +411,110 @@ function App() {
     setOverride(
       data.settings.overrides[selected.id] || data.settings.memory_gib,
     );
-    setDialog("instance");
+    setInstancePage("overview");
+    setScreen("instance");
   }
   function setPlayer(player: string) {
     setData((d) => (d ? { ...d, settings: { ...d.settings, player } } : d));
   }
+  const downloadItems = [
+    { id: "minecraft", label: "Minecraft", icon: Blocks },
+    { id: "mods", label: "模组", group: "社区资源", icon: Puzzle },
+    { id: "modpacks", label: "整合包", icon: Box, disabled: true },
+    { id: "datapacks", label: "数据包", icon: FileText, disabled: true },
+    { id: "resourcepacks", label: "资源包", icon: Layers, disabled: true },
+    { id: "shaders", label: "光影包", icon: Sparkles, disabled: true },
+    { id: "worlds", label: "世界", icon: Globe, disabled: true },
+    { id: "favorites", label: "收藏夹", icon: Heart, disabled: true },
+    {
+      id: "installer-minecraft",
+      label: "Minecraft",
+      group: "安装包",
+      icon: Box,
+      disabled: true,
+    },
+    { id: "OptiFine", label: "OptiFine", icon: Gauge, disabled: true },
+    { id: "Forge", label: "Forge", icon: Trophy, disabled: true },
+    { id: "NeoForge", label: "NeoForge", icon: Cat, disabled: true },
+    { id: "Cleanroom", label: "Cleanroom", icon: FlaskConical, disabled: true },
+    { id: "Fabric", label: "Fabric", icon: ScrollText, disabled: true },
+    {
+      id: "Legacy Fabric",
+      label: "Legacy Fabric",
+      icon: ScrollText,
+      disabled: true,
+    },
+    { id: "LabyMod", label: "LabyMod", icon: Box, disabled: true },
+    { id: "LiteLoader", label: "LiteLoader", icon: Box, disabled: true },
+  ];
+  const settingsItems = [
+    { id: "launch", label: "启动", group: "游戏", icon: Rocket },
+    { id: "java", label: "Java", icon: Coffee },
+    { id: "manage", label: "管理", icon: BookMarked, disabled: true },
+    {
+      id: "network",
+      label: "联机",
+      group: "工具",
+      icon: Waypoints,
+      disabled: true,
+    },
+    {
+      id: "personalize",
+      label: "个性化",
+      group: "启动器",
+      icon: Palette,
+      disabled: true,
+    },
+    { id: "language", label: "语言", icon: Globe, disabled: true },
+    { id: "misc", label: "杂项", icon: MonitorCog, disabled: true },
+    {
+      id: "about",
+      label: "软件信息",
+      group: "关于",
+      icon: Info,
+      disabled: true,
+    },
+    { id: "update", label: "软件更新", icon: RefreshCw, disabled: true },
+    { id: "feedback", label: "反馈", icon: MessageCircle, disabled: true },
+    { id: "logs", label: "查看日志", icon: ScrollText },
+  ];
+  function menu(
+    items: {
+      id: string;
+      label: string;
+      group?: string;
+      icon: React.ElementType;
+      disabled?: boolean;
+    }[],
+    value: string,
+    choose: (s: string) => void,
+  ) {
+    return items.map((item) => (
+      <React.Fragment key={item.id}>
+        {item.group && <div className="section-label">{item.group}</div>}
+        <button
+          className={"side-item " + (value === item.id ? "selected" : "")}
+          disabled={item.disabled}
+          title={item.disabled ? "此页面尚未开放" : undefined}
+          onClick={() => choose(item.id)}
+        >
+          <item.icon size={19} />
+          <span>{item.label}</span>
+        </button>
+      </React.Fragment>
+    ));
+  }
   return (
-    <div className="app-shell">
+    <div
+      className={
+        "app-shell ce-shell " +
+        (screen !== "home"
+          ? screen === "versions"
+            ? "selection-shell"
+            : "instance-shell"
+          : `${tab}-shell`)
+      }
+    >
       <header
         className="titlebar"
         data-tauri-drag-region
@@ -373,38 +526,50 @@ function App() {
             getCurrentWindow().toggleMaximize();
         }}
       >
-        <div className="brand" data-tauri-drag-region>
-          <span className="wordmark">PCL</span>
-          <span className="linux-badge">Linux</span>
-        </div>
-        <nav aria-label="主导航">
-          {[
-            { id: "launch", text: "启动", icon: Play },
-            { id: "download", text: "下载", icon: Download },
-            { id: "settings", text: "设置", icon: SettingsIcon },
-            { id: "tools", text: "工具", icon: Wrench },
-          ].map((n) => (
-            <button
-              key={n.id}
-              className={tab === n.id ? "active" : ""}
-              onClick={() => {
-                setTab(n.id);
-                if (n.id === "tools") readLogs();
-                if (n.id === "settings" && data) setDraft(data.settings);
-              }}
-            >
-              <n.icon size={16} />
-              {n.text}
-            </button>
-          ))}
-        </nav>
+        {screen === "home" ? (
+          <>
+            <div className="brand" data-tauri-drag-region>
+              <span className="wordmark">PCL</span>
+              <span className="ce-badge">CE</span>
+            </div>
+            <nav aria-label="主导航">
+              {[
+                { id: "launch", text: "启动", icon: Play },
+                { id: "download", text: "下载", icon: Download },
+                { id: "settings", text: "设置", icon: SettingsIcon },
+                { id: "tools", text: "工具", icon: Wrench },
+              ].map((n) => (
+                <button
+                  key={n.id}
+                  className={tab === n.id ? "active" : ""}
+                  onClick={() => {
+                    setTab(n.id);
+                    if (n.id === "settings" && data) setDraft(data.settings);
+                  }}
+                >
+                  <n.icon size={17} />
+                  {n.text}
+                </button>
+              ))}
+            </nav>
+          </>
+        ) : (
+          <button className="back-heading" onClick={() => setScreen("home")}>
+            <ArrowLeft size={20} />
+            <span>
+              {screen === "versions"
+                ? "实例选择"
+                : `实例设置 - ${selected?.id || ""}`}
+            </span>
+          </button>
+        )}
         <div className="window-buttons">
           <button
             title="最小化"
             aria-label="最小化"
             onClick={() => native && getCurrentWindow().minimize()}
           >
-            <Minus size={17} />
+            <Minus size={18} />
           </button>
           <button
             title="关闭启动器"
@@ -415,369 +580,167 @@ function App() {
           </button>
         </div>
       </header>
-      {!native && (
-        <div className="preview-strip">
-          界面预览 · 当前游戏目录的只读快照 · 启动功能请使用桌面应用
-        </div>
-      )}
       {error ? (
         <div className="initial-error">
           <TriangleAlert />
           <h2>无法读取游戏目录</h2>
           <p>{error}</p>
-          <button className="btn" onClick={load}>
+          <button className="ce-button" onClick={load}>
             重新读取
           </button>
         </div>
       ) : !data ? (
         <div className="loading">
           <LoaderCircle className="spin" />
-          正在读取游戏版本…
+          正在读取游戏实例…
         </div>
       ) : (
         <div className="body-layout">
           <aside
-            className={tab === "launch" ? "launch-sidebar" : "section-sidebar"}
+            className={
+              screen === "home" && tab === "launch"
+                ? "launch-sidebar"
+                : "section-sidebar"
+            }
           >
-            {tab === "launch" ? (
+            {screen === "versions" ? (
               <>
-                <div className="account-panel">
-                  <div className="avatar" aria-hidden="true">
-                    <div className="hair" />
-                    <div className="eyes" />
-                    <div className="mouth" />
-                  </div>
-                  <div className="account-heading">
-                    {activeAccount ? activeAccount.profile.name : "离线玩家"}{" "}
-                    <span
-                      className={
-                        "small-badge " + (activeAccount ? "premium-badge" : "")
-                      }
-                    >
-                      {activeAccount ? "正版" : "本地"}
-                    </span>
-                  </div>
-                  {!activeAccount && (
-                    <>
-                      <label className="player-label" htmlFor="player">
-                        玩家名称
-                      </label>
-                      <div className="player-input">
-                        <UserRound size={16} />
-                        <input
-                          id="player"
-                          value={data.settings.player}
-                          onChange={(e) => setPlayer(e.target.value)}
-                          maxLength={16}
-                          spellCheck={false}
-                        />
-                      </div>
-                    </>
-                  )}
-                  <p className="account-note">
-                    {activeAccount
-                      ? "Microsoft · Minecraft Java 版"
-                      : "用于单人游戏与离线服务器"}
-                  </p>
-                  <button
-                    className="btn compact account-manage"
-                    onClick={() => setDialog("accounts")}
-                  >
-                    <UserRound size={14} />
-                    管理账号
-                  </button>
-                </div>
+                <div className="section-label">文件夹列表</div>
+                <button
+                  className="folder-entry selected"
+                  title={data.settings.root}
+                >
+                  <strong>
+                    {data.settings.root.split("/").filter(Boolean).at(-1)}
+                  </strong>
+                  <small>{data.settings.root}</small>
+                </button>
+                <div className="section-label folder-label">添加或导入</div>
+                <button
+                  className="side-item"
+                  disabled
+                  title="多目录管理尚未开放"
+                >
+                  <FolderInput size={19} />
+                  添加已有文件夹
+                </button>
+                <button
+                  className="side-item"
+                  disabled
+                  title="整合包导入尚未开放"
+                >
+                  <PackagePlus size={19} />
+                  导入整合包
+                </button>
+              </>
+            ) : screen === "instance" ? (
+              menu(
+                instancePages.map((p) => ({
+                  ...p,
+                  icon:
+                    p.id === "settings"
+                      ? SettingsIcon
+                      : p.id === "modify"
+                        ? Wrench
+                        : p.icon || Box,
+                  disabled:
+                    p.unavailable ||
+                    !["overview", "settings", "mods"].includes(p.id),
+                })),
+                instancePage,
+                setInstancePage,
+              )
+            ) : tab === "launch" ? (
+              <>
+                <button
+                  className="account-panel"
+                  onClick={() => setDialog("accounts")}
+                  aria-label="管理账号"
+                >
+                  <span
+                    className="avatar"
+                    aria-hidden="true"
+                    style={{
+                      backgroundImage: `url(${defaultSkin}),url(${defaultSkin})`,
+                    }}
+                  />
+                  <span className="account-heading">
+                    {activeAccount?.profile.name || data.settings.player}
+                  </span>
+                  <span className="account-kind">
+                    {activeAccount ? "正版验证" : "离线登录"}
+                  </span>
+                </button>
                 <div className="launch-controls">
-                  {busy ? (
-                    <div className="launching-box">
-                      <LoaderCircle className="spin" size={30} />
-                      <strong>
-                        {data.status.stage === "preparing"
-                          ? "正在准备游戏"
-                          : "游戏正在运行"}
-                      </strong>
-                      <p>{data.status.message}</p>
-                      {data.status.pid && <span>进程 {data.status.pid}</span>}
-                      <button
-                        className="btn danger"
-                        onClick={async () => {
-                          if (
-                            window.confirm(
-                              "确认结束游戏进程？未保存的游戏进度可能丢失。",
-                            )
-                          )
-                            await api("stop_game");
-                        }}
-                      >
-                        结束进程
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <button
-                        className="launch-button"
-                        disabled={!selected || !native || downloadBusy}
-                        onClick={launch}
-                      >
-                        <span>
-                          <Play size={18} fill="currentColor" />
-                          启动游戏
-                        </span>
-                        <small>
-                          {downloadBusy
-                            ? "正在安装游戏，请稍候"
-                            : selected?.id || "请选择游戏版本"}
-                        </small>
-                      </button>
-                      <div className="launch-secondary">
-                        <button
-                          className="btn"
-                          onClick={() => {
-                            setQuery("");
-                            setDialog("versions");
-                          }}
-                        >
-                          版本选择
-                        </button>
-                        <button
-                          className="btn"
-                          disabled={!selected}
-                          onClick={instanceSettings}
-                        >
-                          版本设置
-                        </button>
-                      </div>
-                    </>
-                  )}
-                  <div
-                    className={
-                      "sidebar-status " +
-                      (data.status.stage === "error" ? "is-error" : "")
+                  <button
+                    className="launch-button"
+                    disabled={!native || !selected || downloadBusy || checking}
+                    onClick={() =>
+                      busy
+                        ? api("stop_game").catch((e) => notify(String(e)))
+                        : launch()
                     }
                   >
-                    <i />
-                    {data.status.stage === "error"
-                      ? "启动遇到问题，请查看日志"
-                      : busy
-                        ? "请等待游戏完成加载"
-                        : data.status.stage === "exited"
-                          ? "游戏已退出"
-                          : "准备就绪"}
+                    <span>
+                      {busy
+                        ? data.status.stage === "preparing"
+                          ? "正在启动"
+                          : "结束游戏"
+                        : "启动游戏"}
+                    </span>
+                    <small>
+                      {busy
+                        ? data.status.message
+                        : selected?.id || "请选择游戏实例"}
+                    </small>
+                  </button>
+                  <div className="launch-secondary">
+                    <button
+                      className="ce-button"
+                      disabled={!!busy || downloadBusy}
+                      onClick={() => {
+                        setQuery("");
+                        setScreen("versions");
+                      }}
+                    >
+                      实例选择
+                    </button>
+                    <button
+                      className="ce-button"
+                      disabled={!selected || !!busy || downloadBusy}
+                      onClick={instanceSettings}
+                    >
+                      实例设置
+                    </button>
                   </div>
                 </div>
               </>
+            ) : tab === "download" ? (
+              menu(downloadItems, downloadPage, setDownloadPage)
+            ) : tab === "settings" ? (
+              menu(settingsItems, settingsPage, (id) => {
+                setSettingsPage(id);
+                if (id === "logs") void readLogs();
+              })
             ) : (
               <>
-                <div className="section-label">
-                  {tab === "download"
-                    ? "游戏与内容"
-                    : tab === "settings"
-                      ? "启动器设置"
-                      : "实用工具"}
-                </div>
-                <button className="side-item selected">
-                  {tab === "download" ? (
-                    <Download size={17} />
-                  ) : tab === "settings" ? (
-                    <SlidersHorizontal size={17} />
-                  ) : (
-                    <FileText size={17} />
-                  )}{" "}
-                  {tab === "download"
-                    ? "下载安装"
-                    : tab === "settings"
-                      ? "启动设置"
-                      : "游戏日志"}
+                <div className="section-label">联机</div>
+                <button className="side-item" disabled title="联机功能暂不实现">
+                  <Link2 size={19} />
+                  大厅
                 </button>
-                <div className="side-bottom">
-                  <span className="tiny-dot" /> Linux 原生实验版{" "}
-                  <small>0.2.0</small>
-                </div>
+                <div className="section-label">奇妙小工具</div>
+                <button className="side-item selected">
+                  <Gift size={19} />
+                  百宝箱
+                </button>
               </>
             )}
           </aside>
           <main className="content">
-            {tab === "launch" && (
-              <>
-                <div className="page-intro">
-                  <span>欢迎回来</span>
-                  <h1>开启下一段方块旅程</h1>
-                  <p>选择熟悉的世界，然后出发。</p>
-                </div>
-                {data.status.stage === "error" && (
-                  <button
-                    className="error-banner"
-                    onClick={() => {
-                      setTab("tools");
-                      readLogs();
-                    }}
-                  >
-                    <TriangleAlert size={18} />
-                    <span>{data.status.message}</span>
-                    <ChevronRight size={18} />
-                  </button>
-                )}
-                <Card
-                  title="当前游戏"
-                  icon={<Play size={17} />}
-                  action={
-                    <button
-                      className="text-action"
-                      onClick={() => setDialog("versions")}
-                    >
-                      切换版本 <ChevronRight size={14} />
-                    </button>
-                  }
-                >
-                  {selected ? (
-                    <>
-                      <div className="current-instance">
-                        <Cube forge={selected.loader !== "Vanilla"} />
-                        <div>
-                          <h2>{selected.id}</h2>
-                          <p>
-                            Minecraft {selected.minecraft_version}{" "}
-                            <span>·</span> {selected.loader}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="instance-facts">
-                        <span>
-                          <Box size={14} />
-                          {selected.mod_count} 个模组
-                        </span>
-                        <span>
-                          <Cpu size={14} />
-                          Java {selected.java_major}
-                        </span>
-                        <span>
-                          <FolderOpen size={14} />
-                          {selected.isolated ? "版本独立目录" : "共享游戏目录"}
-                        </span>
-                      </div>
-                      <div className="card-foot">
-                        <button onClick={instanceSettings}>
-                          管理这个版本 <ChevronRight size={14} />
-                        </button>
-                        <button onClick={() => open("instance")}>
-                          打开文件夹 <FolderOpen size={14} />
-                        </button>
-                      </div>
-                    </>
-                  ) : (
-                    <p className="muted">
-                      没有发现已安装版本，请在设置中选择游戏目录。
-                    </p>
-                  )}
-                </Card>
-                <Card title="你的游戏库" icon={<FolderOpen size={17} />}>
-                  <div className="library-summary">
-                    <strong>
-                      {data.instances.length}
-                      <small> 个版本</small>
-                    </strong>
-                    <button
-                      className="btn compact"
-                      onClick={() => setDialog("versions")}
-                    >
-                      浏览全部
-                    </button>
-                  </div>
-                  <p className="path-text" title={data.settings.root}>
-                    {data.settings.root}
-                  </p>
-                  <p className="muted">
-                    存档、模组与资源保存在各自的游戏目录中。
-                  </p>
-                </Card>
-                <Card title="关于这个版本" icon={<Info size={17} />}>
-                  <p className="welcome-copy">PCL 风格，Linux 原生体验。</p>
-                  <p className="muted">
-                    支持原版下载安装、已有游戏启动与启动日志。正版登录暂未开放；模组加载器自动安装尚未开放。
-                  </p>
-                  <div className="notice-line">
-                    <span className="tiny-dot" /> 独立实验项目 · 非 PCL CE
-                    官方发行
-                  </div>
-                </Card>
-              </>
-            )}
-            {tab === "settings" && draft && (
-              <>
-                <div className="page-heading">
-                  <h1>启动设置</h1>
-                  <p>设置会保存在当前项目中，下次打开继续使用。</p>
-                </div>
-                <Card title="游戏目录" icon={<FolderOpen size={17} />}>
-                  <label className="field-label" htmlFor="game-root">
-                    Minecraft 数据目录
-                  </label>
-                  <input
-                    className="field"
-                    id="game-root"
-                    disabled={downloadBusy || busy}
-                    value={draft.root}
-                    onChange={(e) =>
-                      setDraft({ ...draft, root: e.target.value })
-                    }
-                  />
-                  <p className="muted">
-                    已有游戏请选择包含 versions、libraries 和 assets
-                    的目录；新安装也可使用空文件夹。
-                  </p>
-                </Card>
-                <Card title="Java 与内存" icon={<Cpu size={17} />}>
-                  <div className="setting-row">
-                    <div>
-                      <strong>Java 自动选择</strong>
-                      <p className="muted">优先匹配游戏要求的主版本</p>
-                    </div>
-                    <span className="tag">自动</span>
-                  </div>
-                  <div className="setting-row">
-                    <strong>默认最大内存</strong>
-                    <span className="memory-value">
-                      {draft.memory_gib}
-                      <small> GiB</small>
-                    </span>
-                  </div>
-                  <input
-                    aria-label="默认最大内存"
-                    className="range"
-                    type="range"
-                    min="2"
-                    max="16"
-                    value={draft.memory_gib}
-                    onChange={(e) =>
-                      setDraft({ ...draft, memory_gib: Number(e.target.value) })
-                    }
-                  />
-                  <div className="range-labels">
-                    <span>2 GiB</span>
-                    <span>16 GiB</span>
-                  </div>
-                  <p className="muted">版本设置中的独立内存值会覆盖此项。</p>
-                </Card>
-                <button
-                  className="btn primary"
-                  disabled={downloadBusy || busy}
-                  onClick={async () => {
-                    try {
-                      await save(draft);
-                      await load();
-                      notify("设置已保存");
-                    } catch (e) {
-                      notify(String(e));
-                    }
-                  }}
-                >
-                  <Check size={16} />
-                  保存设置
-                </button>
-              </>
-            )}
-            <div hidden={tab !== "download"}>
+            <div hidden={screen !== "home" || tab !== "download"}>
               <DownloadPanel
+                section={downloadPage}
                 api={api}
                 native={native}
                 installed={data.instances}
@@ -786,34 +749,81 @@ function App() {
                 onBusyChange={setDownloadBusy}
               />
             </div>
-            {tab === "tools" && (
+            {screen === "versions" ? (
+              <InstanceSelection
+                instances={data.instances}
+                query={query}
+                setQuery={setQuery}
+                disabled={!!busy || downloadBusy}
+                onPick={pick}
+              />
+            ) : screen === "instance" && selected ? (
+              <InstancePanel
+                instance={selected}
+                section={instancePage}
+                settings={data.settings}
+                api={api}
+                onSave={save}
+                onOpen={open}
+                onInspect={launch}
+                onNotify={notify}
+                disabled={!!busy || downloadBusy}
+              />
+            ) : screen === "home" ? (
               <>
-                <div className="page-heading">
-                  <h1>游戏日志</h1>
-                  <p>
-                    {data.status.version || "本次会话"} · {data.status.message}
-                  </p>
-                </div>
-                <div className="toolbar">
-                  <button className="btn compact" onClick={readLogs}>
-                    <RefreshCw size={14} />
-                    刷新日志
+                {tab === "launch" && data.status.stage === "error" && (
+                  <button
+                    className="error-banner"
+                    onClick={() => {
+                      setTab("settings");
+                      setSettingsPage("logs");
+                      void readLogs();
+                    }}
+                  >
+                    <TriangleAlert size={18} />
+                    <span>{data.status.message}</span>
+                    <ChevronRight size={18} />
                   </button>
-                  <button className="btn compact" onClick={() => open("logs")}>
-                    <FolderOpen size={14} />
-                    打开日志目录
-                  </button>
-                </div>
-                <pre className="log-view">{logs}</pre>
+                )}
+                {tab === "settings" &&
+                  (settingsPage === "logs" ? (
+                    <>
+                      <div className="toolbar">
+                        <button className="ce-button" onClick={readLogs}>
+                          <RefreshCw size={16} />
+                          刷新
+                        </button>
+                        <button
+                          className="ce-button"
+                          onClick={() => open("logs")}
+                        >
+                          <FolderOpen size={16} />
+                          打开日志文件夹
+                        </button>
+                      </div>
+                      <pre className="log-view">{logs}</pre>
+                    </>
+                  ) : (
+                    <SettingsPanel
+                      section={settingsPage}
+                      settings={data.settings}
+                      api={api}
+                      native={native}
+                      onSave={save}
+                      disabled={!!busy || downloadBusy}
+                      onInstances={instanceSettings}
+                      onNotify={notify}
+                    />
+                  ))}
+                {tab === "tools" && (
+                  <Toolbox onOpen={open} root={data.settings.root} />
+                )}
               </>
-            )}
-            <footer>
-              PCL Linux <span>·</span> 让每一次出发都简单一点
-            </footer>
+            ) : null}
           </main>
         </div>
       )}
-      {dialog && data && (
+      {dialog === "accounts" && data && (
         <div
           className="modal-shade"
           onMouseDown={(e) => {
@@ -824,22 +834,10 @@ function App() {
             className="modal"
             role="dialog"
             aria-modal="true"
-            aria-label={
-              dialog === "versions"
-                ? "选择游戏版本"
-                : dialog === "accounts"
-                  ? "管理账号"
-                  : "版本设置"
-            }
+            aria-label={"管理账号"}
           >
             <div className="modal-heading">
-              <h2>
-                {dialog === "versions"
-                  ? "选择游戏版本"
-                  : dialog === "accounts"
-                    ? "管理账号"
-                    : "版本设置"}
-              </h2>
+              <h2>管理账号</h2>
               <button
                 aria-label="关闭弹窗"
                 className="icon-button"
@@ -853,6 +851,18 @@ function App() {
                 <p className="muted">
                   选择游戏身份，或添加 Microsoft 正版账号。
                 </p>
+                <label className="ce-row">
+                  <span>离线玩家名</span>
+                  <input
+                    className="ce-field"
+                    value={data.settings.player}
+                    disabled={!!busy}
+                    onChange={(e) => setPlayer(e.target.value)}
+                    onBlur={() =>
+                      save(data.settings).catch((e) => notify(String(e)))
+                    }
+                  />
+                </label>
                 {busy && (
                   <div className="auth-notice" role="status">
                     游戏正在准备或运行。退出游戏后即可切换、移除或添加账号，以及修改应用设置。
@@ -1100,141 +1110,7 @@ function App() {
                   </div>
                 </details>
               </div>
-            ) : dialog === "versions" ? (
-              <>
-                <div className="search-box">
-                  <Search size={17} />
-                  <input
-                    autoFocus
-                    aria-label="搜索版本"
-                    placeholder="搜索版本名称…"
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                  />
-                  <button
-                    className="icon-button"
-                    title="重新扫描"
-                    onClick={load}
-                  >
-                    <RefreshCw size={16} />
-                  </button>
-                </div>
-                <div className="version-list">
-                  {data.instances
-                    .filter((v) =>
-                      v.id.toLowerCase().includes(query.toLowerCase()),
-                    )
-                    .map((v) => (
-                      <button
-                        key={v.id}
-                        className={
-                          "version-row " +
-                          (v.id === selected?.id ? "chosen" : "")
-                        }
-                        onClick={() => pick(v.id)}
-                      >
-                        <Cube forge={v.loader !== "Vanilla"} />
-                        <div>
-                          <strong>{v.id}</strong>
-                          <small>
-                            {v.minecraft_version} · {v.loader} · {v.mod_count}{" "}
-                            个模组
-                          </small>
-                        </div>
-                        {v.id === selected?.id ? (
-                          <Check size={18} />
-                        ) : (
-                          <ChevronRight size={16} />
-                        )}
-                      </button>
-                    ))}
-                  {!data.instances.some((v) =>
-                    v.id.toLowerCase().includes(query.toLowerCase()),
-                  ) && <p className="empty">没有找到匹配的版本</p>}
-                </div>
-                <div className="modal-footer">
-                  共 {data.instances.length} 个版本 <span>选择后即可启动</span>
-                </div>
-              </>
-            ) : (
-              selected && (
-                <div className="instance-dialog">
-                  <div className="current-instance">
-                    <Cube forge={selected.loader !== "Vanilla"} />
-                    <div>
-                      <h2>{selected.id}</h2>
-                      <p>
-                        {selected.minecraft_version} · {selected.loader}
-                      </p>
-                    </div>
-                  </div>
-                  <label className="setting-row" htmlFor="instance-memory">
-                    <strong>此版本最大内存</strong>
-                    <span>
-                      <input
-                        id="instance-memory"
-                        className="number-field"
-                        type="number"
-                        min="2"
-                        max="64"
-                        value={override}
-                        onChange={(e) => setOverride(Number(e.target.value))}
-                      />{" "}
-                      GiB
-                    </span>
-                  </label>
-                  <p className="muted">
-                    只影响这个版本。Java 根据游戏要求自动选择。
-                  </p>
-                  <div className="toolbar">
-                    <button
-                      className="btn primary"
-                      onClick={async () => {
-                        try {
-                          await save({
-                            ...data.settings,
-                            overrides: {
-                              ...data.settings.overrides,
-                              [selected.id]: override,
-                            },
-                          });
-                          notify("版本设置已保存");
-                          setDialog(null);
-                        } catch (e) {
-                          notify(String(e));
-                        }
-                      }}
-                    >
-                      <Check size={15} />
-                      保存
-                    </button>
-                    <button
-                      className="btn"
-                      disabled={checking || !native}
-                      onClick={inspect}
-                    >
-                      {checking ? (
-                        <LoaderCircle size={15} className="spin" />
-                      ) : (
-                        <Check size={15} />
-                      )}
-                      检查启动环境
-                    </button>
-                  </div>
-                  {inspection && (
-                    <div className="check-result">
-                      <strong>
-                        <Check size={15} />
-                        启动参数与依赖检查通过
-                      </strong>
-                      <p>Java：{inspection.java}</p>
-                      <p>游戏目录：{inspection.game_dir}</p>
-                      <p>启动参数：{inspection.arguments} 项</p>
-                    </div>
-                  )}
-                </div>
-              )
-            )}
+            ) : null}
           </section>
         </div>
       )}

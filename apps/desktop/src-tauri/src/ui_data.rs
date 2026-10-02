@@ -1,0 +1,525 @@
+use crate::Shared;
+use base64::Engine;
+use serde::Serialize;
+use std::{
+    collections::BTreeSet,
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
+use tauri::State;
+
+#[derive(Serialize)]
+pub struct SystemInfo {
+    total_memory_bytes: u64,
+    available_memory_bytes: u64,
+}
+
+fn parse_memory(text: &str) -> Result<SystemInfo, String> {
+    let value = |key: &str| {
+        text.lines().find_map(|line| {
+            let mut fields = line.split_whitespace();
+            if fields.next()? != key {
+                return None;
+            }
+            let count = fields.next()?.parse::<u64>().ok()?;
+            if fields.next()? != "kB" {
+                return None;
+            }
+            count.checked_mul(1024)
+        })
+    };
+    let total = value("MemTotal:").ok_or("无法读取系统总内存")?;
+    let available = value("MemAvailable:").ok_or("无法读取系统可用内存")?;
+    Ok(SystemInfo {
+        total_memory_bytes: total,
+        available_memory_bytes: available.min(total),
+    })
+}
+
+#[tauri::command]
+pub fn system_info() -> Result<SystemInfo, String> {
+    parse_memory(&fs::read_to_string("/proc/meminfo").map_err(|e| e.to_string())?)
+}
+
+#[derive(Serialize)]
+pub struct JavaInfo {
+    path: String,
+    major: u32,
+    vendor: String,
+    arch: String,
+}
+
+fn inspect_java(path: &Path) -> Option<JavaInfo> {
+    let mut child = Command::new(path)
+        .args(["-XshowSettings:properties", "-version"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    let stderr = child.stderr.take()?;
+    let reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.take(65536).read_to_end(&mut bytes);
+        String::from_utf8_lossy(&bytes).into_owned()
+    });
+    let start = Instant::now();
+    let success = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) if start.elapsed() < Duration::from_secs(5) => {
+                thread::sleep(Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break false;
+            }
+        }
+    };
+    let text = reader.join().ok()?;
+    if !success {
+        return None;
+    }
+    let property = |name: &str| {
+        text.lines().find_map(|line| {
+            let (key, value) = line.trim().split_once('=')?;
+            (key.trim() == name).then(|| value.trim().to_owned())
+        })
+    };
+    let version = property("java.specification.version")?;
+    let major = version
+        .strip_prefix("1.")
+        .unwrap_or(&version)
+        .split('.')
+        .next()?
+        .parse()
+        .ok()?;
+    Some(JavaInfo {
+        path: path.display().to_string(),
+        major,
+        vendor: property("java.vendor").unwrap_or_default(),
+        arch: property("os.arch").unwrap_or_default(),
+    })
+}
+
+#[tauri::command]
+pub async fn java_list(
+    root: String,
+    state: State<'_, Arc<Shared>>,
+) -> Result<Vec<JavaInfo>, String> {
+    let project = state.project.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut candidates = Vec::new();
+        for base in [
+            project.clone(),
+            project.join("PCL-Linux"),
+            PathBuf::from(root),
+        ] {
+            for runtime in ["runtime", "runtime-21", "runtime-25"] {
+                candidates.push(base.join(runtime).join("bin/java"));
+            }
+        }
+        if let Some(home) = std::env::var_os("JAVA_HOME") {
+            candidates.push(PathBuf::from(home).join("bin/java"));
+        }
+        if let Some(path) = std::env::var_os("PATH") {
+            candidates.extend(std::env::split_paths(&path).map(|p| p.join("java")));
+        }
+        if let Ok(entries) = fs::read_dir("/usr/lib/jvm") {
+            candidates.extend(
+                entries
+                    .filter_map(Result::ok)
+                    .map(|e| e.path().join("bin/java")),
+            );
+        }
+        let paths: BTreeSet<_> = candidates
+            .into_iter()
+            .filter_map(|p| p.canonicalize().ok())
+            .collect();
+        let mut runtimes: Vec<_> = paths.into_iter().filter_map(|p| inspect_java(&p)).collect();
+        runtimes.sort_by(|a, b| a.major.cmp(&b.major).then(a.path.cmp(&b.path)));
+        runtimes
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+pub struct ResourceInfo {
+    name: String,
+    file_name: String,
+    path: String,
+    enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon: Option<String>,
+}
+
+fn capped_text(value: &str) -> String {
+    let mut end = value.len().min(8192);
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].trim().to_owned()
+}
+
+fn jar_entry<R: Read + std::io::Seek>(
+    jar: &mut zip::ZipArchive<R>,
+    name: &str,
+    limit: u64,
+) -> Option<Vec<u8>> {
+    // Metadata names are archive members only; nothing is extracted onto disk.
+    if name.starts_with('/') || name.split('/').any(|part| part == "..") || name.contains('\\') {
+        return None;
+    }
+    let entry = jar.by_name(name).ok()?;
+    if entry.size() > limit {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    entry.take(limit + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= limit).then_some(bytes)
+}
+
+fn mod_metadata<R: Read + std::io::Seek>(jar: &mut zip::ZipArchive<R>, row: &mut ResourceInfo) {
+    let mut logo = None;
+    if let Some(json) = jar_entry(jar, "fabric.mod.json", 262144)
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+    {
+        row.name = json["name"]
+            .as_str()
+            .or_else(|| json["id"].as_str())
+            .map(capped_text)
+            .unwrap_or_else(|| row.name.clone());
+        row.version = json["version"].as_str().map(capped_text);
+        row.description = json["description"].as_str().map(capped_text);
+        logo = json["icon"].as_str().map(str::to_owned).or_else(|| {
+            json["icon"]
+                .as_object()?
+                .iter()
+                .filter_map(|(size, path)| Some((size.parse::<u32>().ok()?, path.as_str()?)))
+                .min_by_key(|(size, _)| size.abs_diff(64))
+                .map(|(_, path)| path.to_owned())
+        });
+    } else {
+        for filename in ["META-INF/neoforge.mods.toml", "META-INF/mods.toml"] {
+            let Some(data) = jar_entry(jar, filename, 262144)
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .and_then(|text| text.parse::<toml::Value>().ok())
+            else {
+                continue;
+            };
+            let Some(info) = data
+                .get("mods")
+                .and_then(toml::Value::as_array)
+                .and_then(|mods| mods.first())
+            else {
+                continue;
+            };
+            row.name = info
+                .get("displayName")
+                .or_else(|| info.get("modId"))
+                .and_then(toml::Value::as_str)
+                .map(capped_text)
+                .unwrap_or_else(|| row.name.clone());
+            row.version = info
+                .get("version")
+                .and_then(toml::Value::as_str)
+                .map(capped_text);
+            row.description = info
+                .get("description")
+                .and_then(toml::Value::as_str)
+                .map(capped_text);
+            logo = info
+                .get("logoFile")
+                .or_else(|| data.get("logoFile"))
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned);
+            break;
+        }
+    }
+    if row
+        .version
+        .as_deref()
+        .is_some_and(|version| version.contains("${file.jarVersion}"))
+    {
+        let manifest = jar_entry(jar, "META-INF/MANIFEST.MF", 65536)
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .map(|text| text.replace("\r\n ", "").replace("\n ", ""));
+        let version = manifest.as_deref().and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("Implementation-Version: "))
+        });
+        row.version = version.map(|version| {
+            capped_text(
+                &row.version
+                    .as_deref()
+                    .unwrap()
+                    .replace("${file.jarVersion}", version),
+            )
+        });
+    }
+    if row.version.as_deref().is_some_and(|v| v.contains("${")) {
+        row.version = None;
+    }
+    if let Some(bytes) = logo.and_then(|name| jar_entry(jar, &name, 128 * 1024)) {
+        let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            Some("image/png")
+        } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+            Some("image/jpeg")
+        } else {
+            None
+        };
+        if let Some(mime) = mime {
+            row.icon = Some(format!(
+                "data:{mime};base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            ));
+        }
+    }
+}
+
+pub fn resource_dir(root: &Path, id: &str, kind: &str) -> Result<PathBuf, String> {
+    let root = root.canonicalize().map_err(|e| e.to_string())?;
+    let instance = pcl_core::scan_instances(&root)?
+        .into_iter()
+        .find(|v| v.id == id)
+        .ok_or("未找到所选版本")?;
+    let base = if instance.isolated {
+        root.join("versions").join(id)
+    } else {
+        root.clone()
+    };
+    let child = match kind {
+        "mods" => "mods",
+        "saves" => "saves",
+        "screenshots" => "screenshots",
+        "resourcepacks" => "resourcepacks",
+        "shaderpacks" => "shaderpacks",
+        "litematics" => "schematics",
+        "server" => "",
+        _ => return Err("未知资源类型".into()),
+    };
+    let base = base.canonicalize().map_err(|e| e.to_string())?;
+    if !base.starts_with(&root) {
+        return Err("目录超出游戏目录".into());
+    }
+    let path = base.join(child);
+    if path.exists()
+        && !path
+            .canonicalize()
+            .map_err(|e| e.to_string())?
+            .starts_with(&root)
+    {
+        return Err("目录超出游戏目录".into());
+    }
+    Ok(path)
+}
+
+#[tauri::command]
+pub async fn instance_resources(
+    id: String,
+    kind: String,
+    state: State<'_, Arc<Shared>>,
+) -> Result<Vec<ResourceInfo>, String> {
+    let root = PathBuf::from(state.settings.lock().unwrap().root.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        let folder = resource_dir(&root, &id, &kind)?;
+        if !folder.exists() {
+            return Ok(Vec::new());
+        }
+        let root = root.canonicalize().map_err(|e| e.to_string())?;
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(folder).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if kind == "server" && name != "servers.dat" {
+                continue;
+            }
+            let path = entry.path().canonicalize().map_err(|e| e.to_string())?;
+            if !path.starts_with(&root) {
+                continue;
+            }
+            if kind == "saves" && !path.is_dir() {
+                continue;
+            }
+            let mut row = ResourceInfo {
+                enabled: !name.ends_with(".disabled"),
+                file_name: name.clone(),
+                name,
+                path: path.display().to_string(),
+                version: None,
+                description: None,
+                icon: None,
+            };
+            if kind == "mods"
+                && (row.file_name.ends_with(".jar") || row.file_name.ends_with(".jar.disabled"))
+            {
+                if let Ok(file) = fs::File::open(&path) {
+                    if let Ok(mut jar) = zip::ZipArchive::new(file) {
+                        mod_metadata(&mut jar, &mut row);
+                    }
+                }
+            }
+            entries.push(row);
+        }
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(entries)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn parse_fixture(files: &[(&str, &[u8])]) -> ResourceInfo {
+        use std::io::{Cursor, Write};
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, bytes) in files {
+            writer
+                .start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        let mut archive = zip::ZipArchive::new(writer.finish().unwrap()).unwrap();
+        let mut row = ResourceInfo {
+            name: "fixture.jar".into(),
+            file_name: "fixture.jar".into(),
+            path: String::new(),
+            enabled: true,
+            version: None,
+            description: None,
+            icon: None,
+        };
+        mod_metadata(&mut archive, &mut row);
+        row
+    }
+    #[test]
+    fn fabric_metadata_and_safe_icon_are_read_from_archive() {
+        let row = parse_fixture(&[
+            ("fabric.mod.json", br#"{"name":"Fixture Mod","version":"1.2.3","description":"Actual description","icon":"icon.png"}"#),
+            ("icon.png", b"\x89PNG\r\n\x1a\nfixture"),
+        ]);
+        assert_eq!(row.name, "Fixture Mod");
+        assert_eq!(row.version.as_deref(), Some("1.2.3"));
+        assert_eq!(row.description.as_deref(), Some("Actual description"));
+        assert!(row.icon.unwrap().starts_with("data:image/png;base64,"));
+        let unsafe_row = parse_fixture(&[
+            ("fabric.mod.json", br#"{"icon":"../icon.png"}"#),
+            ("../icon.png", b"\x89PNG\r\n\x1a\nfixture"),
+        ]);
+        assert!(unsafe_row.icon.is_none());
+    }
+    #[test]
+    fn forge_manifest_version_is_resolved_and_missing_version_omitted() {
+        let metadata = b"[[mods]]\nmodId = 'fixture'\ndisplayName = 'Fixture Forge'\nversion = '${file.jarVersion}'\ndescription = 'Description'\n";
+        let row = parse_fixture(&[
+            ("META-INF/mods.toml", metadata),
+            (
+                "META-INF/MANIFEST.MF",
+                b"Manifest-Version: 1.0\r\nImplementation-Version: 2.4.\r\n 1\r\n",
+            ),
+        ]);
+        assert_eq!(row.name, "Fixture Forge");
+        assert_eq!(row.version.as_deref(), Some("2.4.1"));
+        assert!(parse_fixture(&[("META-INF/mods.toml", metadata)])
+            .version
+            .is_none());
+        assert_eq!(capped_text(&"界".repeat(4000)).len(), 8190);
+    }
+    #[test]
+    fn memory_uses_available_not_free_and_converts_kibibytes() {
+        let info =
+            parse_memory("MemTotal: 8192 kB\nMemFree: 10 kB\nMemAvailable: 4096 kB\n").unwrap();
+        assert_eq!(info.total_memory_bytes, 8192 * 1024);
+        assert_eq!(info.available_memory_bytes, 4096 * 1024);
+        assert!(parse_memory("MemTotal: 8192 kB").is_err());
+        assert!(parse_memory("MemTotal: 18446744073709551615 kB\nMemAvailable: 1 kB").is_err());
+    }
+}
+
+/// Read-only public catalog. No account credentials or game files are sent.
+#[tauri::command]
+pub async fn modrinth_search(
+    query: String,
+    source: Option<String>,
+    version: Option<String>,
+    loader: Option<String>,
+    sort: Option<String>,
+    tag: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if source.as_deref() == Some("CurseForge") {
+        return Err("CurseForge 目录尚未接入".into());
+    }
+    if query.len() > 1024 {
+        return Err("搜索内容过长".into());
+    }
+    let mut facets = vec![vec!["project_type:mod".to_owned()]];
+    for (key, value) in [
+        ("versions", version),
+        ("categories", loader),
+        ("categories", tag),
+    ] {
+        if let Some(value) = value.filter(|v| v != "任意" && v != "全部" && !v.is_empty()) {
+            if value.len() > 128 {
+                return Err("筛选内容过长".into());
+            }
+            facets.push(vec![format!("{key}:{value}")]);
+        }
+    }
+    let index = match sort.as_deref().unwrap_or("默认") {
+        "下载量" | "downloads" => "downloads",
+        "关注量" | "follows" => "follows",
+        "最新发布" | "newest" => "newest",
+        "最近更新" | "最新更新" | "updated" => "updated",
+        _ if query.is_empty() => "downloads",
+        _ => "relevance",
+    };
+    let client = reqwest::Client::builder()
+        .user_agent("PCL-Linux/0.2.0 (https://github.com/HyacineFengJin/PCL-Linux)")
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let facet_json = serde_json::to_string(&facets).map_err(|e| e.to_string())?;
+    let mut response = client
+        .get("https://api.modrinth.com/v2/search")
+        .query(&[
+            ("query", query.as_str()),
+            ("facets", facet_json.as_str()),
+            ("index", index),
+            ("limit", "30"),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("无法读取模组目录：{e}"))?
+        .error_for_status()
+        .map_err(|e| format!("模组目录请求失败：{e}"))?;
+    let mut data = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        if data.len() + chunk.len() > 2 * 1024 * 1024 {
+            return Err("模组目录响应过大".into());
+        }
+        data.extend_from_slice(&chunk);
+    }
+    let mut result: serde_json::Value = serde_json::from_slice(&data).map_err(|e| e.to_string())?;
+    if let Some(hits) = result["hits"].as_array_mut() {
+        for hit in hits {
+            let valid = hit["icon_url"]
+                .as_str()
+                .is_some_and(|url| url.starts_with("https://cdn.modrinth.com/"));
+            if !valid {
+                hit["icon_url"] = serde_json::Value::Null;
+            }
+        }
+    }
+    Ok(result)
+}
