@@ -31,6 +31,7 @@ import {
   BookMarked,
   Palette,
   Globe,
+  Earth,
   MonitorCog,
   MessageCircle,
   ScrollText,
@@ -62,6 +63,7 @@ import {
   instancePages,
   InstanceIcon,
 } from "./InstancesPanel";
+import { ExtraSettings } from "./ExtraSettings";
 import "./style.css";
 type Instance = {
   id: string;
@@ -130,6 +132,10 @@ let preview:
       java?: unknown[];
       resources?: unknown[];
       modrinth?: unknown;
+      loader_catalog?: unknown;
+      launcher_logs?: unknown;
+      instance_servers?: unknown;
+      contributors?: unknown;
     })
   | undefined;
 async function api<T>(
@@ -148,6 +154,13 @@ async function api<T>(
   if (command === "auth_status") return (preview!.auth || emptyAuth) as T;
   if (command === "process_status") return preview!.status as T;
   if (command === "download_catalog") return (preview!.catalog || []) as T;
+  if (command === "launcher_logs") return (preview!.launcher_logs || []) as T;
+  if (command === "instance_servers")
+    return (preview!.instance_servers || []) as T;
+  if (command === "loader_catalog") return (preview!.loader_catalog || []) as T;
+  if (command === "upstream_contributors")
+    return (preview!.contributors || []) as T;
+  if (command === "project_feedback") return [] as T;
   if (command === "modrinth_search") return preview!.modrinth as T;
   if (command === "system_info") return preview!.system as T;
   if (command === "java_list") return (preview!.java || []) as T;
@@ -207,7 +220,6 @@ function App() {
     [toast, setToast] = useState(""),
     [inspection, setInspection] = useState<Inspection | null>(null),
     [checking, setChecking] = useState(false),
-    [logs, setLogs] = useState("点击刷新，读取本次启动日志。"),
     [draft, setDraft] = useState<Settings | null>(null),
     [override, setOverride] = useState(6);
   const [screen, setScreen] = useState<"home" | "versions" | "instance">(
@@ -216,10 +228,11 @@ function App() {
   const [instancePage, setInstancePage] = useState("overview");
   const [settingsPage, setSettingsPage] = useState("launch");
   const [downloadPage, setDownloadPage] = useState("minecraft");
-  const [downloadBusy, setDownloadBusy] = useState(false);
+  const contentRef = React.useRef<HTMLElement>(null);
   useEffect(() => {
-    document.querySelector(".content")?.scrollTo({ top: 0 });
-  }, [tab, screen, instancePage, settingsPage, downloadPage]);
+    contentRef.current?.scrollTo({ top: 0 });
+  }, [screen, tab, settingsPage, downloadPage, instancePage, !!data]);
+  const [downloadBusy, setDownloadBusy] = useState(false);
   const [remember, setRemember] = useState(true);
   const [clientId, setClientId] = useState("");
   const [authWorking, setAuthWorking] = useState(false);
@@ -398,13 +411,6 @@ function App() {
       setChecking(false);
     }
   }
-  async function readLogs() {
-    try {
-      setLogs(await api<string>("read_log"));
-    } catch (e) {
-      setLogs(String(e));
-    }
-  }
   function instanceSettings() {
     if (!selected || !data) return;
     setInspection(null);
@@ -420,12 +426,12 @@ function App() {
   const downloadItems = [
     { id: "minecraft", label: "Minecraft", icon: Blocks },
     { id: "mods", label: "模组", group: "社区资源", icon: Puzzle },
-    { id: "modpacks", label: "整合包", icon: Box, disabled: true },
-    { id: "datapacks", label: "数据包", icon: FileText, disabled: true },
-    { id: "resourcepacks", label: "资源包", icon: Layers, disabled: true },
-    { id: "shaders", label: "光影包", icon: Sparkles, disabled: true },
-    { id: "worlds", label: "世界", icon: Globe, disabled: true },
-    { id: "favorites", label: "收藏夹", icon: Heart, disabled: true },
+    { id: "modpacks", label: "整合包", icon: Box },
+    { id: "datapacks", label: "数据包", icon: FileText },
+    { id: "resourcepacks", label: "资源包", icon: Layers },
+    { id: "shaders", label: "光影包", icon: Sparkles },
+    { id: "worlds", label: "世界", icon: Globe },
+    { id: "favorites", label: "收藏夹", icon: Heart },
     {
       id: "installer-minecraft",
       label: "Minecraft",
@@ -435,7 +441,7 @@ function App() {
     },
     { id: "OptiFine", label: "OptiFine", icon: Gauge, disabled: true },
     { id: "Forge", label: "Forge", icon: Trophy, disabled: true },
-    { id: "NeoForge", label: "NeoForge", icon: Cat, disabled: true },
+    { id: "NeoForge", label: "NeoForge", icon: Cat },
     { id: "Cleanroom", label: "Cleanroom", icon: FlaskConical, disabled: true },
     { id: "Fabric", label: "Fabric", icon: ScrollText, disabled: true },
     {
@@ -450,7 +456,7 @@ function App() {
   const settingsItems = [
     { id: "launch", label: "启动", group: "游戏", icon: Rocket },
     { id: "java", label: "Java", icon: Coffee },
-    { id: "manage", label: "管理", icon: BookMarked, disabled: true },
+    { id: "manage", label: "管理", icon: BookMarked },
     {
       id: "network",
       label: "联机",
@@ -463,19 +469,17 @@ function App() {
       label: "个性化",
       group: "启动器",
       icon: Palette,
-      disabled: true,
     },
-    { id: "language", label: "语言", icon: Globe, disabled: true },
-    { id: "misc", label: "杂项", icon: MonitorCog, disabled: true },
+    { id: "language", label: "语言", icon: Earth },
+    { id: "misc", label: "杂项", icon: MonitorCog },
     {
       id: "about",
       label: "软件信息",
       group: "关于",
       icon: Info,
-      disabled: true,
     },
-    { id: "update", label: "软件更新", icon: RefreshCw, disabled: true },
-    { id: "feedback", label: "反馈", icon: MessageCircle, disabled: true },
+    { id: "update", label: "软件更新", icon: RefreshCw },
+    { id: "feedback", label: "反馈", icon: MessageCircle },
     { id: "logs", label: "查看日志", icon: ScrollText },
   ];
   function menu(
@@ -643,9 +647,7 @@ function App() {
                       : p.id === "modify"
                         ? Wrench
                         : p.icon || Box,
-                  disabled:
-                    p.unavailable ||
-                    !["overview", "settings", "mods"].includes(p.id),
+                  disabled: p.unavailable && p.id !== "server",
                 })),
                 instancePage,
                 setInstancePage,
@@ -720,7 +722,6 @@ function App() {
             ) : tab === "settings" ? (
               menu(settingsItems, settingsPage, (id) => {
                 setSettingsPage(id);
-                if (id === "logs") void readLogs();
               })
             ) : (
               <>
@@ -737,7 +738,7 @@ function App() {
               </>
             )}
           </aside>
-          <main className="content">
+          <main className="content" ref={contentRef}>
             <div hidden={screen !== "home" || tab !== "download"}>
               <DownloadPanel
                 section={downloadPage}
@@ -777,7 +778,6 @@ function App() {
                     onClick={() => {
                       setTab("settings");
                       setSettingsPage("logs");
-                      void readLogs();
                     }}
                   >
                     <TriangleAlert size={18} />
@@ -786,24 +786,7 @@ function App() {
                   </button>
                 )}
                 {tab === "settings" &&
-                  (settingsPage === "logs" ? (
-                    <>
-                      <div className="toolbar">
-                        <button className="ce-button" onClick={readLogs}>
-                          <RefreshCw size={16} />
-                          刷新
-                        </button>
-                        <button
-                          className="ce-button"
-                          onClick={() => open("logs")}
-                        >
-                          <FolderOpen size={16} />
-                          打开日志文件夹
-                        </button>
-                      </div>
-                      <pre className="log-view">{logs}</pre>
-                    </>
-                  ) : (
+                  (["launch", "java"].includes(settingsPage) ? (
                     <SettingsPanel
                       section={settingsPage}
                       settings={data.settings}
@@ -812,6 +795,15 @@ function App() {
                       onSave={save}
                       disabled={!!busy || downloadBusy}
                       onInstances={instanceSettings}
+                      onNotify={notify}
+                    />
+                  ) : (
+                    <ExtraSettings
+                      key={settingsPage}
+                      section={settingsPage}
+                      settings={data.settings}
+                      api={api}
+                      onOpen={open}
                       onNotify={notify}
                     />
                   ))}

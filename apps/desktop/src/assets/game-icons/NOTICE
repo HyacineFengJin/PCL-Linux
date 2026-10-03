@@ -8,3 +8,6 @@ respective projects. Their inclusion does not imply endorsement.
 
 redstone-lamp.png is an unmodified Minecraft block texture from the game files.
 steve.png is the default Minecraft skin, from HMCLCore/assets/img/skin/wide.
+
+launcher.png is the unmodified 256px PNG from PCL CE Images/icon.ico:
+https://github.com/PCL-Community/PCL-CE/tree/19805c446cfd17e92749124e3ab1c1832a291736/Plain%20Craft%20Launcher%202/Images

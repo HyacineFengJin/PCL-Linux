@@ -1,6 +1,7 @@
 mod accounts;
 mod downloads;
 mod ui_data;
+mod ui_catalog;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -448,10 +449,7 @@ fn open_folder(
             }
             root.join("versions").join(name)
         }
-        "logs" => {
-            let p = state.log.lock().unwrap().clone().ok_or("还没有日志")?;
-            p.parent().unwrap().to_path_buf()
-        }
+        "logs" => root.join(".pcl-linux/logs"),
         "mods" | "saves" | "screenshots" | "resourcepacks" | "shaderpacks" | "litematics"
         | "server" => ui_data::resource_dir(&root, &id.ok_or("未选择版本")?, &kind)?,
         _ => return Err("未知目录类型".into()),
@@ -540,6 +538,13 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            ui_catalog::ui_open_link,
+            ui_catalog::loader_catalog,
+            ui_catalog::upstream_contributors,
+            ui_catalog::project_feedback,
+            ui_catalog::launcher_logs,
+            ui_catalog::launcher_read_log,
+            ui_catalog::instance_servers,
             ui_data::system_info,
             ui_data::java_list,
             ui_data::instance_resources,

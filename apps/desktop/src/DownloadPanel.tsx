@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 
+import { Favorites, LoaderCatalog } from "./LoaderCatalog";
 import grassIcon from "./assets/game-icons/grass.png";
 import commandIcon from "./assets/game-icons/command.png";
 
@@ -399,7 +400,11 @@ export function DownloadPanel({
           </div>
         </section>
       )}
-      {community ? (
+      {section === "favorites" ? (
+        <Favorites />
+      ) : section === "NeoForge" ? (
+        <LoaderCatalog api={api} loader={section} />
+      ) : community ? (
         <CommunityCatalog
           api={api}
           key={section}

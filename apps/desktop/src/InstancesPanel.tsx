@@ -13,6 +13,9 @@ import {
   Puzzle,
   Sparkles,
   Blocks,
+  Play,
+  Settings as SettingsIcon,
+  Signal,
 } from "lucide-react";
 import commandIcon from "./assets/game-icons/command.png";
 import lampTexture from "./assets/game-icons/redstone-lamp.png";
@@ -488,6 +491,7 @@ export function InstancePanel({
       </>
     );
   }
+  if (section === "server") return <ServerPanel id={instance.id} api={api} />;
   return (
     <ResourcePanel
       id={instance.id}
@@ -550,6 +554,27 @@ function ResourcePanel({
     )
     .sort(
       (a, b) => a.name.localeCompare(b.name, "zh-CN") * (descending ? -1 : 1),
+    );
+  if (!loading && !error && !entries.length)
+    return (
+      <div className="ce-state-stage">
+        <section className="ce-card ce-state-box">
+          <h2>尚未安装资源</h2>
+          <p>
+            你可以从已经下载好的文件安装资源。
+            <br />
+            如果你已经安装了资源，可能是实例隔离设置有误，请在设置中调整实例隔离选项。
+          </p>
+          <div className="ce-actions">
+            <button className="ce-button primary" disabled title={notReady}>
+              从文件安装
+            </button>
+            <button className="ce-button" onClick={() => onOpen(section)}>
+              打开文件夹
+            </button>
+          </div>
+        </section>
+      </div>
     );
   return (
     <>
@@ -631,5 +656,76 @@ function ResourcePanel({
         )}
       </section>
     </>
+  );
+}
+
+type ServerEntry = { name: string; ip: string; icon?: string };
+function ServerPanel({ id, api }: { id: string; api: Api }) {
+  const [servers, setServers] = useState<ServerEntry[]>([]),
+    [error, setError] = useState(""),
+    [refresh, setRefresh] = useState(0);
+  useEffect(() => {
+    let live = true;
+    setError("");
+    api<ServerEntry[]>("instance_servers", { id })
+      .then((v) => {
+        if (live) setServers(v);
+      })
+      .catch((e) => {
+        if (live) setError(String(e));
+      });
+    return () => {
+      live = false;
+    };
+  }, [id, api, refresh]);
+  return (
+    <div className="ce-server-panel">
+      <section className="ce-card">
+        <h2 className="ce-card-title">快捷操作</h2>
+        <div className="ce-actions">
+          <button
+            className="ce-button primary"
+            onClick={() => setRefresh((v) => v + 1)}
+            title="重新读取本地服务器列表；在线状态检测尚未开放"
+          >
+            刷新所有服务器
+          </button>
+          <button className="ce-button" disabled title={notReady}>
+            添加新服务器
+          </button>
+        </div>
+      </section>
+      {error ? (
+        <p className="ce-empty">{error}</p>
+      ) : !servers.length ? (
+        <p className="ce-empty">暂无服务器</p>
+      ) : (
+        servers.map((v, i) => (
+          <section className="ce-card ce-server-row" key={v.ip + i}>
+            {v.icon ? (
+              <img src={v.icon} alt="" />
+            ) : (
+              <span className="ce-server-icon">
+                <Server size={25} />
+              </span>
+            )}
+            <div className="ce-server-info">
+              <strong>{v.name}</strong>
+              <small>
+                <Signal size={14} />
+                未检测状态
+              </small>
+            </div>
+            <span className="ce-server-message">{v.ip}</span>
+            <button disabled title={notReady} aria-label={"加入 " + v.name}>
+              <Play size={16} />
+            </button>
+            <button disabled title={notReady} aria-label={"设置 " + v.name}>
+              <SettingsIcon size={16} />
+            </button>
+          </section>
+        ))
+      )}
+    </div>
   );
 }
