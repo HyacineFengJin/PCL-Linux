@@ -451,6 +451,7 @@ mod tests {
 #[tauri::command]
 pub async fn modrinth_search(
     query: String,
+    project_type: Option<String>,
     source: Option<String>,
     version: Option<String>,
     loader: Option<String>,
@@ -463,7 +464,15 @@ pub async fn modrinth_search(
     if query.len() > 1024 {
         return Err("搜索内容过长".into());
     }
-    let mut facets = vec![vec!["project_type:mod".to_owned()]];
+    let facet = match project_type.as_deref().unwrap_or("mod") {
+        "mod" => "project_type:mod",
+        "modpack" => "project_type:modpack",
+        "resourcepack" => "project_type:resourcepack",
+        "shader" => "project_type:shader",
+        "datapack" => "all_project_types:datapack",
+        _ => return Err("不支持的资源类型".into()),
+    };
+    let mut facets = vec![vec![facet.to_owned()]];
     for (key, value) in [
         ("versions", version),
         ("categories", loader),
@@ -500,13 +509,13 @@ pub async fn modrinth_search(
         ])
         .send()
         .await
-        .map_err(|e| format!("无法读取模组目录：{e}"))?
+        .map_err(|e| format!("无法读取资源目录：{e}"))?
         .error_for_status()
-        .map_err(|e| format!("模组目录请求失败：{e}"))?;
+        .map_err(|e| format!("资源目录请求失败：{e}"))?;
     let mut data = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
         if data.len() + chunk.len() > 2 * 1024 * 1024 {
-            return Err("模组目录响应过大".into());
+            return Err("资源目录响应过大".into());
         }
         data.extend_from_slice(&chunk);
     }

@@ -1,12 +1,12 @@
 import { Fragment, useEffect, useState } from "react";
 import {
   ChevronDown,
-  ChevronUp,
   Globe,
   Earth,
   GitPullRequest,
   ArrowUp,
 } from "lucide-react";
+import { Collapse } from "./Collapse";
 import type { Api, Settings } from "./types";
 import commandIcon from "./assets/game-icons/command.png";
 import lampTexture from "./assets/game-icons/redstone-lamp.png";
@@ -49,12 +49,15 @@ function Card({
             aria-expanded={open}
           >
             <h2 className="ce-card-title">{title}</h2>
-            {open ? <ChevronUp size={17} /> : <ChevronDown size={17} />}
+            <ChevronDown
+              size={17}
+              className={`ce-disclosure-arrow ${open ? "is-open" : ""}`}
+            />
           </button>
         ) : (
           <h2 className="ce-card-title">{title}</h2>
         ))}
-      {open && children}
+      {collapse ? <Collapse open={open}>{children}</Collapse> : children}
     </section>
   );
 }

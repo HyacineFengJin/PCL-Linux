@@ -1,7 +1,7 @@
 mod accounts;
 mod downloads;
-mod ui_data;
 mod ui_catalog;
+mod ui_data;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,

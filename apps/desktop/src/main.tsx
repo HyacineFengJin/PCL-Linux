@@ -157,11 +157,27 @@ async function api<T>(
   if (command === "launcher_logs") return (preview!.launcher_logs || []) as T;
   if (command === "instance_servers")
     return (preview!.instance_servers || []) as T;
-  if (command === "loader_catalog") return (preview!.loader_catalog || []) as T;
+  if (command === "loader_catalog") {
+    const catalogs = preview!.loader_catalog;
+    return (
+      Array.isArray(catalogs)
+        ? catalogs
+        : (catalogs as Record<string, unknown> | undefined)?.[
+            String(args?.loader)
+          ] || []
+    ) as T;
+  }
   if (command === "upstream_contributors")
     return (preview!.contributors || []) as T;
   if (command === "project_feedback") return [] as T;
-  if (command === "modrinth_search") return preview!.modrinth as T;
+  if (command === "modrinth_search") {
+    const catalogs = preview!.modrinth as Record<string, unknown> | undefined;
+    return (
+      catalogs?.hits
+        ? catalogs
+        : catalogs?.[String(args?.projectType || "mod")] || { hits: [] }
+    ) as T;
+  }
   if (command === "system_info") return preview!.system as T;
   if (command === "java_list") return (preview!.java || []) as T;
   if (command === "instance_resources") return (preview!.resources || []) as T;
@@ -437,21 +453,19 @@ function App() {
       label: "Minecraft",
       group: "安装包",
       icon: Box,
-      disabled: true,
     },
-    { id: "OptiFine", label: "OptiFine", icon: Gauge, disabled: true },
-    { id: "Forge", label: "Forge", icon: Trophy, disabled: true },
+    { id: "OptiFine", label: "OptiFine", icon: Gauge },
+    { id: "Forge", label: "Forge", icon: Trophy },
     { id: "NeoForge", label: "NeoForge", icon: Cat },
-    { id: "Cleanroom", label: "Cleanroom", icon: FlaskConical, disabled: true },
-    { id: "Fabric", label: "Fabric", icon: ScrollText, disabled: true },
+    { id: "Cleanroom", label: "Cleanroom", icon: FlaskConical },
+    { id: "Fabric", label: "Fabric", icon: ScrollText },
     {
       id: "Legacy Fabric",
       label: "Legacy Fabric",
       icon: ScrollText,
-      disabled: true,
     },
-    { id: "LabyMod", label: "LabyMod", icon: Box, disabled: true },
-    { id: "LiteLoader", label: "LiteLoader", icon: Box, disabled: true },
+    { id: "LabyMod", label: "LabyMod", icon: Box },
+    { id: "LiteLoader", label: "LiteLoader", icon: Box },
   ];
   const settingsItems = [
     { id: "launch", label: "启动", group: "游戏", icon: Rocket },
@@ -750,68 +764,73 @@ function App() {
                 onBusyChange={setDownloadBusy}
               />
             </div>
-            {screen === "versions" ? (
-              <InstanceSelection
-                instances={data.instances}
-                query={query}
-                setQuery={setQuery}
-                disabled={!!busy || downloadBusy}
-                onPick={pick}
-              />
-            ) : screen === "instance" && selected ? (
-              <InstancePanel
-                instance={selected}
-                section={instancePage}
-                settings={data.settings}
-                api={api}
-                onSave={save}
-                onOpen={open}
-                onInspect={launch}
-                onNotify={notify}
-                disabled={!!busy || downloadBusy}
-              />
-            ) : screen === "home" ? (
-              <>
-                {tab === "launch" && data.status.stage === "error" && (
-                  <button
-                    className="error-banner"
-                    onClick={() => {
-                      setTab("settings");
-                      setSettingsPage("logs");
-                    }}
-                  >
-                    <TriangleAlert size={18} />
-                    <span>{data.status.message}</span>
-                    <ChevronRight size={18} />
-                  </button>
-                )}
-                {tab === "settings" &&
-                  (["launch", "java"].includes(settingsPage) ? (
-                    <SettingsPanel
-                      section={settingsPage}
-                      settings={data.settings}
-                      api={api}
-                      native={native}
-                      onSave={save}
-                      disabled={!!busy || downloadBusy}
-                      onInstances={instanceSettings}
-                      onNotify={notify}
-                    />
-                  ) : (
-                    <ExtraSettings
-                      key={settingsPage}
-                      section={settingsPage}
-                      settings={data.settings}
-                      api={api}
-                      onOpen={open}
-                      onNotify={notify}
-                    />
-                  ))}
-                {tab === "tools" && (
-                  <Toolbox onOpen={open} root={data.settings.root} />
-                )}
-              </>
-            ) : null}
+            <div
+              key={`${screen}:${tab}:${instancePage}:${settingsPage}`}
+              className="ce-page-enter ce-main-page"
+            >
+              {screen === "versions" ? (
+                <InstanceSelection
+                  instances={data.instances}
+                  query={query}
+                  setQuery={setQuery}
+                  disabled={!!busy || downloadBusy}
+                  onPick={pick}
+                />
+              ) : screen === "instance" && selected ? (
+                <InstancePanel
+                  instance={selected}
+                  section={instancePage}
+                  settings={data.settings}
+                  api={api}
+                  onSave={save}
+                  onOpen={open}
+                  onInspect={launch}
+                  onNotify={notify}
+                  disabled={!!busy || downloadBusy}
+                />
+              ) : screen === "home" ? (
+                <>
+                  {tab === "launch" && data.status.stage === "error" && (
+                    <button
+                      className="error-banner"
+                      onClick={() => {
+                        setTab("settings");
+                        setSettingsPage("logs");
+                      }}
+                    >
+                      <TriangleAlert size={18} />
+                      <span>{data.status.message}</span>
+                      <ChevronRight size={18} />
+                    </button>
+                  )}
+                  {tab === "settings" &&
+                    (["launch", "java"].includes(settingsPage) ? (
+                      <SettingsPanel
+                        section={settingsPage}
+                        settings={data.settings}
+                        api={api}
+                        native={native}
+                        onSave={save}
+                        disabled={!!busy || downloadBusy}
+                        onInstances={instanceSettings}
+                        onNotify={notify}
+                      />
+                    ) : (
+                      <ExtraSettings
+                        key={settingsPage}
+                        section={settingsPage}
+                        settings={data.settings}
+                        api={api}
+                        onOpen={open}
+                        onNotify={notify}
+                      />
+                    ))}
+                  {tab === "tools" && (
+                    <Toolbox onOpen={open} root={data.settings.root} />
+                  )}
+                </>
+              ) : null}
+            </div>
           </main>
         </div>
       )}

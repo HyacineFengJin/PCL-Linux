@@ -24,6 +24,12 @@ PCL Linux 支持下载安装 Minecraft 原版，也可以启动已有的游戏�
 
 安装结果会显示所需 Java 主版本；游戏文件下载不包含 Java。请先确保系统或项目中有对应 Java。
 
+## 浏览安装包与社区资源
+
+「下载 → 安装包」可浏览 Minecraft、OptiFine、Forge、NeoForge、Cleanroom、Fabric、Legacy Fabric 和 LiteLoader 的官方版本目录。点击版本分组展开列表，点击「打开官网」访问对应项目；LabyMod 的安装器通过官网提供。单文件与安装器下载、模组加载器自动安装尚未开放。
+
+「下载 → 社区资源」可搜索 Modrinth 的模组、整合包、数据包、资源包和光影包。资源详情与安装、CurseForge、世界目录和收藏管理尚未开放。
+
 ## 启动游戏
 
 填写离线玩家名称，选好版本后点击「启动游戏」。启动器会先检查 Java 和依赖，再运行游戏。

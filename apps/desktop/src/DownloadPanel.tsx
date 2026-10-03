@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import {
   Box,
   ChevronDown,
-  ChevronUp,
   Check,
   Download,
   Globe,
@@ -15,7 +14,8 @@ import {
   X,
 } from "lucide-react";
 
-import { Favorites, LoaderCatalog } from "./LoaderCatalog";
+import { Favorites, LoaderCatalog, installerPages } from "./LoaderCatalog";
+import { Collapse } from "./Collapse";
 import grassIcon from "./assets/game-icons/grass.png";
 import commandIcon from "./assets/game-icons/command.png";
 
@@ -400,85 +400,94 @@ export function DownloadPanel({
           </div>
         </section>
       )}
-      {section === "favorites" ? (
-        <Favorites />
-      ) : section === "NeoForge" ? (
-        <LoaderCatalog api={api} loader={section} />
-      ) : community ? (
-        <CommunityCatalog
-          api={api}
-          key={section}
-          label={community}
-          query={query}
-          setQuery={setQuery}
-        />
-      ) : section !== "minecraft" ? (
-        <section className="ce-card">
-          <div className="ce-card-title">{section}</div>
-          <p className="muted">此安装包目录尚未接入。</p>
-        </section>
-      ) : (
-        <>
-          <section className="ce-card ce-catalog-latest">
-            <div className="ce-card-title">最新版本</div>
-            {loading ? (
-              <div className="download-empty">
-                <LoaderCircle className="spin" size={22} />
-                <p>正在获取官方版本目录…</p>
-              </div>
-            ) : latest.length ? (
-              latest.map((entry) => versionRow(entry, true))
-            ) : (
-              <div className="download-empty">
-                <p>
-                  {native ? "暂未获取到版本目录" : "版本目录将在桌面应用中显示"}
-                </p>
-                <button
-                  className="ce-button"
-                  disabled={!native || loading}
-                  onClick={() => void loadCatalog(true)}
-                >
-                  <RefreshCw size={14} />
-                  重新获取
-                </button>
-              </div>
-            )}
+      <div className="ce-page-enter" key={section}>
+        {section === "favorites" ? (
+          <Favorites />
+        ) : installerPages.includes(section) ? (
+          <LoaderCatalog
+            key={section}
+            api={api}
+            loader={section}
+            catalog={catalog}
+            catalogLoading={loading}
+          />
+        ) : community ? (
+          <CommunityCatalog
+            api={api}
+            key={section}
+            label={community}
+            query={query}
+            setQuery={setQuery}
+          />
+        ) : section !== "minecraft" ? (
+          <section className="ce-card">
+            <div className="ce-card-title">{section}</div>
+            <p className="muted">此安装包目录尚未接入。</p>
           </section>
-          {groups.map((group) => (
-            <section className="ce-card ce-version-group" key={group.id}>
-              <button
-                className="ce-version-group-toggle"
-                onClick={() =>
-                  setExpanded((old) =>
-                    old.includes(group.id)
-                      ? old.filter((id) => id !== group.id)
-                      : [...old, group.id],
-                  )
-                }
-                aria-expanded={expanded.includes(group.id)}
-              >
-                <span>
-                  {group.title} ({group.entries.length})
-                </span>
-                {expanded.includes(group.id) ? (
-                  <ChevronUp size={19} />
-                ) : (
-                  <ChevronDown size={19} />
-                )}
-              </button>
-              {expanded.includes(group.id) && (
-                <div className="ce-version-group-list">
-                  {group.entries.length ? (
-                    group.entries.map((entry) => versionRow(entry))
-                  ) : (
-                    <p className="muted">暂无版本</p>
-                  )}
+        ) : (
+          <>
+            <section className="ce-card ce-catalog-latest">
+              <div className="ce-card-title">最新版本</div>
+              {loading ? (
+                <div className="download-empty">
+                  <LoaderCircle className="spin" size={22} />
+                  <p>正在获取官方版本目录…</p>
+                </div>
+              ) : latest.length ? (
+                latest.map((entry) => versionRow(entry, true))
+              ) : (
+                <div className="download-empty">
+                  <p>
+                    {native
+                      ? "暂未获取到版本目录"
+                      : "版本目录将在桌面应用中显示"}
+                  </p>
+                  <button
+                    className="ce-button"
+                    disabled={!native || loading}
+                    onClick={() => void loadCatalog(true)}
+                  >
+                    <RefreshCw size={14} />
+                    重新获取
+                  </button>
                 </div>
               )}
             </section>
-          ))}
-        </>
-      )}
+            {groups.map((group) => (
+              <section className="ce-card ce-version-group" key={group.id}>
+                <button
+                  className="ce-version-group-toggle"
+                  onClick={() =>
+                    setExpanded((old) =>
+                      old.includes(group.id)
+                        ? old.filter((id) => id !== group.id)
+                        : [...old, group.id],
+                    )
+                  }
+                  aria-expanded={expanded.includes(group.id)}
+                >
+                  <span>
+                    {group.title} ({group.entries.length})
+                  </span>
+                  <ChevronDown
+                    size={19}
+                    className={`ce-disclosure-arrow ${expanded.includes(group.id) ? "is-open" : ""}`}
+                  />
+                </button>
+                <Collapse open={expanded.includes(group.id)}>
+                  <div className="ce-version-group-list">
+                    {group.entries.length ? (
+                      group.entries.map((entry) => versionRow(entry))
+                    ) : (
+                      <p className="muted">暂无版本</p>
+                    )}
+                  </div>
+                </Collapse>
+              </section>
+            ))}
+          </>
+        )}
+      </div>
     </>
   );
 }
@@ -512,8 +521,8 @@ function CommunityCatalog({
   const [version, setVersion] = useState("任意");
   const [loader, setLoader] = useState("任意");
   const [request, setRequest] = useState<Record<string, unknown>>({
-    query: "",
-    sort: "downloads",
+    query,
+    sort: query.trim() ? "relevance" : "downloads",
   });
   const [hits, setHits] = useState<ModrinthHit[]>([]);
   const [loading, setLoading] = useState(false);
@@ -521,12 +530,21 @@ function CommunityCatalog({
   const apiRef = useRef(api);
   apiRef.current = api;
   useEffect(() => {
-    if (label !== "模组") return;
+    if (label === "世界") return;
     let disposed = false;
     setLoading(true);
     setError("");
     apiRef
-      .current<{ hits: ModrinthHit[] }>("modrinth_search", request)
+      .current<{ hits: ModrinthHit[] }>("modrinth_search", {
+        ...request,
+        projectType: {
+          模组: "mod",
+          整合包: "modpack",
+          数据包: "datapack",
+          资源包: "resourcepack",
+          光影包: "shader",
+        }[label],
+      })
       .then((result) => {
         if (!disposed) setHits(result.hits);
       })
@@ -728,7 +746,7 @@ function CommunityCatalog({
         {loading ? (
           <div className="download-empty">
             <LoaderCircle size={24} className="spin" />
-            <p>正在获取模组目录…</p>
+            <p>正在获取{label}目录…</p>
           </div>
         ) : error ? (
           <div className="download-empty" role="alert">
@@ -738,13 +756,13 @@ function CommunityCatalog({
               重试
             </button>
           </div>
-        ) : label !== "模组" || !hits.length ? (
+        ) : !hits.length ? (
           <div className="download-empty">
             <Search size={30} strokeWidth={1.3} />
             <p>
-              {label !== "模组"
-                ? `${label}目录尚未接入。`
-                : "没有符合条件的模组"}
+              {label === "世界"
+                ? "世界目录尚未接入。"
+                : `没有符合条件的${label}`}
             </p>
           </div>
         ) : (
@@ -764,7 +782,7 @@ function CommunityCatalog({
               <article
                 className="ce-mod-row"
                 key={hit.project_id}
-                title="模组安装尚未开放"
+                title={`${label}安装尚未开放`}
               >
                 {icon ? (
                   <img

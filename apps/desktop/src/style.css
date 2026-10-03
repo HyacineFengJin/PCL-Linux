@@ -26,7 +26,9 @@ button {
   transition:
     background 0.12s,
     color 0.12s,
-    border-color 0.12s;
+    border-color 0.16s,
+    box-shadow 0.16s,
+    transform 0.16s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 button:disabled {
   cursor: default;
@@ -2262,4 +2264,69 @@ button.resource-row:hover {
   .extra-two {
     grid-template-columns: 1fr;
   }
+}
+
+/* Small motion cues preserve the reference layout and respect reduced motion. */
+.ce-page-enter {
+  animation: ce-page-enter 200ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+}
+.ce-main-page:empty {
+  display: none;
+}
+@keyframes ce-page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.ce-collapse-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  visibility: hidden;
+  transition:
+    grid-template-rows 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    visibility 220ms;
+}
+.ce-collapse-panel.is-open {
+  grid-template-rows: 1fr;
+  visibility: visible;
+}
+.ce-collapse-panel-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+.ce-disclosure-arrow {
+  transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.ce-disclosure-arrow.is-open {
+  transform: rotate(180deg);
+}
+.ce-button:not(:disabled):active,
+.icon-button:not(:disabled):active {
+  transform: scale(0.97);
+}
+.side-item {
+  transition:
+    background 160ms,
+    color 160ms;
+}
+.ce-loader-icon {
+  display: grid;
+  place-items: center;
+  color: #76869b;
+}
+.ce-loader-error {
+  text-align: center;
+}
+.ce-loader-entry small {
+  margin-top: 3px;
+  font-size: 12px;
+}
+
+.ce-loader-intro .ce-card-title {
+  margin-bottom: 10px;
 }

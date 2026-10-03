@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowRight, ChevronDown, PlusCircle } from "lucide-react";
 import "./settings-panel.css";
+import { Collapse } from "./Collapse";
 
 type Settings = {
   root: string;
@@ -249,9 +250,12 @@ export function SettingsPanel({
           aria-expanded={advanced}
         >
           <h2 className="ce-card-title">高级启动选项</h2>
-          <ChevronDown className={advanced ? "is-open" : ""} size={20} />
+          <ChevronDown
+            className={`ce-disclosure-arrow ${advanced ? "is-open" : ""}`}
+            size={20}
+          />
         </button>
-        {advanced && (
+        <Collapse open={advanced}>
           <div className="ce-advanced-content">
             <Field label="渲染器" value="游戏默认" />
             <Field label="JVM 参数头部" value={jvm} multiline />
@@ -279,16 +283,16 @@ export function SettingsPanel({
               ))}
             </div>
           </div>
-        )}
+        </Collapse>
       </section>
-      {advanced && (
+      <Collapse open={advanced}>
         <div className="ce-settings-footer">
           <button className="ce-button" onClick={onInstances}>
             <ArrowRight size={20} />
             实例独立设置
           </button>
         </div>
-      )}
+      </Collapse>
     </div>
   );
 }

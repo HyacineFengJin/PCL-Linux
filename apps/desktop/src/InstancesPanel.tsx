@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import {
   Box,
   ChevronDown,
-  ChevronUp,
   Search,
   ArrowDownUp,
   Flame,
@@ -17,6 +16,7 @@ import {
   Settings as SettingsIcon,
   Signal,
 } from "lucide-react";
+import { Collapse } from "./Collapse";
 import commandIcon from "./assets/game-icons/command.png";
 import lampTexture from "./assets/game-icons/redstone-lamp.png";
 import grassIcon from "./assets/game-icons/grass.png";
@@ -110,9 +110,12 @@ export function InstanceSelection({
               <strong>
                 {group === "Vanilla" ? "原版" : group} 实例 ({entries.length})
               </strong>
-              {isOpen ? <ChevronUp size={17} /> : <ChevronDown size={17} />}
+              <ChevronDown
+                size={17}
+                className={`ce-disclosure-arrow ${isOpen ? "is-open" : ""}`}
+              />
             </button>
-            {isOpen && (
+            <Collapse open={isOpen}>
               <div className="instance-group-list">
                 {entries.map((v) => (
                   <button
@@ -129,7 +132,7 @@ export function InstanceSelection({
                   </button>
                 ))}
               </div>
-            )}
+            </Collapse>
           </section>
         );
       })}
