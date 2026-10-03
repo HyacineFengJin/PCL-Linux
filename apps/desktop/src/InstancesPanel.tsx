@@ -15,8 +15,18 @@ import {
   Play,
   Settings as SettingsIcon,
   Signal,
+  Info,
+  FolderOpen,
+  CircleMinus,
+  CircleCheck,
+  Trash2,
+  Heart,
+  Share2,
+  Upload,
+  X,
 } from "lucide-react";
 import { Collapse } from "./Collapse";
+import { InstanceOperations } from "./InstanceOperations";
 import commandIcon from "./assets/game-icons/command.png";
 import lampTexture from "./assets/game-icons/redstone-lamp.png";
 import grassIcon from "./assets/game-icons/grass.png";
@@ -27,8 +37,8 @@ import type { Api, Instance, Settings } from "./types";
 export const instancePages = [
   { id: "overview", label: "概览", group: "游戏本体", icon: Blocks },
   { id: "settings", label: "设置", icon: null },
-  { id: "modify", label: "修改", icon: null, unavailable: true },
-  { id: "export", label: "导出", icon: Box, unavailable: true },
+  { id: "modify", label: "修改", icon: null },
+  { id: "export", label: "导出", icon: Box },
   { id: "saves", label: "存档", group: "游戏资源", icon: Globe },
   { id: "screenshots", label: "截图", icon: Image },
   { id: "mods", label: "模组", icon: Puzzle },
@@ -151,6 +161,7 @@ export function InstancePanel({
   onOpen,
   onInspect,
   onNotify,
+  onResourceDetails,
   disabled,
 }: {
   instance: Instance;
@@ -161,6 +172,7 @@ export function InstancePanel({
   onOpen: (kind: string) => void;
   onInspect: () => void;
   onNotify: (s: string) => void;
+  onResourceDetails?: (resource: LocalResourceDetails) => void;
   disabled: boolean;
 }) {
   const [memory, setMemory] = useState(
@@ -495,16 +507,21 @@ export function InstancePanel({
     );
   }
   if (section === "server") return <ServerPanel id={instance.id} api={api} />;
+  if (section === "modify" || section === "export")
+    return (
+      <InstanceOperations instance={instance} section={section} api={api} />
+    );
   return (
     <ResourcePanel
       id={instance.id}
       section={section}
       api={api}
       onOpen={onOpen}
+      onResourceDetails={onResourceDetails}
     />
   );
 }
-type Resource = {
+export type LocalResourceDetails = {
   name: string;
   path: string;
   enabled: boolean;
@@ -512,29 +529,39 @@ type Resource = {
   description?: string;
   file_name?: string;
   icon?: string;
+  kind: string;
 };
+type Resource = Omit<LocalResourceDetails, "kind">;
 function ResourcePanel({
   id,
   section,
   api,
   onOpen,
+  onResourceDetails,
 }: {
   id: string;
   section: string;
   api: Api;
   onOpen: (s: string) => void;
+  onResourceDetails?: (resource: LocalResourceDetails) => void;
 }) {
   const [entries, setEntries] = useState<Resource[]>([]),
     [query, setQuery] = useState(""),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true),
-    [descending, setDescending] = useState(false);
+    [descending, setDescending] = useState(false),
+    [filter, setFilter] = useState<"all" | "updates">("all"),
+    [selected, setSelected] = useState<string[]>([]),
+    [detail, setDetail] = useState<Resource | null>(null);
   useEffect(() => {
     let live = true;
     setLoading(true);
     setEntries([]);
     setError("");
     setQuery("");
+    setSelected([]);
+    setFilter("all");
+    setDetail(null);
     api<Resource[]>("instance_resources", { id, kind: section })
       .then((v) => {
         if (live) setEntries(v);
@@ -549,6 +576,14 @@ function ResourcePanel({
       live = false;
     };
   }, [id, section, api]);
+  useEffect(() => {
+    if (!detail) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDetail(null);
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [detail]);
   const filtered = entries
     .filter((v) =>
       [v.name, v.file_name, v.description].some((value) =>
@@ -558,6 +593,21 @@ function ResourcePanel({
     .sort(
       (a, b) => a.name.localeCompare(b.name, "zh-CN") * (descending ? -1 : 1),
     );
+  const selectedEntries = entries.filter((entry) =>
+    selected.includes(entry.path),
+  );
+  const allVisibleSelected =
+    filtered.length > 0 &&
+    filtered.every((entry) => selected.includes(entry.path));
+  function toggleSelection(path: string) {
+    setSelected((old) =>
+      old.includes(path) ? old.filter((v) => v !== path) : [...old, path],
+    );
+  }
+  function openDetails(resource: Resource) {
+    if (onResourceDetails) onResourceDetails({ ...resource, kind: section });
+    else setDetail(resource);
+  }
   if (!loading && !error && !entries.length)
     return (
       <div className="ce-state-stage">
@@ -580,7 +630,7 @@ function ResourcePanel({
       </div>
     );
   return (
-    <>
+    <div className="ce-local-resources">
       <label className="ce-card ce-searchbar">
         <Search size={17} />
         <input
@@ -600,8 +650,20 @@ function ResourcePanel({
         <button className="ce-button" disabled title={notReady}>
           下载新资源
         </button>
-        <button className="ce-button" disabled title={notReady}>
-          全选
+        <button
+          className="ce-button"
+          disabled={
+            loading || !!error || !filtered.length || filter === "updates"
+          }
+          onClick={() =>
+            setSelected((old) =>
+              allVisibleSelected
+                ? old.filter((path) => !filtered.some((v) => v.path === path))
+                : [...new Set([...old, ...filtered.map((v) => v.path)])],
+            )
+          }
+        >
+          {allVisibleSelected ? "取消全选" : "全选"}
         </button>
         <button className="ce-button" disabled title={notReady}>
           导出信息
@@ -610,12 +672,32 @@ function ResourcePanel({
       <section className="ce-card resource-list">
         <div className="resource-list-heading">
           <div className="resource-tabs">
-            <span className="ce-pill">全部 ({entries.length})</span>
-            <button disabled title="模组更新检测尚未开放">
-              可更新
+            <button
+              className={filter === "all" ? "ce-pill" : ""}
+              aria-pressed={filter === "all"}
+              onClick={() => setFilter("all")}
+            >
+              全部 ({entries.length})
             </button>
+            {section === "mods" && (
+              <button
+                className={filter === "updates" ? "ce-pill" : ""}
+                aria-pressed={filter === "updates"}
+                onClick={() => {
+                  setFilter("updates");
+                  setSelected([]);
+                }}
+              >
+                可更新
+              </button>
+            )}
           </div>
-          <button onClick={() => setDescending(!descending)}>
+          <button
+            onClick={() => setDescending(!descending)}
+            title={
+              descending ? "当前降序，点击改为升序" : "当前升序，点击改为降序"
+            }
+          >
             <ArrowDownUp size={17} />
             排序：资源名称
           </button>
@@ -626,39 +708,184 @@ function ResourcePanel({
           <p className="ce-empty" role="alert">
             {error}
           </p>
+        ) : filter === "updates" ? (
+          <div className="ce-resource-updates-state" role="status">
+            <strong>模组更新检测尚未开放</strong>
+            <p>暂时无法判断哪些模组可更新。</p>
+          </div>
         ) : !filtered.length ? (
           <p className="ce-empty">没有找到资源</p>
         ) : (
-          filtered.map((v) => (
-            <div
-              className={
-                "resource-row " + (!v.enabled ? "resource-disabled" : "")
-              }
-              key={v.path}
-            >
-              <span className="resource-icon">
-                {v.icon ? (
-                  <img src={v.icon} alt="" />
-                ) : (
-                  <Box size={29} strokeWidth={1.6} />
-                )}
-              </span>
-              <div className="ce-resource-text">
-                <strong>
-                  {v.name}
-                  {v.version && <small> | {v.version}</small>}
-                </strong>
-                <small>
-                  {v.file_name || v.name}
-                  {v.description ? `: ${v.description}` : ""}
-                </small>
-                {!v.enabled && <small>已禁用</small>}
+          <div role="listbox" aria-label="本地资源" aria-multiselectable="true">
+            {filtered.map((v) => (
+              <div
+                className={
+                  "resource-row ce-local-resource-row " +
+                  (!v.enabled ? "resource-disabled " : "") +
+                  (selected.includes(v.path) ? "is-selected" : "")
+                }
+                key={v.path}
+                role="option"
+                tabIndex={0}
+                aria-selected={selected.includes(v.path)}
+                onClick={() => toggleSelection(v.path)}
+                onKeyDown={(event) => {
+                  if (
+                    event.target === event.currentTarget &&
+                    (event.key === "Enter" || event.key === " ")
+                  ) {
+                    event.preventDefault();
+                    toggleSelection(v.path);
+                  }
+                }}
+              >
+                <span className="resource-icon">
+                  {v.icon ? (
+                    <img src={v.icon} alt="" />
+                  ) : (
+                    <Box size={29} strokeWidth={1.6} />
+                  )}
+                </span>
+                <div className="ce-resource-text">
+                  <strong>
+                    {v.name}
+                    {v.version && <small> | {v.version}</small>}
+                  </strong>
+                  <small>
+                    {v.file_name || v.name}
+                    {v.description ? `: ${v.description}` : ""}
+                  </small>
+                  {!v.enabled && <small>已禁用</small>}
+                </div>
+                <div
+                  className="ce-resource-hover-actions"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <span className="ce-resource-action-tip" data-tooltip="详情">
+                    <button
+                      aria-label={v.name + "：详情"}
+                      onClick={() => openDetails(v)}
+                    >
+                      <Info size={15} />
+                    </button>
+                  </span>
+                  <span
+                    className="ce-resource-action-tip"
+                    data-tooltip="打开文件位置"
+                  >
+                    <button
+                      aria-label={v.name + "：打开所在文件夹"}
+                      onClick={() => onOpen(section)}
+                    >
+                      <FolderOpen size={15} />
+                    </button>
+                  </span>
+                  <span
+                    className="ce-resource-action-tip"
+                    data-tooltip={
+                      (v.enabled ? "禁用" : "启用") + "（尚未开放）"
+                    }
+                  >
+                    <button
+                      disabled
+                      aria-label={v.name + (v.enabled ? "：禁用" : "：启用")}
+                    >
+                      {v.enabled ? (
+                        <CircleMinus size={15} />
+                      ) : (
+                        <CircleCheck size={15} />
+                      )}
+                    </button>
+                  </span>
+                  <span
+                    className="ce-resource-action-tip"
+                    data-tooltip="删除（尚未开放）"
+                  >
+                    <button disabled aria-label={v.name + "：删除"}>
+                      <Trash2 size={15} />
+                    </button>
+                  </span>
+                </div>
               </div>
-            </div>
-          ))
+            ))}
+          </div>
         )}
       </section>
-    </>
+      {selectedEntries.length > 0 && (
+        <div className="ce-resource-selection-bar" aria-label="所选资源操作">
+          <div className="ce-resource-selection-count">
+            已选择 {selectedEntries.length} 个文件
+          </div>
+          <div className="ce-resource-selection-actions">
+            <button disabled title="模组更新尚未开放">
+              <Upload size={16} />
+              更新
+            </button>
+            <button disabled title="启用资源尚未开放">
+              <CircleCheck size={16} />
+              启用
+            </button>
+            <button disabled title="禁用资源尚未开放">
+              <CircleMinus size={16} />
+              禁用
+            </button>
+            <button disabled title={notReady}>
+              <Heart size={16} />
+              收藏
+            </button>
+            <button disabled title={notReady}>
+              <Share2 size={16} />
+              分享所选
+            </button>
+            <button disabled title="删除资源尚未开放">
+              <Trash2 size={16} />
+              删除
+            </button>
+            <button onClick={() => setSelected([])}>
+              <X size={16} />
+              取消选择
+            </button>
+          </div>
+        </div>
+      )}
+      {detail && (
+        <div
+          className="ce-local-detail-backdrop"
+          onClick={() => setDetail(null)}
+        >
+          <section
+            className="ce-card ce-local-detail"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ce-local-detail-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="ce-local-detail-heading">
+              <h2 id="ce-local-detail-title">资源详情</h2>
+              <button
+                autoFocus
+                aria-label="关闭资源详情"
+                onClick={() => setDetail(null)}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <strong>{detail.name}</strong>
+            {detail.version && <p>版本：{detail.version}</p>}
+            {detail.description && <p>{detail.description}</p>}
+            <p>文件：{detail.file_name || detail.name}</p>
+            <p>状态：{detail.enabled ? "已启用" : "已禁用"}</p>
+            <p className="ce-local-detail-path">{detail.path}</p>
+            <button
+              className="ce-button primary"
+              onClick={() => onOpen(section)}
+            >
+              打开所在文件夹
+            </button>
+          </section>
+        </div>
+      )}
+    </div>
   );
 }
 

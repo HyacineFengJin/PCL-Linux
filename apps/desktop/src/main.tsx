@@ -1,3 +1,4 @@
+import "./style.css";
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -52,8 +53,20 @@ import {
   ArrowRight,
   Link2,
   Waypoints,
+  ShieldCheck,
+  Network,
+  Unplug,
+  Shirt,
+  Pencil,
+  Users,
+  UserPlus,
+  Pickaxe,
 } from "lucide-react";
-import { DownloadPanel, idleDownload } from "./DownloadPanel";
+import {
+  DownloadPanel,
+  idleDownload,
+  type DownloadStatus,
+} from "./DownloadPanel";
 import defaultSkin from "./assets/game-icons/steve.png";
 import { Toolbox } from "./Toolbox";
 import { SettingsPanel } from "./SettingsPanel";
@@ -63,8 +76,10 @@ import {
   instancePages,
   InstanceIcon,
 } from "./InstancesPanel";
+import { ResourceDetails, type ResourceSummary } from "./ResourceDetails";
+import { TaskManager, TaskStatistics, useDownloadSpeed } from "./TaskManager";
+import "./account-interactions.css";
 import { ExtraSettings } from "./ExtraSettings";
-import "./style.css";
 type Instance = {
   id: string;
   minecraft_version: string;
@@ -136,6 +151,10 @@ let preview:
       launcher_logs?: unknown;
       instance_servers?: unknown;
       contributors?: unknown;
+      resource_details?: Record<string, unknown>;
+      resource_dependencies?: Record<string, unknown>;
+      loader_candidates?: Record<string, unknown>;
+      download_status?: DownloadStatus;
     })
   | undefined;
 async function api<T>(
@@ -167,6 +186,21 @@ async function api<T>(
           ] || []
     ) as T;
   }
+  if (command === "loader_candidates")
+    return (preview!.loader_candidates?.[
+      `${args?.loader}:${args?.minecraft}`
+    ] || []) as T;
+  if (command === "resource_details") {
+    const item = preview!.resource_details?.[String(args?.projectId)];
+    if (!item) throw new Error("此资源的详情预览数据尚未准备");
+    return item as T;
+  }
+  if (command === "resource_dependencies")
+    return (preview!.resource_dependencies?.[String(args?.versionId)] || {
+      version_id: args?.versionId,
+      dependencies: [],
+      truncated: false,
+    }) as T;
   if (command === "upstream_contributors")
     return (preview!.contributors || []) as T;
   if (command === "project_feedback") return [] as T;
@@ -181,7 +215,8 @@ async function api<T>(
   if (command === "system_info") return preview!.system as T;
   if (command === "java_list") return (preview!.java || []) as T;
   if (command === "instance_resources") return (preview!.resources || []) as T;
-  if (command === "download_status") return idleDownload as T;
+  if (command === "download_status")
+    return (preview!.download_status || idleDownload) as T;
   if (command === "save_settings") {
     preview!.settings = args!.settings as Settings;
     return undefined as T;
@@ -229,18 +264,42 @@ function App() {
   const [data, setData] = useState<State | null>(null),
     [error, setError] = useState(""),
     [tab, setTab] = useState("launch"),
-    [dialog, setDialog] = useState<"versions" | "instance" | "accounts" | null>(
-      null,
-    ),
+    [dialog, setDialog] = useState<
+      "versions" | "instance" | "accounts" | "account-type" | null
+    >(null),
     [query, setQuery] = useState(""),
     [toast, setToast] = useState(""),
     [inspection, setInspection] = useState<Inspection | null>(null),
     [checking, setChecking] = useState(false),
     [draft, setDraft] = useState<Settings | null>(null),
     [override, setOverride] = useState(6);
-  const [screen, setScreen] = useState<"home" | "versions" | "instance">(
+  const [screen, setScreen] = useState<
+    "home" | "versions" | "instance" | "resource" | "tasks"
+  >("home");
+  const [resource, setResource] = useState<ResourceSummary | null>(null);
+  const [resourceOrigin, setResourceOrigin] = useState<"home" | "instance">(
     "home",
   );
+  const [taskOrigin, setTaskOrigin] = useState<
+    "home" | "versions" | "instance" | "resource"
+  >("home");
+  const [downloadStatus, setDownloadStatus] =
+    useState<DownloadStatus>(idleDownload);
+  const speed = useDownloadSpeed(downloadStatus);
+  const [accountType, setAccountType] = useState("");
+  const [profileList, setProfileList] = useState(false);
+  function showResource(
+    next: ResourceSummary,
+    origin: "home" | "instance" = "home",
+  ) {
+    setResource(next);
+    setResourceOrigin(origin);
+    setScreen("resource");
+  }
+  function showTasks() {
+    if (screen !== "tasks") setTaskOrigin(screen);
+    setScreen("tasks");
+  }
   const [instancePage, setInstancePage] = useState("overview");
   const [settingsPage, setSettingsPage] = useState("launch");
   const [downloadPage, setDownloadPage] = useState("minecraft");
@@ -529,7 +588,11 @@ function App() {
         (screen !== "home"
           ? screen === "versions"
             ? "selection-shell"
-            : "instance-shell"
+            : screen === "resource"
+              ? "resource-shell"
+              : screen === "tasks"
+                ? "tasks-shell"
+                : "instance-shell"
           : `${tab}-shell`)
       }
     >
@@ -572,12 +635,27 @@ function App() {
             </nav>
           </>
         ) : (
-          <button className="back-heading" onClick={() => setScreen("home")}>
+          <button
+            className="back-heading"
+            onClick={() =>
+              setScreen(
+                screen === "resource"
+                  ? resourceOrigin
+                  : screen === "tasks"
+                    ? taskOrigin
+                    : "home",
+              )
+            }
+          >
             <ArrowLeft size={20} />
             <span>
               {screen === "versions"
                 ? "实例选择"
-                : `实例设置 - ${selected?.id || ""}`}
+                : screen === "resource"
+                  ? `资源下载 - ${resource?.title || ""}`
+                  : screen === "tasks"
+                    ? "任务管理"
+                    : `实例设置 - ${selected?.id || ""}`}
             </span>
           </button>
         )}
@@ -621,7 +699,9 @@ function App() {
                 : "section-sidebar"
             }
           >
-            {screen === "versions" ? (
+            {screen === "tasks" ? (
+              <TaskStatistics status={downloadStatus} speed={speed} />
+            ) : screen === "resource" ? null : screen === "versions" ? (
               <>
                 <div className="section-label">文件夹列表</div>
                 <button
@@ -668,25 +748,127 @@ function App() {
               )
             ) : tab === "launch" ? (
               <>
-                <button
-                  className="account-panel"
-                  onClick={() => setDialog("accounts")}
-                  aria-label="管理账号"
-                >
-                  <span
-                    className="avatar"
-                    aria-hidden="true"
-                    style={{
-                      backgroundImage: `url(${defaultSkin}),url(${defaultSkin})`,
-                    }}
-                  />
-                  <span className="account-heading">
-                    {activeAccount?.profile.name || data.settings.player}
-                  </span>
-                  <span className="account-kind">
-                    {activeAccount ? "正版验证" : "离线登录"}
-                  </span>
-                </button>
+                {profileList ? (
+                  <div className="ce-profile-list">
+                    <button
+                      className="ce-profile-list-row"
+                      disabled={!!busy}
+                      onClick={() => {
+                        if (native)
+                          void authAction("auth_select", { id: null });
+                        setProfileList(false);
+                      }}
+                    >
+                      <span
+                        className="ce-profile-list-avatar"
+                        style={{
+                          backgroundImage: `url(${defaultSkin}),url(${defaultSkin})`,
+                        }}
+                      />
+                      <span>
+                        <strong>{data.settings.player}</strong>
+                        <small>离线验证</small>
+                      </span>
+                    </button>
+                    {data.auth.accounts.map((account) => (
+                      <button
+                        key={account.profile.id}
+                        className="ce-profile-list-row"
+                        disabled={!!busy}
+                        onClick={() => {
+                          if (native)
+                            void authAction("auth_select", {
+                              id: account.profile.id,
+                            });
+                          setProfileList(false);
+                        }}
+                      >
+                        <span
+                          className="ce-profile-list-avatar"
+                          style={{
+                            backgroundImage: `url(${defaultSkin}),url(${defaultSkin})`,
+                          }}
+                        />
+                        <span>
+                          <strong>{account.profile.name}</strong>
+                          <small>正版验证</small>
+                        </span>
+                      </button>
+                    ))}
+                    <button
+                      className="ce-button ce-profile-create"
+                      title="新建档案"
+                      aria-label="新建档案"
+                      onClick={() => {
+                        setAccountType("");
+                        setDialog("account-type");
+                      }}
+                    >
+                      <UserPlus size={16} />
+                    </button>
+                  </div>
+                ) : data.status.stage !== "preparing" ? (
+                  <div className="ce-profile-current">
+                    <button
+                      className="account-panel"
+                      onClick={() => setDialog("accounts")}
+                      aria-label="管理账号"
+                    >
+                      <span
+                        className="avatar"
+                        aria-hidden="true"
+                        style={{
+                          backgroundImage: `url(${defaultSkin}),url(${defaultSkin})`,
+                        }}
+                      />
+                      <span className="account-heading">
+                        {activeAccount?.profile.name || data.settings.player}
+                      </span>
+                      <span className="account-kind">
+                        {activeAccount ? "正版验证" : "离线登录"}
+                      </span>
+                    </button>
+                    <div className="ce-profile-actions">
+                      <button
+                        className="icon-button"
+                        title="获取与修改皮肤（尚未开放）"
+                        aria-label="获取与修改皮肤"
+                        disabled
+                      >
+                        <Shirt size={17} />
+                      </button>
+                      <button
+                        className="icon-button"
+                        title="修改信息"
+                        aria-label="修改信息"
+                        onClick={() => setDialog("accounts")}
+                      >
+                        <Pencil size={17} />
+                      </button>
+                      <button
+                        className="icon-button"
+                        title="选择档案"
+                        aria-label="选择档案"
+                        onClick={() => setProfileList(true)}
+                      >
+                        <Users size={17} />
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+                {data.status.stage === "preparing" && (
+                  <div className="ce-launch-preparing">
+                    <Pickaxe size={30} />
+                    <h2>正在启动</h2>
+                    <p>{data.status.message}</p>
+                    <small>
+                      验证方式：{activeAccount ? "正版验证" : "离线验证"}
+                    </small>
+                    <div className="download-progress indeterminate">
+                      <i />
+                    </div>
+                  </div>
+                )}
                 <div className="launch-controls">
                   <button
                     className="launch-button"
@@ -700,7 +882,7 @@ function App() {
                     <span>
                       {busy
                         ? data.status.stage === "preparing"
-                          ? "正在启动"
+                          ? "取消"
                           : "结束游戏"
                         : "启动游戏"}
                     </span>
@@ -762,13 +944,30 @@ function App() {
                 gameBusy={!!busy}
                 onInstalled={load}
                 onBusyChange={setDownloadBusy}
+                onStatusChange={setDownloadStatus}
+                onResourceDetails={showResource}
+                onTaskStart={showTasks}
               />
             </div>
             <div
               key={`${screen}:${tab}:${instancePage}:${settingsPage}`}
               className="ce-page-enter ce-main-page"
             >
-              {screen === "versions" ? (
+              {screen === "resource" && resource ? (
+                <ResourceDetails
+                  key={`${resource.source}:${resource.project_id || resource.local_path}`}
+                  api={api}
+                  resource={resource}
+                  onNotify={notify}
+                />
+              ) : screen === "tasks" ? (
+                <TaskManager
+                  api={api}
+                  status={downloadStatus}
+                  native={native}
+                  onNotify={notify}
+                />
+              ) : screen === "versions" ? (
                 <InstanceSelection
                   instances={data.instances}
                   query={query}
@@ -786,6 +985,28 @@ function App() {
                   onOpen={open}
                   onInspect={launch}
                   onNotify={notify}
+                  onResourceDetails={(r) =>
+                    showResource(
+                      {
+                        project_id: "",
+                        title: r.name,
+                        description: r.description || "",
+                        icon_url: r.icon || null,
+                        categories: [],
+                        display_categories: [],
+                        versions: [selected.minecraft_version],
+                        source: "local",
+                        file_name: r.file_name,
+                        local_path: r.path,
+                        local_version: r.version,
+                        enabled: r.enabled,
+                        local_minecraft_version: selected.minecraft_version,
+                        local_loader: selected.loader,
+                        project_type: r.kind === "mods" ? "mod" : r.kind,
+                      },
+                      "instance",
+                    )
+                  }
                   disabled={!!busy || downloadBusy}
                 />
               ) : screen === "home" ? (
@@ -832,6 +1053,65 @@ function App() {
               ) : null}
             </div>
           </main>
+        </div>
+      )}
+      {downloadStatus.stage !== "idle" && screen !== "tasks" && (
+        <button
+          className="ce-task-entry"
+          title="任务管理"
+          aria-label="任务管理"
+          onClick={showTasks}
+        >
+          <Download size={23} />
+        </button>
+      )}
+      {dialog === "account-type" && (
+        <div
+          className="modal-shade"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setDialog(null);
+          }}
+        >
+          <section
+            className="ce-account-type-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="新建档案 - 选择验证类型"
+          >
+            <h2>新建档案 - 选择验证类型</h2>
+            <div className="ce-account-types">
+              {[
+                { id: "premium", name: "正版验证", icon: ShieldCheck },
+                { id: "third-party", name: "第三方验证", icon: Network },
+                { id: "offline", name: "离线验证", icon: Unplug },
+              ].map((item) => (
+                <button
+                  key={item.id}
+                  className={accountType === item.id ? "selected" : ""}
+                  disabled={item.id === "third-party"}
+                  title={
+                    item.id === "third-party" ? "第三方验证尚未接入" : undefined
+                  }
+                  onClick={() => setAccountType(item.id)}
+                >
+                  <item.icon size={24} />
+                  <span>{item.name}</span>
+                </button>
+              ))}
+            </div>
+            <div className="ce-account-type-footer">
+              <button
+                className="ce-button"
+                disabled={!accountType}
+                onClick={() => setDialog("accounts")}
+              >
+                继续
+              </button>
+              <button className="ce-button" onClick={() => setDialog(null)}>
+                取消
+              </button>
+            </div>
+          </section>
         </div>
       )}
       {dialog === "accounts" && data && (

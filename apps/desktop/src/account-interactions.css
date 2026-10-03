@@ -1,0 +1,174 @@
+.ce-profile-actions {
+  display: flex;
+  justify-content: center;
+  gap: 13px;
+  margin-top: -18px;
+  color: #4c5660;
+}
+.ce-profile-actions .icon-button {
+  width: 24px;
+  height: 24px;
+}
+.ce-profile-actions .icon-button:disabled {
+  opacity: 0.35;
+}
+.ce-account-type-modal {
+  width: 400px;
+  max-width: calc(100vw - 40px);
+  padding: 22px;
+  background: #fff;
+  border-radius: 7px;
+  box-shadow: 0 4px 18px #1a243666;
+  color: #343e4b;
+}
+.ce-account-type-modal h2 {
+  font-size: 24px;
+  font-weight: 400;
+  color: #156acd;
+  margin: 0 0 14px;
+  padding: 0 6px 9px;
+  border-bottom: 2px solid #156acd;
+  white-space: nowrap;
+}
+.ce-account-types {
+  margin: 5px 12px 20px;
+}
+.ce-account-types > button {
+  height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  border: 0;
+  background: none;
+  border-radius: 4px;
+  text-align: left;
+  font-size: 14px;
+  padding: 0 8px;
+  color: inherit;
+}
+.ce-account-types > button:hover:not(:disabled),
+.ce-account-types > button.selected {
+  background: #e6f1fc;
+  color: #2078da;
+}
+.ce-account-types > button:disabled {
+  opacity: 0.5;
+}
+.ce-account-type-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin: 8px 8px 0;
+}
+.ce-account-type-footer > .ce-button {
+  min-width: 52px;
+  height: 31px;
+}
+.ce-launch-preparing {
+  margin: 25px 20px 0;
+  text-align: center;
+}
+.ce-launch-preparing > svg {
+  color: #2078da;
+}
+.ce-launch-preparing h2 {
+  font-size: 19px;
+  font-weight: 400;
+}
+.ce-launch-preparing p {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.ce-launch-preparing small {
+  display: block;
+  color: #818b96;
+  margin-bottom: 12px;
+}
+
+.ce-profile-current {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transform: translateY(20px);
+}
+.ce-profile-current .account-panel {
+  flex: none;
+  padding: 0;
+}
+.ce-profile-current .account-panel > * {
+  transform: none;
+}
+.ce-profile-current .ce-profile-actions {
+  margin-top: 18px;
+}
+.ce-profile-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 32px 28px;
+  gap: 12px;
+}
+.ce-profile-list-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  background: none;
+  text-align: left;
+  padding: 5px 10px;
+  border-radius: 4px;
+  color: inherit;
+}
+.ce-profile-list-row:hover:not(:disabled) {
+  background: #e6f1fc;
+}
+.ce-profile-list-avatar {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  background-size: 256px 256px;
+  background-position:
+    -160px -32px,
+    -32px -32px;
+  image-rendering: pixelated;
+  background-repeat: no-repeat;
+}
+.ce-profile-list-row > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ce-profile-list-row strong {
+  font-size: 14px;
+  font-weight: 400;
+}
+.ce-profile-list-row small {
+  font-size: 12px;
+  color: #9299a3;
+}
+.ce-profile-list-row:disabled {
+  opacity: 1;
+}
+.ce-profile-create {
+  align-self: center;
+  width: 45px;
+  height: 32px;
+  color: #2078da;
+  border-color: #bad5fa;
+}
+
+.ce-launch-preparing {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin: 0 20px;
+}
+.ce-launch-preparing .download-progress {
+  width: 100%;
+}

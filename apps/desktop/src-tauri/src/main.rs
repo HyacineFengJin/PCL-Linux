@@ -1,5 +1,6 @@
 mod accounts;
 mod downloads;
+mod resource_details;
 mod ui_catalog;
 mod ui_data;
 use serde::{Deserialize, Serialize};
@@ -540,6 +541,10 @@ fn main() {
             bootstrap,
             ui_catalog::ui_open_link,
             ui_catalog::loader_catalog,
+            ui_catalog::loader_candidates,
+            resource_details::resource_details,
+            resource_details::resource_dependencies,
+            resource_details::resource_open_link,
             ui_catalog::upstream_contributors,
             ui_catalog::project_feedback,
             ui_catalog::launcher_logs,

@@ -12,12 +12,14 @@ use std::{
 #[derive(Clone, Serialize)]
 pub struct DownloadStatus {
     pub stage: String,
+    pub phase: String,
     pub message: String,
     pub version: Option<String>,
     pub completed: u64,
     pub total: u64,
     pub bytes_done: u64,
     pub bytes_total: u64,
+    pub network_bytes: u64,
     pub result: Option<InstallResult>,
 }
 
@@ -25,12 +27,14 @@ impl Default for DownloadStatus {
     fn default() -> Self {
         Self {
             stage: "idle".into(),
+            phase: "idle".into(),
             message: "选择一个版本开始安装".into(),
             version: None,
             completed: 0,
             total: 0,
             bytes_done: 0,
             bytes_total: 0,
+            network_bytes: 0,
             result: None,
         }
     }
@@ -88,6 +92,7 @@ impl Downloads {
             self.cancel.store(false, Ordering::SeqCst);
             *status = DownloadStatus {
                 stage: "preparing".into(),
+                phase: "metadata".into(),
                 message: "正在获取版本信息…".into(),
                 version: Some(id.clone()),
                 ..Default::default()
@@ -111,6 +116,7 @@ impl Downloads {
                     };
                     let mut status = downloads.status.lock().unwrap();
                     status.stage = "complete".into();
+                    status.phase = "complete".into();
                     status.message = message;
                     status.result = Some(result);
                 }
@@ -131,6 +137,7 @@ impl Downloads {
 
     fn progress(&self, progress: Progress) {
         let mut status = self.status.lock().unwrap();
+        status.phase = progress.stage.clone();
         status.stage = if progress.stage == "downloading" {
             "downloading"
         } else {
@@ -144,6 +151,8 @@ impl Downloads {
         status.total = progress.total;
         status.bytes_done = progress.bytes_done;
         status.bytes_total = progress.bytes_total;
+        // Concurrent callbacks can arrive out of order; network transfer counters stay monotonic.
+        status.network_bytes = status.network_bytes.max(progress.network_bytes);
     }
 
     pub fn cancel(&self) {

@@ -1,0 +1,63 @@
+.ce-toolbox .toolbox-generator-title {
+  margin-bottom: 0;
+}
+
+.toolbox-generator .ce-collapse {
+  min-height: 20px;
+  line-height: 20px;
+}
+
+.toolbox-generator-content {
+  margin: 14px 10px 0;
+}
+
+.toolbox-achievement-fields .ce-row {
+  grid-template-columns: 106px minmax(0, 1fr);
+}
+
+.toolbox-achievement-fields .ce-row + .ce-row {
+  margin-top: 10px;
+}
+
+.toolbox-generator-actions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 15px;
+  margin-top: 17px;
+}
+
+.toolbox-generator-actions .ce-button {
+  min-width: 140px;
+}
+
+.toolbox-generator-status {
+  margin: 8px 0 0;
+  color: #9299a3;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.toolbox-avatar-fields {
+  margin-top: 10px;
+}
+
+.toolbox-avatar-fields .ce-row {
+  grid-template-columns: 66px minmax(0, 1fr);
+}
+
+.toolbox-avatar-actions {
+  margin-top: 10px;
+}
+
+@media (max-width: 620px) {
+  .toolbox-generator-content {
+    margin-left: 0;
+    margin-right: 0;
+  }
+
+  .toolbox-achievement-fields .ce-row {
+    grid-template-columns: 96px minmax(0, 1fr);
+  }
+}

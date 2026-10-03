@@ -1,0 +1,144 @@
+.ce-install-selection {
+  padding-bottom: 85px;
+}
+.ce-install-selection .ce-install-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  margin-bottom: 26px;
+}
+.ce-install-name > img {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+}
+.ce-install-name > .ce-field {
+  flex: 1;
+  min-width: 0;
+  font-size: 16px;
+  height: 31px;
+}
+.ce-install-name > .icon-button {
+  margin-right: 8px;
+  color: #8b9299;
+}
+.ce-install-provider {
+  padding: 0 !important;
+  margin-bottom: 12px;
+}
+.ce-install-toggle {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 41px;
+  border: 0;
+  background: none;
+  text-align: left;
+  padding: 0 15px;
+  gap: 14px;
+}
+.ce-install-toggle strong {
+  width: 104px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.ce-install-toggle > span {
+  color: #92969c;
+  flex: 1;
+}
+.ce-install-toggle > svg {
+  margin-left: auto;
+}
+.ce-install-provider.incompatible {
+  opacity: 0.55;
+}
+.ce-install-versions {
+  padding: 0 16px 14px;
+}
+.ce-install-version {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  border-radius: 4px;
+  min-height: 42px;
+  padding: 5px 12px;
+  color: #424b55;
+}
+.ce-install-version > img {
+  width: 28px;
+  height: 30px;
+  object-fit: contain;
+}
+.ce-install-version > span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ce-install-version strong {
+  font-size: 14px;
+  font-weight: 400;
+}
+.ce-install-version small {
+  font-size: 12px;
+  color: #8a929c;
+}
+.ce-install-version:hover:not(:disabled),
+.ce-install-version.selected {
+  background: #e7f1fc;
+  color: #2078da;
+}
+.ce-install-all {
+  font-size: 14px;
+  margin: 15px 10px 3px;
+}
+.ce-pill-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  border: 0;
+  background: #2078da;
+  color: white;
+  border-radius: 30px;
+  height: 42px;
+  min-width: 134px;
+  padding: 0 24px;
+  font-size: 16px;
+  box-shadow: 0 1px 6px #779abd66;
+}
+.ce-pill-action:disabled {
+  opacity: 1;
+}
+.ce-install-action {
+  position: absolute;
+  bottom: 20px;
+  left: 180px;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  pointer-events: none;
+  z-index: 3;
+}
+.ce-install-action > * {
+  pointer-events: auto;
+}
+.ce-install-action > small {
+  padding: 3px 8px;
+  background: #f6f9fccc;
+  border-radius: 4px;
+  color: #737b85;
+}
+
+.ce-install-toggle .ce-disclosure-arrow {
+  transform: rotate(-90deg);
+}
+.ce-install-toggle .ce-disclosure-arrow.is-open {
+  transform: rotate(180deg);
+}

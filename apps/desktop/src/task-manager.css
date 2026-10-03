@@ -1,0 +1,132 @@
+.tasks-shell .body-layout > .section-sidebar {
+  width: 200px;
+  padding: 0 25px;
+}
+.ce-task-statistics {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 90px;
+}
+.ce-task-statistics > div {
+  text-align: center;
+}
+.ce-task-statistics span {
+  display: block;
+  color: #2683eb;
+  font-size: 14px;
+  border-bottom: 2px solid #2683eb;
+  padding: 0 0 8px;
+}
+.ce-task-statistics strong {
+  display: block;
+  font-size: 21px;
+  font-weight: 400;
+  margin-top: 8px;
+  white-space: nowrap;
+}
+.ce-task-statistics > div:last-child {
+  margin-top: 10px;
+}
+.ce-task-card {
+  padding: 12px 16px 18px;
+}
+.ce-task-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 15px;
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+.ce-task-heading > .icon-button {
+  color: #398df0;
+}
+.ce-task-steps > div {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 26px;
+  font-size: 14px;
+}
+.ce-task-step-status {
+  width: 38px;
+  color: #2483ed;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.ce-task-message {
+  margin: 12px 7px 0;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow-wrap: anywhere;
+}
+.ce-task-empty {
+  text-align: center;
+  padding: 35px;
+  color: #8e99a8;
+}
+.ce-task-entry {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  width: 41px;
+  height: 41px;
+  border-radius: 50%;
+  border: 0;
+  background: #2078da;
+  color: #fff;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 1px 7px #527fac66;
+  z-index: 4;
+}
+.resource-shell .body-layout > aside {
+  display: none;
+}
+.ce-community-results .ce-mod-row[role="button"] {
+  cursor: pointer;
+}
+.ce-community-results .ce-mod-row[role="button"]:hover,
+.ce-community-results .ce-mod-row[role="button"]:focus-visible {
+  background: #ddebfc;
+  border-radius: 4px;
+  outline-color: #2782e5;
+}
+
+.ce-community-loading {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  min-height: 280px;
+  padding-top: 64px;
+}
+.ce-community-loading-box {
+  width: 196px;
+  height: 114px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #2582e8;
+  padding: 18px 8px !important;
+}
+.ce-community-loading-box > i {
+  width: 25px;
+  height: 2px;
+  background: #2582e8;
+  margin-top: 4px;
+}
+.ce-community-loading-box > p {
+  font-size: 16px;
+  margin: 10px 0 0;
+  white-space: nowrap;
+}
+.modal-shade:has(.ce-account-type-modal) {
+  background: #0005;
+}

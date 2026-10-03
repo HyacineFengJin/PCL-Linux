@@ -248,6 +248,44 @@ pub async fn loader_catalog(loader: String) -> Result<Vec<LoaderGroup>, String> 
     }
     Ok(groups)
 }
+#[tauri::command]
+pub async fn loader_candidates(loader: String, minecraft: String) -> Result<Vec<String>, String> {
+    if !valid_version(&minecraft) {
+        return Err("无效的 Minecraft 版本".into());
+    }
+    if loader == "Fabric" {
+        #[derive(Deserialize)]
+        struct Loader {
+            version: String,
+        }
+        #[derive(Deserialize)]
+        struct Entry {
+            loader: Loader,
+        }
+        let url = format!("https://meta.fabricmc.net/v2/versions/loader/{minecraft}");
+        let entries: Vec<Entry> = serde_json::from_slice(&get(&url, 2 * 1024 * 1024).await?)
+            .map_err(|e| e.to_string())?;
+        let groups = grouped_versions(
+            entries
+                .into_iter()
+                .map(|e| (minecraft.clone(), e.loader.version)),
+        );
+        return Ok(groups
+            .into_iter()
+            .next()
+            .map(|g| g.versions)
+            .unwrap_or_default());
+    }
+    if !matches!(loader.as_str(), "Forge" | "NeoForge" | "OptiFine") {
+        return Err("此组件的兼容版本目录尚未接入".into());
+    }
+    Ok(loader_catalog(loader)
+        .await?
+        .into_iter()
+        .find(|g| g.minecraft == minecraft)
+        .map(|g| g.versions)
+        .unwrap_or_default())
+}
 #[derive(Serialize)]
 pub struct Contributor {
     login: String,

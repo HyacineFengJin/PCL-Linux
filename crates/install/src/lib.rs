@@ -32,6 +32,7 @@ pub struct Progress {
     pub total: u64,
     pub bytes_done: u64,
     pub bytes_total: u64,
+    pub network_bytes: u64,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct InstallResult {
@@ -223,6 +224,7 @@ impl Installer {
         done: &AtomicU64,
         total: u64,
         bytes: &AtomicU64,
+        network_bytes: &AtomicU64,
         byte_total: u64,
         cb: &(impl Fn(Progress) + Send + Sync),
     ) -> Result<bool> {
@@ -238,6 +240,7 @@ impl Installer {
                 total,
                 bytes_done: bytes.load(Ordering::Relaxed),
                 bytes_total: byte_total,
+                network_bytes: network_bytes.load(Ordering::Relaxed),
             });
             return Ok(false);
         }
@@ -273,6 +276,7 @@ impl Installer {
                     transferred += n as u64;
                     digest.update(&buf[..n]);
                     bytes.fetch_add(n as u64, Ordering::Relaxed);
+                    network_bytes.fetch_add(n as u64, Ordering::Relaxed);
                     cb(Progress {
                         stage: "downloading".into(),
                         message: download_message(&d.relative).into(),
@@ -280,6 +284,7 @@ impl Installer {
                         total,
                         bytes_done: bytes.load(Ordering::Relaxed),
                         bytes_total: byte_total,
+                        network_bytes: network_bytes.load(Ordering::Relaxed),
                     });
                 }
                 if transferred != d.size
@@ -302,6 +307,7 @@ impl Installer {
                         total,
                         bytes_done: bytes.load(Ordering::Relaxed),
                         bytes_total: byte_total,
+                        network_bytes: network_bytes.load(Ordering::Relaxed),
                     });
                     return Ok(true);
                 }
@@ -329,6 +335,7 @@ impl Installer {
             total: 0,
             bytes_done: 0,
             bytes_total: 0,
+            network_bytes: 0,
         });
         let manifest = self.manifest(cancel)?;
         let entry = manifest["versions"]
@@ -511,6 +518,7 @@ impl Installer {
             .ok_or("下载文件总大小超出范围")?;
         let done = AtomicU64::new(0);
         let bytes = AtomicU64::new(0);
+        let network_bytes = AtomicU64::new(0);
         let downloaded = AtomicU64::new(0);
         let next = AtomicU64::new(0);
         let failure = Mutex::new(None);
@@ -531,6 +539,7 @@ impl Installer {
                         &done,
                         total,
                         &bytes,
+                        &network_bytes,
                         byte_total,
                         &on_progress,
                     ) {
@@ -551,6 +560,15 @@ impl Installer {
         }
         check(cancel)?;
         let native_dir = temporary.path().join("natives");
+        on_progress(Progress {
+            stage: "installing".into(),
+            message: "解压运行库并安装游戏".into(),
+            completed: total,
+            total,
+            bytes_done: byte_total,
+            bytes_total: byte_total,
+            network_bytes: network_bytes.load(Ordering::Relaxed),
+        });
         fs::create_dir(&native_dir).map_err(error)?;
         for (path, excludes) in natives {
             check(cancel)?;
@@ -586,6 +604,7 @@ impl Installer {
             total,
             bytes_done: byte_total,
             bytes_total: byte_total,
+            network_bytes: network_bytes.load(Ordering::Relaxed),
         });
         let count = downloaded.load(Ordering::Relaxed);
         Ok(InstallResult {
@@ -718,6 +737,9 @@ mod tests {
             .unwrap();
         assert_eq!(result.java_major, 21);
         assert_eq!(result.files_downloaded, 4);
+        // Network telemetry excludes reused files and includes actual response bodies.
+        let network = progress.lock().unwrap().last().unwrap().network_bytes;
+        assert!(network > 0);
         assert_eq!(
             fs::read(root.path().join("versions/fixture/fixture.jar")).unwrap(),
             b"client"
@@ -727,6 +749,42 @@ mod tests {
         assert!(entries
             .iter()
             .any(|p| p.stage == "downloading" && p.completed == p.total));
+        assert!(entries.iter().any(|p| p.stage == "installing"));
+        let cached_root = tempfile::tempdir().unwrap();
+        for relative in ["libraries", "assets"] {
+            fn copy_tree(source: &Path, target: &Path) {
+                fs::create_dir_all(target).unwrap();
+                for entry in fs::read_dir(source).unwrap() {
+                    let entry = entry.unwrap();
+                    let path = target.join(entry.file_name());
+                    if entry.file_type().unwrap().is_dir() {
+                        copy_tree(&entry.path(), &path);
+                    } else {
+                        fs::copy(entry.path(), path).unwrap();
+                    }
+                }
+            }
+            copy_tree(
+                &root.path().join(relative),
+                &cached_root.path().join(relative),
+            );
+        }
+        let cached_progress = Mutex::new(vec![]);
+        let reused = i
+            .install(cached_root.path(), "fixture", &cancelled, |p| {
+                cached_progress.lock().unwrap().push(p)
+            })
+            .unwrap();
+        assert!(reused.files_reused > 0);
+        assert!(
+            cached_progress
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .network_bytes
+                < network
+        );
         assert!(entries
             .iter()
             .filter(|p| p.stage == "downloading")

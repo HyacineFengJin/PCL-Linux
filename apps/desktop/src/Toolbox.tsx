@@ -1,4 +1,7 @@
 import { useState } from "react";
+import { ChevronDown } from "lucide-react";
+import { Collapse } from "./Collapse";
+import "./toolbox-extra.css";
 export function Toolbox({
   onOpen,
   root,
@@ -10,6 +13,13 @@ export function Toolbox({
     [name, setName] = useState(""),
     [player, setPlayer] = useState(""),
     [server, setServer] = useState("");
+  const [achievementOpen, setAchievementOpen] = useState(true),
+    [avatarOpen, setAvatarOpen] = useState(true),
+    [itemId, setItemId] = useState(""),
+    [achievementName, setAchievementName] = useState(""),
+    [achievementLine1, setAchievementLine1] = useState(""),
+    [achievementLine2, setAchievementLine2] = useState(""),
+    [avatarSize, setAvatarSize] = useState("64");
   const unavailable = "此功能尚未开放";
   return (
     <div className="ce-toolbox">
@@ -33,11 +43,7 @@ export function Toolbox({
       <section className="ce-card">
         <h2 className="ce-card-title">下载自定义文件</h2>
         <div className="toolbox-content">
-          <p>
-            使用 PCL CE
-            的高速多线程下载引擎下载任意文件。请注意，部分网站（例如百度网盘）可能会报错
-            (403) 已禁止，无法正常下载。
-          </p>
+          <p>下载指定链接的文件。部分网站可能限制下载，返回 403 等错误。</p>
           <label className="ce-row">
             <span>下载地址</span>
             <input
@@ -102,6 +108,150 @@ export function Toolbox({
             查询
           </button>
         </div>
+      </section>
+      <section className="ce-card toolbox-generator">
+        <h2 className="ce-card-title toolbox-generator-title">
+          <button
+            className="ce-collapse"
+            aria-expanded={achievementOpen}
+            aria-controls="toolbox-achievement-fields"
+            onClick={() => setAchievementOpen((open) => !open)}
+          >
+            <strong>自定义成就图片生成器 (仅支持英文)</strong>
+            <ChevronDown
+              size={16}
+              className={`ce-disclosure-arrow ${achievementOpen ? "is-open" : ""}`}
+              aria-hidden="true"
+            />
+          </button>
+        </h2>
+        <Collapse open={achievementOpen}>
+          <div
+            id="toolbox-achievement-fields"
+            className="toolbox-generator-content toolbox-achievement-fields"
+          >
+            <label className="ce-row">
+              <span>物品名（ID）</span>
+              <input
+                className="ce-field"
+                value={itemId}
+                onChange={(e) => setItemId(e.target.value)}
+              />
+            </label>
+            <label className="ce-row">
+              <span>成就名</span>
+              <input
+                className="ce-field"
+                value={achievementName}
+                onChange={(e) => setAchievementName(e.target.value)}
+              />
+            </label>
+            <label className="ce-row">
+              <span>第一行</span>
+              <input
+                className="ce-field"
+                value={achievementLine1}
+                onChange={(e) => setAchievementLine1(e.target.value)}
+              />
+            </label>
+            <label className="ce-row">
+              <span>第二行（可选）</span>
+              <input
+                className="ce-field"
+                value={achievementLine2}
+                onChange={(e) => setAchievementLine2(e.target.value)}
+              />
+            </label>
+            <div className="toolbox-generator-actions">
+              <button
+                className="ce-button"
+                disabled
+                title="成就图片生成尚未开放"
+                aria-describedby="toolbox-achievement-status"
+              >
+                预览成就图像
+              </button>
+              <button
+                className="ce-button"
+                disabled
+                title="成就图片保存尚未开放"
+                aria-describedby="toolbox-achievement-status"
+              >
+                保存图片
+              </button>
+            </div>
+            <p
+              id="toolbox-achievement-status"
+              className="toolbox-generator-status"
+              role="status"
+            >
+              成就图片生成与保存尚未开放
+            </p>
+          </div>
+        </Collapse>
+      </section>
+      <section className="ce-card toolbox-generator">
+        <h2 className="ce-card-title toolbox-generator-title">
+          <button
+            className="ce-collapse"
+            aria-expanded={avatarOpen}
+            aria-controls="toolbox-avatar-fields"
+            onClick={() => setAvatarOpen((open) => !open)}
+          >
+            <strong>皮肤头像生成器</strong>
+            <ChevronDown
+              size={16}
+              className={`ce-disclosure-arrow ${avatarOpen ? "is-open" : ""}`}
+              aria-hidden="true"
+            />
+          </button>
+        </h2>
+        <Collapse open={avatarOpen}>
+          <div
+            id="toolbox-avatar-fields"
+            className="toolbox-generator-content toolbox-avatar-fields"
+          >
+            <label className="ce-row">
+              <span>头像大小：</span>
+              <select
+                className="ce-field"
+                value={avatarSize}
+                onChange={(e) => setAvatarSize(e.target.value)}
+              >
+                {[8, 16, 32, 64, 128, 256, 512].map((size) => (
+                  <option key={size} value={size}>
+                    {size}x{size}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="toolbox-generator-actions toolbox-avatar-actions">
+              <button
+                className="ce-button"
+                disabled
+                title="皮肤文件选择尚未开放"
+                aria-describedby="toolbox-avatar-status"
+              >
+                选择皮肤
+              </button>
+              <button
+                className="ce-button"
+                disabled
+                title="皮肤头像保存尚未开放"
+                aria-describedby="toolbox-avatar-status"
+              >
+                保存头像
+              </button>
+            </div>
+            <p
+              id="toolbox-avatar-status"
+              className="toolbox-generator-status"
+              role="status"
+            >
+              皮肤文件选择、头像生成与保存尚未开放
+            </p>
+          </div>
+        </Collapse>
       </section>
     </div>
   );

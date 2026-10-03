@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Box,
+  Pickaxe,
   ChevronDown,
-  Check,
   Download,
   Globe,
   ListFilter,
@@ -16,18 +16,22 @@ import {
 
 import { Favorites, LoaderCatalog, installerPages } from "./LoaderCatalog";
 import { Collapse } from "./Collapse";
+import { InstallSelection } from "./InstallSelection";
+import type { ResourceSummary } from "./ResourceDetails";
 import grassIcon from "./assets/game-icons/grass.png";
 import commandIcon from "./assets/game-icons/command.png";
 
 export type DownloadStatus = {
   stage:
     "idle" | "preparing" | "downloading" | "complete" | "error" | "cancelled";
+  phase?: string;
   message: string;
   version: string | null;
   completed: number;
   total: number;
   bytes_done: number;
   bytes_total: number;
+  network_bytes?: number;
   result?: {
     id: string;
     java_major: number;
@@ -49,7 +53,6 @@ const active = (status: DownloadStatus) =>
   ["preparing", "downloading"].includes(status.stage);
 const kindName = (kind: string) =>
   kind === "release" ? "正式版" : kind === "snapshot" ? "快照版" : "旧版";
-const size = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 
 export function DownloadPanel({
   api,
@@ -58,6 +61,9 @@ export function DownloadPanel({
   gameBusy,
   onInstalled,
   onBusyChange,
+  onStatusChange,
+  onResourceDetails,
+  onTaskStart,
   section = "minecraft",
 }: {
   api: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -67,6 +73,9 @@ export function DownloadPanel({
   gameBusy: boolean;
   onInstalled: () => Promise<void>;
   onBusyChange: (busy: boolean) => void;
+  onStatusChange: (status: DownloadStatus) => void;
+  onResourceDetails: (resource: ResourceSummary) => void;
+  onTaskStart: () => void;
 }) {
   const [catalog, setCatalog] = useState<VersionEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -78,16 +87,21 @@ export function DownloadPanel({
   const [working, setWorking] = useState(false);
   const completed = useRef("");
   const starting = useRef(false);
-  const confirmation = useRef<HTMLElement>(null);
+  const callbacks = useRef({
+    onInstalled,
+    onBusyChange,
+    onStatusChange,
+    onTaskStart,
+  });
+  callbacks.current = {
+    onInstalled,
+    onBusyChange,
+    onStatusChange,
+    onTaskStart,
+  };
   useEffect(() => {
-    if (choice)
-      confirmation.current?.scrollIntoView({
-        block: "nearest",
-        behavior: "smooth",
-      });
-  }, [choice]);
-  const callbacks = useRef({ onInstalled, onBusyChange });
-  callbacks.current = { onInstalled, onBusyChange };
+    setChoice(null);
+  }, [section]);
   async function loadCatalog(refresh = false) {
     setLoading(true);
     setError("");
@@ -112,6 +126,7 @@ export function DownloadPanel({
         const next = await api<DownloadStatus>("download_status");
         if (disposed || starting.current) return;
         setStatus(next);
+        callbacks.current.onStatusChange(next);
         callbacks.current.onBusyChange(active(next));
         if (active(next)) completed.current = "";
         if (
@@ -197,7 +212,7 @@ export function DownloadPanel({
       <button
         key={entry.id}
         className={`resource-row ce-version-row ${choice?.id === entry.id ? "chosen" : ""}`}
-        disabled={busy || gameBusy || ids.has(entry.id) || !native}
+        disabled={busy || gameBusy || ids.has(entry.id)}
         onClick={() => setChoice(entry)}
       >
         <span
@@ -231,12 +246,6 @@ export function DownloadPanel({
       </button>
     );
   }
-  const progress =
-    status.total > 0
-      ? status.completed / status.total
-      : status.bytes_total > 0
-        ? status.bytes_done / status.bytes_total
-        : null;
   async function start() {
     if (!choice || gameBusy || busy || !native) return;
     starting.current = true;
@@ -248,6 +257,8 @@ export function DownloadPanel({
       completed.current = "";
       const next = await api<DownloadStatus>("download_status");
       setStatus(next);
+      callbacks.current.onStatusChange(next);
+      callbacks.current.onTaskStart();
       callbacks.current.onBusyChange(active(next));
       setChoice(null);
     } catch (e) {
@@ -265,101 +276,6 @@ export function DownloadPanel({
           游戏正在准备或运行，请结束游戏后再安装新版本。
         </div>
       )}
-      {(status.stage !== "idle" || working) && (
-        <section className={`card download-task ${status.stage}`}>
-          <div className="card-heading">
-            <span className="download-heading">
-              {busy ? (
-                <LoaderCircle size={17} className="spin" />
-              ) : status.stage === "complete" ? (
-                <Check size={17} />
-              ) : status.stage === "error" ? (
-                <TriangleAlert size={17} />
-              ) : (
-                <Download size={17} />
-              )}
-              {busy
-                ? "正在安装"
-                : status.stage === "complete"
-                  ? "安装完成"
-                  : status.stage === "cancelled"
-                    ? "安装已取消"
-                    : "安装遇到问题"}
-              {status.version && ` · ${status.version}`}
-            </span>
-            {busy && (
-              <button
-                className="btn compact"
-                disabled={working}
-                onClick={async () => {
-                  try {
-                    await api("download_cancel");
-                  } catch (e) {
-                    setError(String(e));
-                  }
-                }}
-              >
-                <X size={13} />
-                取消安装
-              </button>
-            )}
-          </div>
-          <div className="card-content">
-            <p className="muted" role="status">
-              {status.message || "正在准备安装…"}
-            </p>
-            {busy && (
-              <>
-                <div
-                  className={`download-progress ${progress === null ? "indeterminate" : ""}`}
-                  role="progressbar"
-                  aria-label="安装进度"
-                  aria-valuenow={
-                    progress === null
-                      ? undefined
-                      : Math.round(Math.min(1, progress) * 100)
-                  }
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                >
-                  <i
-                    style={
-                      progress === null
-                        ? undefined
-                        : {
-                            width: `${Math.min(100, Math.max(0, progress * 100))}%`,
-                          }
-                    }
-                  />
-                </div>
-                <div className="download-progress-details">
-                  <span>
-                    {status.total > 0
-                      ? `${status.completed} / ${status.total} 项`
-                      : "正在处理安装文件"}
-                  </span>
-                  <span>
-                    {status.bytes_total > 0
-                      ? `${size(status.bytes_done)} / ${size(status.bytes_total)}`
-                      : status.bytes_done > 0
-                        ? `已下载 ${size(status.bytes_done)}`
-                        : progress === null
-                          ? "请稍候"
-                          : ""}
-                  </span>
-                </div>
-              </>
-            )}
-            {status.stage === "complete" && (
-              <p className="muted">
-                版本已加入游戏库，可返回启动页开始游戏。
-                {status.result &&
-                  `运行此版本需要 Java ${status.result.java_major}。`}
-              </p>
-            )}
-          </div>
-        </section>
-      )}
       {error && (
         <div className="error-banner" role="alert">
           <TriangleAlert size={17} />
@@ -373,121 +289,107 @@ export function DownloadPanel({
           </button>
         </div>
       )}
-      {choice && (
-        <section className="card download-confirm" ref={confirmation}>
-          <div className="card-heading">
-            <span className="download-heading">安装 {choice.id}</span>
-            <button
-              className="icon-button"
-              aria-label="取消选择"
-              onClick={() => setChoice(null)}
-            >
-              <X size={15} />
-            </button>
-          </div>
-          <div className="card-content">
-            <p className="muted">
-              将下载原版游戏及其运行所需的文件。完成后会自动选择这个版本。
-            </p>
-            <button
-              className="btn primary"
-              disabled={busy || gameBusy || !native || ids.has(choice.id)}
-              onClick={start}
-            >
-              <Download size={15} />
-              确认安装
-            </button>
-          </div>
-        </section>
-      )}
-      <div className="ce-page-enter" key={section}>
-        {section === "favorites" ? (
-          <Favorites />
-        ) : installerPages.includes(section) ? (
-          <LoaderCatalog
-            key={section}
-            api={api}
-            loader={section}
-            catalog={catalog}
-            catalogLoading={loading}
-          />
-        ) : community ? (
-          <CommunityCatalog
-            api={api}
-            key={section}
-            label={community}
-            query={query}
-            setQuery={setQuery}
-          />
-        ) : section !== "minecraft" ? (
-          <section className="ce-card">
-            <div className="ce-card-title">{section}</div>
-            <p className="muted">此安装包目录尚未接入。</p>
-          </section>
-        ) : (
-          <>
-            <section className="ce-card ce-catalog-latest">
-              <div className="ce-card-title">最新版本</div>
-              {loading ? (
-                <div className="download-empty">
-                  <LoaderCircle className="spin" size={22} />
-                  <p>正在获取官方版本目录…</p>
-                </div>
-              ) : latest.length ? (
-                latest.map((entry) => versionRow(entry, true))
-              ) : (
-                <div className="download-empty">
-                  <p>
-                    {native
-                      ? "暂未获取到版本目录"
-                      : "版本目录将在桌面应用中显示"}
-                  </p>
-                  <button
-                    className="ce-button"
-                    disabled={!native || loading}
-                    onClick={() => void loadCatalog(true)}
-                  >
-                    <RefreshCw size={14} />
-                    重新获取
-                  </button>
-                </div>
-              )}
+      {choice && section === "minecraft" ? (
+        <InstallSelection
+          key={choice.id}
+          api={api}
+          version={choice.id}
+          native={native}
+          disabled={busy || gameBusy || ids.has(choice.id)}
+          onBack={() => setChoice(null)}
+          onStart={start}
+        />
+      ) : (
+        <div className="ce-page-enter" key={section}>
+          {section === "favorites" ? (
+            <Favorites />
+          ) : installerPages.includes(section) ? (
+            <LoaderCatalog
+              key={section}
+              api={api}
+              loader={section}
+              catalog={catalog}
+              catalogLoading={loading}
+            />
+          ) : community ? (
+            <CommunityCatalog
+              api={api}
+              key={section}
+              label={community}
+              query={query}
+              setQuery={setQuery}
+              onResourceDetails={onResourceDetails}
+            />
+          ) : section !== "minecraft" ? (
+            <section className="ce-card">
+              <div className="ce-card-title">{section}</div>
+              <p className="muted">此安装包目录尚未接入。</p>
             </section>
-            {groups.map((group) => (
-              <section className="ce-card ce-version-group" key={group.id}>
-                <button
-                  className="ce-version-group-toggle"
-                  onClick={() =>
-                    setExpanded((old) =>
-                      old.includes(group.id)
-                        ? old.filter((id) => id !== group.id)
-                        : [...old, group.id],
-                    )
-                  }
-                  aria-expanded={expanded.includes(group.id)}
-                >
-                  <span>
-                    {group.title} ({group.entries.length})
-                  </span>
-                  <ChevronDown
-                    size={19}
-                    className={`ce-disclosure-arrow ${expanded.includes(group.id) ? "is-open" : ""}`}
-                  />
-                </button>
-                <Collapse open={expanded.includes(group.id)}>
-                  <div className="ce-version-group-list">
-                    {group.entries.length ? (
-                      group.entries.map((entry) => versionRow(entry))
-                    ) : (
-                      <p className="muted">暂无版本</p>
-                    )}
+          ) : (
+            <>
+              <section className="ce-card ce-catalog-latest">
+                <div className="ce-card-title">最新版本</div>
+                {loading ? (
+                  <div className="download-empty">
+                    <LoaderCircle className="spin" size={22} />
+                    <p>正在获取官方版本目录…</p>
                   </div>
-                </Collapse>
+                ) : latest.length ? (
+                  latest.map((entry) => versionRow(entry, true))
+                ) : (
+                  <div className="download-empty">
+                    <p>
+                      {native
+                        ? "暂未获取到版本目录"
+                        : "版本目录将在桌面应用中显示"}
+                    </p>
+                    <button
+                      className="ce-button"
+                      disabled={!native || loading}
+                      onClick={() => void loadCatalog(true)}
+                    >
+                      <RefreshCw size={14} />
+                      重新获取
+                    </button>
+                  </div>
+                )}
               </section>
-            ))}
-          </>
-        )}
-      </div>
+              {groups.map((group) => (
+                <section className="ce-card ce-version-group" key={group.id}>
+                  <button
+                    className="ce-version-group-toggle"
+                    onClick={() =>
+                      setExpanded((old) =>
+                        old.includes(group.id)
+                          ? old.filter((id) => id !== group.id)
+                          : [...old, group.id],
+                      )
+                    }
+                    aria-expanded={expanded.includes(group.id)}
+                  >
+                    <span>
+                      {group.title} ({group.entries.length})
+                    </span>
+                    <ChevronDown
+                      size={19}
+                      className={`ce-disclosure-arrow ${expanded.includes(group.id) ? "is-open" : ""}`}
+                    />
+                  </button>
+                  <Collapse open={expanded.includes(group.id)}>
+                    <div className="ce-version-group-list">
+                      {group.entries.length ? (
+                        group.entries.map((entry) => versionRow(entry))
+                      ) : (
+                        <p className="muted">暂无版本</p>
+                      )}
+                    </div>
+                  </Collapse>
+                </section>
+              ))}
+            </>
+          )}
+        </div>
+      )}
     </>
   );
 }
@@ -509,11 +411,13 @@ function CommunityCatalog({
   label,
   query,
   setQuery,
+  onResourceDetails,
 }: {
   api: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
   label: string;
   query: string;
   setQuery: (value: string) => void;
+  onResourceDetails: (resource: ResourceSummary) => void;
 }) {
   const [source, setSource] = useState("全部");
   const [tag, setTag] = useState("全部");
@@ -742,11 +646,17 @@ function CommunityCatalog({
           </select>
         </label>
       </section>
-      <section className="ce-card ce-community-results" aria-busy={loading}>
+      <section
+        className={
+          loading ? "ce-community-loading" : "ce-card ce-community-results"
+        }
+        aria-busy={loading}
+      >
         {loading ? (
-          <div className="download-empty">
-            <LoaderCircle size={24} className="spin" />
-            <p>正在获取{label}目录…</p>
+          <div className="ce-card ce-community-loading-box" role="status">
+            <Pickaxe size={38} strokeWidth={1.5} />
+            <i />
+            <p>正在获取 {label} 列表</p>
           </div>
         ) : error ? (
           <div className="download-empty" role="alert">
@@ -782,7 +692,42 @@ function CommunityCatalog({
               <article
                 className="ce-mod-row"
                 key={hit.project_id}
-                title={`${label}安装尚未开放`}
+                role="button"
+                tabIndex={0}
+                aria-label={`查看 ${hit.title} 详情`}
+                onClick={() =>
+                  onResourceDetails({
+                    ...hit,
+                    source: "Modrinth",
+                    project_type: (
+                      {
+                        模组: "mod",
+                        整合包: "modpack",
+                        数据包: "datapack",
+                        资源包: "resourcepack",
+                        光影包: "shader",
+                      } as Record<string, string>
+                    )[label],
+                  })
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onResourceDetails({
+                      ...hit,
+                      source: "Modrinth",
+                      project_type: (
+                        {
+                          模组: "mod",
+                          整合包: "modpack",
+                          数据包: "datapack",
+                          资源包: "resourcepack",
+                          光影包: "shader",
+                        } as Record<string, string>
+                      )[label],
+                    });
+                  }
+                }}
               >
                 {icon ? (
                   <img

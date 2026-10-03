@@ -6,12 +6,12 @@
 
 - Minecraft 原版版本目录、搜索、下载安装和进度显示。
 - 安装任务取消、完整文件缓存复用及 SHA-1 校验。
-- 模组加载器安装包目录，以及 Modrinth 模组、整合包、数据包、资源包和光影包搜索。
+- 模组加载器安装包目录，以及 Modrinth 模组、整合包、数据包、资源包和光影包搜索、版本详情与依赖浏览。
 - 游戏版本扫描、搜索、选择与实例设置。
 - Java 自动匹配、全局和单实例内存设置。
 - 版本继承、依赖库与 Linux 原生库解析。
 - 游戏进程管理、退出状态与日志查看。
-- PCL 风格导航、账号侧栏、卡片和设置弹窗。
+- PCL CE 风格导航、账号侧栏、实例修改／导出表单、资源详情及任务管理界面。
 
 项目仍在开发中，目前支持原版下载安装与已有游戏启动。模组加载器安装和模组管理尚未提供；部分早期版本暂不支持自动安装。Microsoft 正版登录暂未开放，服务接入由项目维护者完成。
 
@@ -62,4 +62,4 @@ Microsoft sign-in is not yet available. The project maintainers are responsible 
 
 ## 致谢
 
-界面理念参考 [PCL CE](https://github.com/PCL-Community/PCL-CE)，认证流程参考 [HMCL](https://github.com/HMCL-dev/HMCL)。界面和 Rust 认证代码独立编写。本地桌面图标来源见[上游图标](https://github.com/PCL-Community/PCL-CE/blob/19805c446cfd17e92749124e3ab1c1832a291736/Plain%20Craft%20Launcher%202/Images/icon.ico)。
+界面理念参考 [PCL CE](https://github.com/PCL-Community/PCL-CE)，认证流程参考 [HMCL](https://github.com/HMCL-dev/HMCL)。Linux 平台与服务分层参考 [PCL N Edition](https://github.com/PCL-N-Edition/PCL-N)。界面和 Rust 认证代码独立编写。本地桌面图标来源见[上游图标](https://github.com/PCL-Community/PCL-CE/blob/19805c446cfd17e92749124e3ab1c1832a291736/Plain%20Craft%20Launcher%202/Images/icon.ico)。
