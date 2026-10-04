@@ -57,3 +57,38 @@ export type Api = <T>(
   command: string,
   args?: Record<string, unknown>,
 ) => Promise<T>;
+export type InstanceImportChoice = {
+  status: "selected" | "cancelled" | "unavailable";
+  source?: string | null;
+  suggested_name?: string | null;
+  message?: string | null;
+};
+export type InstanceImportPlan = {
+  revision: string;
+  name: string;
+  pack_name: string;
+  pack_version: string;
+  minecraft: string;
+  file_count: number;
+  bytes: number;
+  reused_files: number;
+  warnings: string[];
+};
+export type InstanceDeletePlan = {
+  id: string;
+  root_id: string;
+  revision: string;
+  total_files: number;
+  total_bytes: number;
+};
+export type InstanceDeletedEntry = {
+  operation_id: string;
+  id: string;
+  root_id: string;
+  original_root_id?: string;
+  created_ms: number;
+  state: string;
+  can_restore: boolean;
+  revision: string | null;
+  warning: string | null;
+};

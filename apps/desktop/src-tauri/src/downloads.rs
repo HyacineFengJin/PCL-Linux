@@ -113,6 +113,9 @@ impl Downloads {
                 | TaskKind::InstanceReset
                 | TaskKind::InstanceExport
                 | TaskKind::InstanceRename
+                | TaskKind::InstanceImport
+                | TaskKind::InstanceDelete
+                | TaskKind::InstanceRestore
         ) {
             return Err("此任务不在任务管理页面中".into());
         }

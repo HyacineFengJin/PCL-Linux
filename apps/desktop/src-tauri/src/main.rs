@@ -2,7 +2,10 @@ mod accounts;
 mod config;
 mod downloads;
 mod export_presets;
+mod instance_commands;
+mod instance_delete;
 mod instance_export;
+mod instance_import;
 mod instance_meta;
 mod instance_rename;
 mod instance_rename_refs;
@@ -62,6 +65,9 @@ struct Bootstrap {
     scan_issues: Vec<pcl_core::ScanIssue>,
     scan_error: Option<String>,
     reset_recovery_error: Option<String>,
+    import_recovery_error: Option<String>,
+    delete_recovery_error: Option<String>,
+    delete_recovery_root_id: Option<String>,
     rename_recovery_error: Option<String>,
     rename_recovery_root_id: Option<String>,
     config_warning: Option<String>,
@@ -95,12 +101,34 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
     // alias is retargeted while this read is running.
     let canonical = Path::new(&settings.root).canonicalize().ok();
     let scan_path = canonical.as_deref().unwrap_or(Path::new(&settings.root));
-    let (instances, scan_issues, scan_error) = match pcl_core::scan_instances_report(scan_path) {
+    let (instances, mut scan_issues, scan_error) = match pcl_core::scan_instances_report(scan_path)
+    {
         Ok(report) => (report.instances, report.issues, None),
         Err(error) => (Vec::new(), Vec::new(), Some(error)),
     };
+    // Deleted names remain reserved. An external recreation must not acquire
+    // retained metadata or become a target of stale selection/confirmation.
+    let reservations = instance_delete::reserved_names(scan_path);
     let instances = instances
         .into_iter()
+        .filter(|instance| {
+            let error = match &reservations {
+                Ok(names) if names.contains(&instance.id) => {
+                    Some("此实例名称由可恢复删除记录保留，请先恢复实例或移开冲突目录".into())
+                }
+                Err(error) => Some(error.clone()),
+                _ => None,
+            };
+            if let Some(message) = error {
+                scan_issues.push(pcl_core::ScanIssue {
+                    id: instance.id.clone(),
+                    message,
+                });
+                false
+            } else {
+                true
+            }
+        })
         .map(|instance| {
             let view = s
                 .instance_metadata
@@ -158,6 +186,44 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
             Err(error) => (Some(error), None),
         }
     };
+    let import_recovery_error = if s.tasks.active().is_some_and(|task| {
+        task.kind == tasks::TaskKind::InstanceImport && task.root_id == settings.root_id
+    }) {
+        None
+    } else {
+        canonical
+            .as_ref()
+            .and_then(|path| instance_import::ensure_ready(path).err())
+    };
+    let (delete_recovery_error, delete_recovery_root_id) = if s.tasks.active().is_some_and(|task| {
+        matches!(
+            task.kind,
+            tasks::TaskKind::InstanceDelete | tasks::TaskKind::InstanceRestore
+        )
+    }) {
+        (None, None)
+    } else {
+        match instance_delete::pending_root(&s.project) {
+            Ok(Some(path)) => (
+                Some("存在未完成的实例删除或恢复，请先恢复后再操作".into()),
+                roots
+                    .iter()
+                    .find(|root| {
+                        Path::new(&root.path)
+                            .canonicalize()
+                            .is_ok_and(|canonical| canonical == path)
+                    })
+                    .map(|root| root.id.clone()),
+            ),
+            Ok(None) => (
+                canonical
+                    .as_ref()
+                    .and_then(|path| instance_delete::ensure_ready(path).err()),
+                Some(settings.root_id.clone()),
+            ),
+            Err(error) => (Some(error), None),
+        }
+    };
     Bootstrap {
         settings,
         roots,
@@ -165,6 +231,9 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
         scan_issues,
         scan_error,
         reset_recovery_error,
+        import_recovery_error,
+        delete_recovery_error,
+        delete_recovery_root_id,
         rename_recovery_error,
         rename_recovery_root_id,
         config_warning: (!warnings.is_empty()).then(|| warnings.join("\n")),
@@ -197,7 +266,8 @@ fn update_instance_metadata(
     }
     pcl_core::identifier(id)?;
     let root = s.config.resolve(root_id)?;
-    instance_rename::ensure_ready(Path::new(&root.path))?;
+    ensure_instance_files_ready(s, &root)?;
+    instance_delete::ensure_name_available(Path::new(&root.path), id)?;
     if !pcl_core::scan_instances_report(Path::new(&root.path))?
         .instances
         .iter()
@@ -235,6 +305,7 @@ async fn instance_metadata_read(
     tauri::async_runtime::spawn_blocking(move || {
         pcl_core::identifier(&id)?;
         let root = s.config.resolve(root_id.as_deref())?;
+        instance_delete::ensure_name_available(Path::new(&root.path), &id)?;
         if !pcl_core::scan_instances_report(Path::new(&root.path))?
             .instances
             .iter()
@@ -371,6 +442,20 @@ fn require_root_unused(s: &Shared, id: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn require_root_removable(s: &Shared, id: &str) -> Result<(), String> {
+    require_root_unused(s, id)?;
+    // Re-registration allocates a different registry identity. Keep the root
+    // and its preferences until all deleted instances have been restored.
+    let root = s
+        .config
+        .resolve(Some(id))
+        .map_err(|error| format!("无法检查实例恢复记录，请先恢复目录访问后再移除登记：{error}"))?;
+    if !instance_delete::reserved_names(Path::new(&root.path))?.is_empty() {
+        return Err("此游戏目录仍有已删除实例，请先恢复它们后再移除目录登记".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn root_remove(id: String, state: State<'_, Arc<Shared>>) -> Result<Bootstrap, String> {
     let s = state.inner().clone();
@@ -378,7 +463,7 @@ async fn root_remove(id: String, state: State<'_, Arc<Shared>>) -> Result<Bootst
         {
             let _operation = s.operations.lock().unwrap();
             require_reference_write(&s)?;
-            require_root_unused(&s, &id)?;
+            require_root_removable(&s, &id)?;
             s.config.remove(&id)?;
         }
         Ok(bootstrap_view(&s))
@@ -433,13 +518,14 @@ fn download_start(
     state.config.ensure_writable()?;
     instance_rename_refs::ensure_project_ready(&state.project)?;
     let root = state.config.resolve(root_id.as_deref())?;
-    instance_rename::ensure_ready(Path::new(&root.path))?;
+    ensure_instance_files_ready(&state, &root)?;
     let request = pcl_install::InstallRequest {
         name: name.unwrap_or_else(|| id.clone()),
         minecraft: id,
         components: components.unwrap_or_default(),
     };
     request.validate()?;
+    instance_commands::new_name(&state, &root, &request.name)?;
     let path = pcl_core::safe_join(Path::new(&root.path), format!("versions/{}", request.name))?;
     match fs::symlink_metadata(&path) {
         Ok(_) => return Err("实例名称已存在，请换一个名称".into()),
@@ -489,9 +575,11 @@ fn require_instance_job(s: &Shared) -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_rename_ready(s: &Shared, root: &GameRoot) -> Result<(), String> {
+fn ensure_instance_files_ready(s: &Shared, root: &GameRoot) -> Result<(), String> {
     instance_rename_refs::ensure_project_ready(&s.project)?;
-    instance_rename::ensure_ready(Path::new(&root.path))
+    instance_rename::ensure_ready(Path::new(&root.path))?;
+    instance_import::ensure_ready(Path::new(&root.path))?;
+    instance_delete::ensure_ready(Path::new(&root.path))
 }
 
 #[derive(Deserialize)]
@@ -619,7 +707,7 @@ async fn instance_reset_plan(
         require_instance_job(&s)?;
         let root = s.config.resolve(root_id.as_deref())?;
         resource_ops::ensure_ready(Path::new(&root.path))?;
-        ensure_rename_ready(&s, &root)?;
+        ensure_instance_files_ready(&s, &root)?;
         instance_reset::prepare(Path::new(&root.path), &id, components)
     })
     .await
@@ -638,7 +726,7 @@ async fn instance_reset_start(
         require_instance_job(&s)?;
         let root = s.config.resolve(root_id.as_deref())?;
         resource_ops::ensure_ready(Path::new(&root.path))?;
-        ensure_rename_ready(&s, &root)?;
+        ensure_instance_files_ready(&s, &root)?;
         let checked = instance_reset::prepare(Path::new(&root.path), &plan.id, plan.components)?;
         if checked.revision != plan.revision {
             return Err("实例或重置方案已改变，请重新检查".into());
@@ -715,7 +803,7 @@ async fn instance_reset_recover(
         let _operation = s.operations.lock().unwrap();
         require_instance_job(&s)?;
         let root = s.config.resolve(root_id.as_deref())?;
-        ensure_rename_ready(&s, &root)?;
+        ensure_instance_files_ready(&s, &root)?;
         let task = s.tasks.admit(
             tasks::TaskTarget {
                 root_id: root.id,
@@ -750,7 +838,7 @@ async fn instance_export_plan(
         let root = s.config.resolve(root_id.as_deref())?;
         resource_ops::ensure_ready(Path::new(&root.path))?;
         instance_reset::ensure_ready(Path::new(&root.path))?;
-        ensure_rename_ready(&s, &root)?;
+        ensure_instance_files_ready(&s, &root)?;
         instance_export::prepare(Path::new(&root.path), &id, request)
     })
     .await
@@ -771,7 +859,7 @@ async fn instance_export_start(
         let root = s.config.resolve(root_id.as_deref())?;
         resource_ops::ensure_ready(Path::new(&root.path))?;
         instance_reset::ensure_ready(Path::new(&root.path))?;
-        ensure_rename_ready(&s, &root)?;
+        ensure_instance_files_ready(&s, &root)?;
         let checked =
             instance_export::prepare(Path::new(&root.path), &plan.instance_id, plan.request)?;
         if checked.revision != plan.revision {
@@ -813,7 +901,7 @@ async fn instance_export_start(
         let _operation = s.operations.lock().unwrap();
         require_instance_job(&s)?;
         let current = s.config.resolve(Some(&root.id))?;
-        ensure_rename_ready(&s, &current)?;
+        ensure_instance_files_ready(&s, &current)?;
         if current.path != root.path {
             return Err("游戏目录位置已改变，请重新导出".into());
         }
@@ -884,7 +972,7 @@ async fn instance_export_config_save(
         require_instance_job(&s)?;
         let root = s.config.resolve(root_id.as_deref())?;
         // Validate the exact choices before retaining them for this instance.
-        ensure_rename_ready(&s, &root)?;
+        ensure_instance_files_ready(&s, &root)?;
         instance_export::prepare(Path::new(&root.path), &id, request.clone())?;
         export_presets::save(&s.project, &root.id, Path::new(&root.path), &id, request)
     })
@@ -924,7 +1012,8 @@ fn admit_resource(
     require_resource_write(s)?;
     pcl_core::identifier(id)?;
     let root = s.config.resolve(root_id)?;
-    ensure_rename_ready(s, &root)?;
+    ensure_instance_files_ready(s, &root)?;
+    instance_delete::ensure_name_available(Path::new(&root.path), id)?;
     if expected_path.is_some_and(|path| path != root.path) {
         return Err("游戏目录位置已改变，请重新选择文件".into());
     }
@@ -1243,7 +1332,7 @@ async fn inspect_instance(
         let (cfg, root) = instance_context(&s.config, root_id.as_deref(), &id)?;
         resource_ops::ensure_ready(Path::new(&root.path))?;
         instance_reset::ensure_ready(Path::new(&root.path))?;
-        ensure_rename_ready(&s, &root)?;
+        ensure_instance_files_ready(&s, &root)?;
         let plan = pcl_core::build_launch_plan_with_java(
             Path::new(&root.path),
             &s.project,
@@ -1271,6 +1360,7 @@ fn instance_context(
     pcl_core::identifier(id)?;
     let settings = config.snapshot();
     let root = config.resolve(Some(root_id.unwrap_or(&settings.root_id)))?;
+    instance_delete::ensure_name_available(Path::new(&root.path), id)?;
     Ok((settings, root))
 }
 fn update(s: &Shared, stage: &str, message: String, pid: Option<u32>, exit_code: Option<i32>) {
@@ -1313,7 +1403,7 @@ fn launch_game(
     let (cfg, root) = instance_context(&state.config, root_id.as_deref(), &id)?;
     resource_ops::ensure_ready(Path::new(&root.path))?;
     instance_reset::ensure_ready(Path::new(&root.path))?;
-    ensure_rename_ready(&state, &root)?;
+    ensure_instance_files_ready(&state, &root)?;
     {
         let mut st = state.status.lock().unwrap();
         if state.tasks.active().is_some() {
@@ -1599,6 +1689,15 @@ fn main() {
             instance_export_start,
             instance_export_config_read,
             instance_export_config_save,
+            instance_commands::instance_import_pick,
+            instance_commands::instance_import_prepare,
+            instance_commands::instance_import_start,
+            instance_commands::instance_import_recover,
+            instance_commands::instance_delete_prepare,
+            instance_commands::instance_delete_start,
+            instance_commands::instance_deleted_list,
+            instance_commands::instance_restore_start,
+            instance_commands::instance_delete_recover,
             download_cancel
         ])
         .run(tauri::generate_context!())
@@ -1682,6 +1781,192 @@ mod integration_tests {
         settings.overrides.insert(id.clone(), 12);
         state.config.save(settings).unwrap();
         (root, id)
+    }
+
+    #[test]
+    fn deleted_name_never_rebinds_old_settings_and_metadata_to_external_recreation() {
+        let fixture = Fixture::new();
+        let state = Arc::new(fixture.shared());
+        let (root, id) = rename_fixture(&state);
+        let path = Path::new(&root.path);
+        let revision = state.instance_metadata.get(&root.id, path, &id).revision;
+        update_instance_metadata(
+            &state,
+            Some(&root.id),
+            &id,
+            &revision,
+            instance_meta::MetadataPatch {
+                description: Some("Retained description".into()),
+                favorite: Some(true),
+                icon: None,
+                category: None,
+            },
+        )
+        .unwrap();
+        let settings_before = fs::read(fixture.0.join(".pcl-rust/settings.json")).unwrap();
+        let metadata_before = fs::read(fixture.0.join(".pcl-rust/instance-metadata.json")).unwrap();
+        let plan = instance_delete::prepare(path, &fixture.0, &root.id, &id).unwrap();
+        instance_delete::execute(path, &fixture.0, plan, &AtomicBool::new(false), |_| {}).unwrap();
+        assert!(bootstrap_view(&state).instances.is_empty());
+        assert!(require_root_removable(&state, &root.id)
+            .unwrap_err()
+            .contains("已删除"));
+        assert!(instance_commands::new_name(&state, &root, &id).is_err());
+        let folder = path.join("versions").join(&id);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(
+            folder.join(format!("{id}.json")),
+            serde_json::to_vec(&serde_json::json!({"id":id,"mainClass":"Example","libraries":[]}))
+                .unwrap(),
+        )
+        .unwrap();
+        let view = bootstrap_view(&state);
+        assert!(view.instances.is_empty());
+        assert!(view
+            .scan_issues
+            .iter()
+            .any(|issue| issue.id == id && issue.message.contains("保留")));
+        assert!(instance_context(&state.config, Some(&root.id), &id).is_err());
+        assert!(admit_resource(&state, &id, Some(&root.id), None).is_err());
+        let mut entry = instance_delete::history(path, &fixture.0, &root.id)
+            .unwrap()
+            .remove(0);
+        assert!(!entry.can_restore);
+        fs::remove_dir_all(&folder).unwrap();
+        entry = instance_delete::history(path, &fixture.0, &root.id)
+            .unwrap()
+            .remove(0);
+        instance_delete::undo(
+            path,
+            &fixture.0,
+            &root.id,
+            &entry.operation_id,
+            entry.revision.as_deref().unwrap(),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        assert!(require_root_removable(&state, &root.id).is_ok());
+        let view = bootstrap_view(&state);
+        assert_eq!(view.instances.len(), 1);
+        assert_eq!(
+            view.instances[0].metadata.description,
+            "Retained description"
+        );
+        assert_eq!(view.settings.memory_gib, 14);
+        assert_eq!(view.settings.overrides[&id], 12);
+        assert_eq!(
+            fs::read(fixture.0.join(".pcl-rust/settings.json")).unwrap(),
+            settings_before
+        );
+        assert_eq!(
+            fs::read(fixture.0.join(".pcl-rust/instance-metadata.json")).unwrap(),
+            metadata_before
+        );
+    }
+
+    #[test]
+    fn pending_delete_defers_v2_migration_until_recovery_and_preserves_exact_backup() {
+        let fixture = Fixture::new();
+        let state = fixture.shared();
+        let (root, id) = rename_fixture(&state);
+        let path = Path::new(&root.path);
+        let file = fixture.0.join(".pcl-rust/settings.json");
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        legacy["schema_version"] = 2.into();
+        legacy.as_object_mut().unwrap().remove("java");
+        legacy.as_object_mut().unwrap().remove("java_paths");
+        for root in legacy["roots"].as_array_mut().unwrap() {
+            root.as_object_mut().unwrap().remove("java_overrides");
+        }
+        let before = serde_json::to_vec_pretty(&legacy).unwrap();
+        fs::write(&file, &before).unwrap();
+        let checked = instance_delete::prepare(path, &fixture.0, &root.id, &id).unwrap();
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            instance_delete::execute(
+                path,
+                &fixture.0,
+                checked,
+                &AtomicBool::new(false),
+                |progress| {
+                    if progress.phase == "committing" {
+                        panic!("Interrupted before directory move");
+                    }
+                },
+            )
+            .unwrap();
+        }))
+        .is_err());
+        let (config, warning) = ConfigStore::load(&fixture.0);
+        assert!(warning.is_none(), "{warning:?}");
+        assert_eq!(config.snapshot().memory_gib, 14);
+        assert_eq!(fs::read(&file).unwrap(), before);
+        assert!(instance_rename_refs::ensure_project_ready(&fixture.0).is_err());
+        instance_delete::recover_pending(path, &fixture.0).unwrap();
+        config.refresh_after_rename().unwrap();
+        let mut next = config.snapshot();
+        next.player = "ExamplePlayer".into();
+        config.save(next).unwrap();
+        let migrated: serde_json::Value =
+            serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(migrated["schema_version"], 3);
+        assert_eq!(migrated["memory_gib"], 14);
+        let backups: Vec<_> = fs::read_dir(fixture.0.join(".pcl-rust"))
+            .unwrap()
+            .filter_map(|entry| {
+                let entry = entry.unwrap();
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("settings.v2-backup-")
+                    .then_some(entry.path())
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read(&backups[0]).unwrap(), before);
+        assert!(path.join("versions").join(id).exists());
+    }
+
+    #[test]
+    fn new_instance_name_rejects_cleared_metadata_and_root_scoped_old_references() {
+        let fixture = Fixture::new();
+        let state = fixture.shared();
+        let (root, id) = rename_fixture(&state);
+        let path = Path::new(&root.path);
+        let revision = state.instance_metadata.get(&root.id, path, &id).revision;
+        let patch = |description| instance_meta::MetadataPatch {
+            description: Some(description),
+            favorite: None,
+            icon: None,
+            category: None,
+        };
+        let changed = update_instance_metadata(
+            &state,
+            Some(&root.id),
+            &id,
+            &revision,
+            patch("Edited".into()),
+        )
+        .unwrap();
+        update_instance_metadata(
+            &state,
+            Some(&root.id),
+            &id,
+            &changed.revision,
+            patch(String::new()),
+        )
+        .unwrap();
+        let mut settings = state.config.snapshot();
+        settings.selected = None;
+        settings.overrides.clear();
+        state.config.save(settings).unwrap();
+        assert!(instance_commands::new_name(&state, &root, &id)
+            .unwrap_err()
+            .contains("资料"));
+        assert!(instance_commands::new_name(&state, &root, "Fresh Instance").is_ok());
+        let second = fixture.second(&state.config);
+        assert!(instance_commands::new_name(&state, &second, &id).is_ok());
     }
 
     #[test]
@@ -1847,7 +2132,7 @@ mod integration_tests {
         );
         assert_eq!(bootstrap.settings.root_id, second.id);
         assert!(require_reference_write(&state).is_err());
-        assert!(ensure_rename_ready(&state, &root).is_err());
+        assert!(ensure_instance_files_ready(&state, &root).is_err());
         refs.clear_pending(&fixture.0, Path::new(&root.path), "n-abcdef-123-1")
             .unwrap();
         assert!(require_reference_write(&state).is_ok());

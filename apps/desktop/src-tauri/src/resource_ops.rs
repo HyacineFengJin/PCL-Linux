@@ -1604,6 +1604,31 @@ pub fn ensure_ready(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+pub fn ensure_new_instance_name(root: &Path, id: &str) -> Result<(), String> {
+    safe_name(id)?;
+    let directory = Dir::open(root)?;
+    let Some(pcl) = directory.optional_child(".pcl-linux")? else {
+        return Ok(());
+    };
+    let Some(storage) = pcl.optional_child("resource-operations")? else {
+        return Ok(());
+    };
+    for name in storage.names()? {
+        if !valid_id(&name) {
+            return Err("资源操作目录含有未知记录".into());
+        }
+        let operation = storage.child(&name)?;
+        if operation.metadata("journal.json")?.is_none() {
+            continue;
+        }
+        let journal = read_journal(&operation, &name)?;
+        if journal.instance_id == id {
+            return Err("此名称仍有资源操作记录，请使用新的实例名称".into());
+        }
+    }
+    Ok(())
+}
+
 /// The caller must hold the same writer admission used for other mutations.
 pub fn recover_pending(root: &Path, id: &str, kind: &str) -> Result<(), String> {
     let context = Context::new(root, id, kind, true)?;

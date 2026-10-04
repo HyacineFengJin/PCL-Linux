@@ -861,6 +861,22 @@ impl MetadataStore {
         self.check_disk(&mut current)
     }
 
+    pub fn ensure_new_instance_name(
+        &self,
+        root_id: &str,
+        root: &Path,
+        id: &str,
+    ) -> Result<(), String> {
+        self.ensure_rename_snapshot()?;
+        let current = self.lock();
+        // Even a cleared record carries a generation. Reusing it would allow
+        // an old metadata confirmation to edit a different physical instance.
+        if record_index(&current.data, root_id, root, id).is_some() {
+            return Err("此名称仍有保存的实例资料，请使用新的实例名称".into());
+        }
+        Ok(())
+    }
+
     /// Explicitly adopts validated disk state after a journalled rename.
     pub fn refresh_after_rename(&self) -> Result<(), String> {
         let mut current = self.lock();

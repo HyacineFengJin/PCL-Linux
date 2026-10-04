@@ -7,14 +7,15 @@
 | 职责 | 入口 | 主要内容 |
 | --- | --- | --- |
 | 前端状态与桌面调用 | `apps/desktop/src/main.tsx` | 页面、当前目录、bootstrap、作用域 API 与响应接纳 |
-| 实例管理界面 | `InstancesPanel.tsx`、`InstanceOperations.tsx` | 实例资料、改名确认、组件修改与导出 |
+| 实例管理界面 | `InstancesPanel.tsx`、`InstanceOperations.tsx`、`InstanceImport.tsx`、`InstanceTrash.tsx` | 实例资料、改名、修改、导出、ZIP 导入与删除恢复 |
 | 下载与任务界面 | `DownloadPanel.tsx`、`TaskManager.tsx` | 任务轮询、完成刷新、取消后返回 |
 | Java 管理界面 | `JavaPanel.tsx`、`JavaSelect.tsx`、`javaManagement.ts` | 全局与实例选择、目录/修订作用域、过期响应排除 |
 | 桌面命令与应用生命周期 | `apps/desktop/src-tauri/src/main.rs` | 命令参数、目标绑定、任务调度、游戏进程与关闭处理 |
+| 本地实例操作命令 | `instance_commands.rs` | ZIP 导入与删除恢复的目录绑定、计划确认、任务准入与错误归类 |
 | 改名编排 | `instance_rename_service.rs` | 组合文件/资料 revision、进度、错误归类与缓存刷新 |
 | 持久设置与实例资料 | `config.rs`、`instance_meta.rs`、`export_presets.rs` | 多目录、选择与内存、元资料、导出配置 |
 | Java 桌面服务 | `java_commands.rs`、`java_service.rs`、`platform.rs` | 选择器、登记请求绑定与探测前后校验 |
-| 文件操作 | `resource_ops.rs`、`instance_reset.rs`、`instance_export.rs` | 本地资源事务、组件重置、ZIP 导出 |
+| 文件操作 | `resource_ops.rs`、`instance_reset.rs`、`instance_export.rs`、`instance_import.rs`、`instance_delete.rs` | 本地资源事务、组件重置、ZIP 导出/导入、实例删除恢复 |
 | 任务协调 | `tasks.rs`、`downloads.rs` | 单写入任务、取消与结束语义、下载页面的任务投影 |
 | Minecraft 核心 | `crates/core/src/lib.rs` | 版本识别、继承、依赖和启动参数 |
 | Java 核心 | `crates/core/src/java.rs` | 有限时探测、发现、架构与版本策略、启动选择 |
@@ -55,6 +56,20 @@
 `crates/core/src/java.rs` 统一列表与启动选择。每次探测限制时长和输出，自动发现限制候选数量及总时长。程序使用独立进程组，超时或退出后清理组内子进程，并等待直接子进程；不要改成持锁执行或无界管道读取。手动选择在启动时重新探测，错误不会退回自动选择。Forge/NeoForge 的主版本策略也在核心执行，前端禁用不兼容选项只是提前提示。
 
 v2 设置在普通启动时备份并迁移。已有改名 journal 的引用载荷必须按原 v2 字段顺序重放；存在项目待恢复标记时，只在内存中规范化，保留磁盘字节。完成恢复后的首次合法设置写入再备份恢复后的原始 v2 字节并升级。排查升级与改名交叉问题时，先读 `VersionTwo`、`rename_bytes` 和 `pending_migration`，不要让新字段提前改变 journal 的预期快照。
+
+## ZIP 导入与实例删除
+
+`instance_commands.rs` 只负责桌面准入和任务生命周期。导入前重新创建文件计划，比较 revision 后再启动工作线程；选择器路径和序列化的计划摘要不能作为已验证文件的替代品。事务模块检查来源身份、内容与目标快照，拒绝覆盖，拥有提交和清理记录。取消请求只有在事务明确返回取消时才归为 Cancelled；其他错误使用 `TaskOutcome::Error`，避免迟来的取消掩盖冲突或校验失败。
+
+导入将继承描述合并成独立实例，不把共享内容写回新目录之外的任意路径。公共库和素材只允许相同内容复用。排查时从 `instance_import::prepare`、`execute_checked`、`recover_pending` 开始，核对提交前的来源重检、启动器旧引用检查、暂存所有权登记和中断恢复。`archive.rs` 处理归档结构、格式和版本继承；`filesystem.rs` 处理目录描述符、文件身份与快照；主模块负责计划、持久状态和提交编排。
+
+暂存文件先以匿名文件写入并校验，再登记所有权，最后给它发布文件名。每个文件的登记是独立小记录，完整计划只在状态切换时保存，避免文件较多的整合包反复序列化整份计划。恢复会合并这些登记，按文件身份和哈希核对后才清理；校验或清理失败不能被取消请求遮盖。
+
+删除事务移动 `versions/<id>`，不修改启动器引用。删除 journal 保留名称 reservation，直到原文件恢复成功；安装、导入、改名、启动和资源操作必须检查 reservation。bootstrap 排除外部重新创建的同名目录，防止旧元资料附到不同实例。设置、资料和资源历史的旧引用也不能被新实例默默继承；包括已清空资料的 generation 记录，它仍用于排除旧确认 token。
+
+删除和恢复在 settings flock 后取得恢复区锁，提交前重检 Java 依赖和实例引用。项目待恢复 marker 跨游戏目录阻止资料写入；恢复必须绑定原项目及规范目录。恢复记录仅允许已登记状态的重放或明确的空暂存清理，遇到外部修改保留文件。清理日志临时文件前也要验证恢复目录身份，不能先清理再拒绝外部替换的目录。
+
+`instance_delete/filesystem.rs` 负责目录描述符、内容树快照、锁、移动与空目录清理；主模块负责依赖检查、计划、日志状态和删除/恢复。文件事务回归分别在 `instance_import/tests.rs` 和 `instance_delete/tests.rs`；bootstrap、旧资料及外部重建的组合行为在 `main.rs` 的应用集成用例中。桌面命令在大型归档/内容树的只读校验期间释放 `operations`，返回方案或准入任务前再检查占用、目录绑定和待恢复状态。
 
 ## 修改时维持的约束
 

@@ -1321,7 +1321,7 @@ pub fn ensure_project_ready(project: &Path) -> Result<(), String> {
     if pending_root(project)?.is_some() {
         Err(PENDING_ERROR.into())
     } else {
-        Ok(())
+        crate::instance_delete::ensure_project_ready(project)
     }
 }
 

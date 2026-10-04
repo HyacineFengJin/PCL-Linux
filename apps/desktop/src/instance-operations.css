@@ -336,6 +336,32 @@
   max-height: calc(100vh - 96px);
   overflow-y: auto;
 }
+.ce-instance-file-dialog > .rd-name-error {
+  color: #c44b3b;
+}
+.ce-instance-file-dialog > input {
+  margin-bottom: 14px;
+}
+.ce-instance-file-dialog > .ce-instance-plan-warning {
+  color: #9b8554;
+}
+.ce-instance-trash-entry,
+.ce-instance-trash-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ce-instance-trash-entry > span,
+.ce-instance-trash-error > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ce-instance-trash .ce-button {
+  flex: none;
+  min-height: 28px;
+  font-size: 12px;
+}
 .ce-export-name-card {
   display: grid;
   grid-template-columns: auto minmax(90px, 1fr) auto 138px;

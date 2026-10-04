@@ -27,6 +27,9 @@ pub enum TaskKind {
     InstanceReset,
     InstanceExport,
     InstanceRename,
+    InstanceImport,
+    InstanceDelete,
+    InstanceRestore,
     ResourceOperation,
 }
 
@@ -103,6 +106,9 @@ pub enum TaskOutcome {
     },
     Failed(String),
     CleanupFailed(String),
+    // A cancellation request is not proof that it caused a failure. Services
+    // with an explicit cancellation result use Error for every other failure.
+    Error(String),
 }
 
 struct TaskRecord {
@@ -238,6 +244,9 @@ impl Tasks {
                     TaskKind::InstanceReset => "reset_prepare",
                     TaskKind::InstanceExport => "export-scan",
                     TaskKind::InstanceRename => "rename_prepare",
+                    TaskKind::InstanceImport => "import-check",
+                    TaskKind::InstanceDelete => "delete-check",
+                    TaskKind::InstanceRestore => "restore-check",
                     TaskKind::ResourceOperation => "resources",
                 }
                 .into(),
@@ -246,6 +255,9 @@ impl Tasks {
                     TaskKind::InstanceReset => "正在检查重置方案…",
                     TaskKind::InstanceExport => "正在检查导出文件…",
                     TaskKind::InstanceRename => "正在检查实例名称与引用…",
+                    TaskKind::InstanceImport => "正在检查本地 ZIP…",
+                    TaskKind::InstanceDelete => "正在检查实例删除范围…",
+                    TaskKind::InstanceRestore => "正在检查实例恢复记录…",
                     TaskKind::ResourceOperation => "正在检查资源文件…",
                 }
                 .into(),
@@ -297,6 +309,9 @@ impl Tasks {
                     TaskKind::InstanceReset => "正在取消重置并恢复原核心文件…",
                     TaskKind::InstanceExport => "正在取消导出并清理临时文件…",
                     TaskKind::InstanceRename => "正在取消改名并清理临时文件…",
+                    TaskKind::InstanceImport => "正在取消导入并清理未完成文件…",
+                    TaskKind::InstanceDelete => "正在取消删除…",
+                    TaskKind::InstanceRestore => "正在取消恢复…",
                     TaskKind::ResourceOperation => "正在取消资源操作…",
                 }
                 .into();
@@ -471,6 +486,9 @@ impl Tasks {
                             TaskKind::InstanceReset => "重置已取消，原实例已保留",
                             TaskKind::InstanceExport => "导出已取消，未完成 ZIP 已清理",
                             TaskKind::InstanceRename => "改名已取消，原实例已保留",
+                            TaskKind::InstanceImport => "导入已取消，未完成文件已清理",
+                            TaskKind::InstanceDelete => "删除已取消，原实例已保留",
+                            TaskKind::InstanceRestore => "恢复已取消，可恢复文件已保留",
                             TaskKind::ResourceOperation => "资源操作已取消",
                         }
                         .into()
@@ -479,7 +497,7 @@ impl Tasks {
                     };
                     snapshot.error = if cancelled { None } else { Some(error) };
                 }
-                TaskOutcome::CleanupFailed(error) => {
+                TaskOutcome::CleanupFailed(error) | TaskOutcome::Error(error) => {
                     snapshot.stage = TaskStage::Error;
                     snapshot.phase = "error".into();
                     snapshot.message = error.clone();
@@ -562,6 +580,21 @@ mod tests {
             message: "完成".into(),
             error: None,
         });
+    }
+
+    #[test]
+    fn explicit_error_is_not_masked_by_a_late_cancellation() {
+        let tasks = Arc::new(Tasks::new());
+        let task = tasks
+            .admit(target("root-a"), TaskKind::InstanceImport)
+            .unwrap();
+        let id = task.id().to_owned();
+        tasks.cancel(&id).unwrap();
+        task.finish(TaskOutcome::Error("Source hash changed".into()));
+        let result = tasks.snapshot(&id).unwrap();
+        assert_eq!(result.stage, TaskStage::Error);
+        assert_eq!(result.error.as_deref(), Some("Source hash changed"));
+        assert!(tasks.active().is_none());
     }
 
     #[test]

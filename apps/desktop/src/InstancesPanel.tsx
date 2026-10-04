@@ -28,6 +28,7 @@ import {
 import { Collapse } from "./Collapse";
 import { InstanceOperations } from "./InstanceOperations";
 import { JavaSelect } from "./JavaSelect";
+import { InstanceDelete } from "./InstanceTrash";
 import commandIcon from "./assets/game-icons/command.png";
 import lampTexture from "./assets/game-icons/redstone-lamp.png";
 import grassIcon from "./assets/game-icons/grass.png";
@@ -860,9 +861,21 @@ export function InstancePanel({
             <button className="ce-button" disabled title={notReady}>
               重置
             </button>
-            <button className="ce-button danger" disabled title={notReady}>
-              删除实例
-            </button>
+            <InstanceDelete
+              id={instance.id}
+              api={api}
+              scopeKey={rootScope}
+              native={native}
+              disabled={
+                disabled ||
+                !!mutationDisabled ||
+                metadataWorking ||
+                !!renameOpen ||
+                !!renameWorking ||
+                !!descriptionOpen
+              }
+              onTaskStart={onTaskStart}
+            />
             <button className="ce-button" disabled title={notReady}>
               修补核心
             </button>

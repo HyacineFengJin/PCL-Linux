@@ -10,6 +10,21 @@ import {
 import type { DownloadStatus, DownloadStep } from "./DownloadPanel";
 import type { Api } from "./types";
 import "./task-manager.css";
+export function instanceTaskAction(kind: DownloadStatus["kind"]) {
+  return kind === "instance_reset"
+    ? "重置"
+    : kind === "instance_export"
+      ? "导出"
+      : kind === "instance_rename"
+        ? "改名"
+        : kind === "instance_import"
+          ? "导入"
+          : kind === "instance_delete"
+            ? "删除"
+            : kind === "instance_restore"
+              ? "恢复"
+              : "安装";
+}
 export function useDownloadSpeed(status: DownloadStatus) {
   const sample = useRef<{
     bytes: number;
@@ -72,7 +87,10 @@ export function TaskStatistics({
           {terminalCancelled ||
           speed === null ||
           status.kind === "instance_export" ||
-          status.kind === "instance_rename"
+          status.kind === "instance_rename" ||
+          status.kind === "instance_import" ||
+          status.kind === "instance_delete" ||
+          status.kind === "instance_restore"
             ? "—"
             : `${(speed / 1048576).toFixed(2)} MiB/s`}
         </strong>
@@ -162,41 +180,57 @@ export function TaskManager({
   const active = ["downloading", "preparing", "processing"].includes(
     status.stage,
   );
-  const action =
-    status.kind === "instance_reset"
-      ? "重置"
-      : status.kind === "instance_export"
-        ? "导出"
-        : status.kind === "instance_rename"
-          ? "改名"
-          : "安装";
+  const action = instanceTaskAction(status.kind);
   const phase =
     status.phase ||
     (status.stage === "downloading" ? "downloading" : "metadata");
   const current =
-    phase === "metadata"
-      ? 0
-      : phase === "downloading"
-        ? 1
-        : phase === "installing"
-          ? 2
-          : phase === "complete"
-            ? 2
-            : 0;
+    status.kind === "instance_import"
+      ? Math.max(
+          0,
+          [
+            "import-check",
+            "import-extract",
+            "import-commit",
+            "import-cleanup",
+          ].indexOf(phase),
+        )
+      : status.kind === "instance_delete" || status.kind === "instance_restore"
+        ? phase === "committing"
+          ? 1
+          : 0
+        : phase === "metadata"
+          ? 0
+          : phase === "downloading"
+            ? 1
+            : phase === "installing"
+              ? 2
+              : phase === "complete"
+                ? 2
+                : 0;
+  const fallbackLabels =
+    status.kind === "instance_import"
+      ? [
+          "检查导入包与目标目录",
+          "解压独立实例与资源",
+          "发布实例文件",
+          "清理导入暂存文件",
+        ]
+      : status.kind === "instance_delete" || status.kind === "instance_restore"
+        ? ["检查实例文件与引用", "移动实例目录", "校验文件并保存恢复记录"]
+        : ["获取原版版本信息", "下载游戏与运行所需文件", "安装游戏"];
   const steps: DownloadStep[] = status.steps?.length
     ? status.steps
-    : ["获取原版版本信息", "下载游戏与运行所需文件", "安装游戏"].map(
-        (label, index) => ({
-          id: `legacy-${index}`,
-          label,
-          state:
-            status.stage === "complete"
-              ? "complete"
-              : active && index === current
-                ? "running"
-                : "pending",
-        }),
-      );
+    : fallbackLabels.map((label, index) => ({
+        id: `legacy-${index}`,
+        label,
+        state:
+          status.stage === "complete"
+            ? "complete"
+            : active && index === current
+              ? "running"
+              : "pending",
+      }));
   async function cancel() {
     if (
       !native ||

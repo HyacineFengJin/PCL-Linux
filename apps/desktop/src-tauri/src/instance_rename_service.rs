@@ -36,6 +36,10 @@ pub(super) fn prepare(
     new_name: &str,
 ) -> Result<CheckedRename, String> {
     let path = Path::new(&root.path);
+    crate::instance_import::ensure_ready(path)?;
+    crate::instance_delete::ensure_ready(path)?;
+    crate::instance_delete::ensure_name_available(path, id)?;
+    crate::instance_delete::ensure_name_available(path, new_name)?;
     instance_rename_refs::ensure_project_ready(&shared.project)?;
     resource_ops::ensure_ready(path)?;
     instance_reset::ensure_ready(path)?;

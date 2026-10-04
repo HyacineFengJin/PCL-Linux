@@ -497,9 +497,12 @@ impl ConfigStore {
                     let Some(migration) = migration else {
                         return Ok(migrated);
                     };
-                    // A pending rename binds exact v2 before/after bytes. Read
-                    // them normally, then defer their upgrade until recovery.
-                    if crate::instance_rename_refs::pending_root(project)?.is_some() {
+                    // Pending instance transactions bind the existing settings
+                    // bytes. A schema upgrade would invalidate their recovery
+                    // snapshot, so defer it until the marker has been cleared.
+                    if crate::instance_rename_refs::pending_root(project)?.is_some()
+                        || crate::instance_delete::pending_root(project)?.is_some()
+                    {
                         return Ok(migrated);
                     }
                     crate::instance_rename_refs::with_settings_lock(project, || {
@@ -848,10 +851,31 @@ impl ConfigStore {
                 2 * 1024 * 1024,
             )?;
             if !current.disk.compatible(&disk) {
-                return Err("设置文件已由外部修改，请重新打开启动器后再重命名".into());
+                return Err("设置文件已由外部修改，请重新打开启动器后再进行实例操作".into());
             }
             Ok(())
         })
+    }
+
+    /// A new physical instance must not silently inherit settings left behind
+    /// for an externally removed instance. Deletion reservations are checked
+    /// separately; this also covers references predating recoverable deletion.
+    pub fn ensure_new_instance_name(&self, root_id: &str, id: &str) -> Result<(), String> {
+        self.ensure_rename_snapshot()?;
+        let current = self.lock();
+        let root = current
+            .config
+            .roots
+            .iter()
+            .find(|root| root.id == root_id)
+            .ok_or("游戏目录未注册")?;
+        if root.selected.as_deref() == Some(id)
+            || root.overrides.contains_key(id)
+            || root.java_overrides.contains_key(id)
+        {
+            return Err("此名称仍有保存的实例设置，请使用新的实例名称".into());
+        }
+        Ok(())
     }
 
     pub fn refresh_after_rename(&self) -> Result<(), String> {
@@ -895,22 +919,16 @@ fn encode(config: &impl Serialize) -> Result<Vec<u8>, String> {
     Ok(data)
 }
 
-pub(crate) fn rename_bytes(
-    bytes: &[u8],
-    root_id: &str,
+/// Moving an instance also moves any runtime stored inside it. Keep the same
+/// path-resolution policy for rename and deletion, including missing explicit
+/// Manual choices and available registry aliases across every registered root.
+fn check_instance_java_dependencies(
+    config: &Persisted,
     root: &Path,
-    old: &str,
-    new: &str,
-) -> Result<Vec<u8>, String> {
-    pcl_core::identifier(old)?;
-    pcl_core::identifier(new)?;
-    let (mut config, migration) =
-        decode_settings(bytes).map_err(|_| "设置损坏或格式不受支持，原文件已保留".to_string())?;
-    if matches!(migration, Some(Migration::Legacy)) {
-        return Err("旧版设置尚未迁移，无法重命名".into());
-    }
-    validate_config(&config)?;
-    let source_folder = root.join("versions").join(old);
+    id: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let source_folder = root.join("versions").join(id);
     let selected_paths = std::iter::once(&config.java)
         .chain(
             config
@@ -935,9 +953,59 @@ pub(crate) fn rename_bytes(
         .collect();
     for path in java_paths {
         if java_path_points_into(Path::new(path), &source_folder)? {
-            return Err("Java 位于待改名实例内，请先移到实例之外并重新添加".into());
+            return Err(reason.into());
         }
     }
+    Ok(())
+}
+
+pub(crate) fn check_delete_dependencies(
+    bytes: &[u8],
+    root_id: &str,
+    root: &Path,
+    id: &str,
+) -> Result<(), String> {
+    pcl_core::identifier(id)?;
+    let (config, _) =
+        decode_settings(bytes).map_err(|_| "设置损坏或格式不受支持，原文件已保留".to_string())?;
+    validate_config(&config)?;
+    let registered = config
+        .roots
+        .iter()
+        .find(|item| item.id == root_id)
+        .ok_or("删除所属的游戏目录未注册")?;
+    if canonical_root(&registered.path)? != root {
+        return Err("设置中的游戏目录与删除范围不符".into());
+    }
+    check_instance_java_dependencies(
+        &config,
+        root,
+        id,
+        "Java 位于待删除实例内，请先移到实例之外并重新添加",
+    )
+}
+
+pub(crate) fn rename_bytes(
+    bytes: &[u8],
+    root_id: &str,
+    root: &Path,
+    old: &str,
+    new: &str,
+) -> Result<Vec<u8>, String> {
+    pcl_core::identifier(old)?;
+    pcl_core::identifier(new)?;
+    let (mut config, migration) =
+        decode_settings(bytes).map_err(|_| "设置损坏或格式不受支持，原文件已保留".to_string())?;
+    if matches!(migration, Some(Migration::Legacy)) {
+        return Err("旧版设置尚未迁移，无法重命名".into());
+    }
+    validate_config(&config)?;
+    check_instance_java_dependencies(
+        &config,
+        root,
+        old,
+        "Java 位于待改名实例内，请先移到实例之外并重新添加",
+    )?;
     let selected = config
         .roots
         .iter_mut()

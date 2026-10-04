@@ -31,7 +31,14 @@ export type DownloadStep = {
 };
 export type DownloadStatus = {
   kind?:
-    "install" | "instance_reset" | "instance_export" | "instance_rename" | null;
+    | "install"
+    | "instance_reset"
+    | "instance_export"
+    | "instance_rename"
+    | "instance_import"
+    | "instance_delete"
+    | "instance_restore"
+    | null;
   stage:
     | "idle"
     | "preparing"
@@ -205,7 +212,13 @@ export function DownloadPanel({
         if (active(next)) completed.current = "";
         if (
           (next.stage === "complete" ||
-            (next.stage === "error" && next.kind === "instance_rename")) &&
+            (next.stage === "error" &&
+              [
+                "instance_rename",
+                "instance_import",
+                "instance_delete",
+                "instance_restore",
+              ].includes(next.kind || ""))) &&
           next.version &&
           completed.current !==
             (next.task_id ||
@@ -216,6 +229,9 @@ export function DownloadPanel({
             `${next.root_id || next.root_path || ""}:${next.version}`;
           if (
             next.kind === "instance_rename" ||
+            next.kind === "instance_import" ||
+            next.kind === "instance_delete" ||
+            next.kind === "instance_restore" ||
             next.kind === "install" ||
             !next.root_id ||
             next.root_id === context.current.rootId

@@ -80,7 +80,14 @@ import {
   InstanceIcon,
 } from "./InstancesPanel";
 import { ResourceDetails, type ResourceSummary } from "./ResourceDetails";
-import { TaskManager, TaskStatistics, useDownloadSpeed } from "./TaskManager";
+import { InstanceImport } from "./InstanceImport";
+import { InstanceTrash } from "./InstanceTrash";
+import {
+  TaskManager,
+  TaskStatistics,
+  useDownloadSpeed,
+  instanceTaskAction,
+} from "./TaskManager";
 import "./account-interactions.css";
 import { ExtraSettings } from "./ExtraSettings";
 import type {
@@ -135,6 +142,9 @@ type State = {
   reset_recovery_error?: string | null;
   rename_recovery_error?: string | null;
   rename_recovery_root_id?: string | null;
+  import_recovery_error?: string | null;
+  delete_recovery_error?: string | null;
+  delete_recovery_root_id?: string | null;
   config_warning?: string | null;
   instances: Instance[];
   status: Status;
@@ -160,6 +170,11 @@ const resourceWrites = new Set([
   "instance_rename_recover",
   "instance_export_start",
   "instance_export_config_save",
+  "instance_import_start",
+  "instance_import_recover",
+  "instance_delete_start",
+  "instance_restore_start",
+  "instance_delete_recover",
 ]);
 const rootCommands = new Set([
   "java_catalog",
@@ -189,6 +204,15 @@ const rootCommands = new Set([
   "instance_export_start",
   "instance_export_config_read",
   "instance_export_config_save",
+  "instance_import_pick",
+  "instance_import_prepare",
+  "instance_import_start",
+  "instance_import_recover",
+  "instance_delete_prepare",
+  "instance_delete_start",
+  "instance_deleted_list",
+  "instance_restore_start",
+  "instance_delete_recover",
 ]);
 type PreviewRoot = {
   settings: Settings;
@@ -816,6 +840,33 @@ function App() {
   const rootKey = `${rootId || ""}:${data?.settings.root || ""}`;
   const contextKey = React.useRef(rootKey);
   contextKey.current = rootKey;
+  const viewContext = React.useRef({
+    screen,
+    rootKey,
+    selected: data?.settings.selected,
+    rootId,
+    roots: data?.roots,
+    deletionRoot: data?.delete_recovery_root_id,
+  });
+  viewContext.current = {
+    screen,
+    rootKey,
+    selected: data?.settings.selected,
+    rootId,
+    roots: data?.roots,
+    deletionRoot: data?.delete_recovery_root_id,
+  };
+  const [instanceImport, setInstanceImport] = useState<{
+    rootKey: string;
+    epoch: number;
+  } | null>(null);
+  const importEntry = React.useRef(instanceImport);
+  importEntry.current = instanceImport;
+  const archiveRecovery = React.useRef<symbol | null>(null);
+  const archiveAdmission = React.useRef({
+    blocked: true,
+    rootAvailable: false,
+  });
   function acceptJavaRegistration(
     capturedContext: string,
     revision: unknown,
@@ -869,10 +920,13 @@ function App() {
             // newer bootstrap while rootWorkingRef is set.
             await load();
           if (
-            ["instance_reset_recover", "instance_rename_recover"].includes(
+            ["instance_import_recover", "instance_delete_recover"].includes(
+              command,
+            ) ||
+            (["instance_reset_recover", "instance_rename_recover"].includes(
               command,
             ) &&
-            contextKey.current === capturedContext
+              contextKey.current === capturedContext)
           )
             await load();
           return result;
@@ -961,6 +1015,81 @@ function App() {
       setResourceTarget((current) => (current === target ? null : current));
     }
   }
+  async function recoverInstanceArchives(kind: "import" | "delete") {
+    const recoveryRoot =
+      kind === "delete"
+        ? viewContext.current.deletionRoot
+        : viewContext.current.rootId;
+    if (
+      !native ||
+      archiveAdmission.current.blocked ||
+      rootWorkingRef.current ||
+      archiveRecovery.current ||
+      contextKey.current !== rootKey ||
+      !recoveryRoot ||
+      !viewContext.current.roots?.some(
+        (root) => root.id === recoveryRoot && root.available,
+      )
+    )
+      return;
+    const token = Symbol();
+    archiveRecovery.current = token;
+    const target = { id: recoveryRoot };
+    setResourceTarget(target);
+    try {
+      // A global deletion marker can belong to a different browsed root.
+      // Capture its owner for recovery, then bootstrap the current projection.
+      await api(`instance_${kind}_recover`, { rootId: recoveryRoot });
+      await load();
+      notify(
+        kind === "delete"
+          ? "已恢复未完成的实例删除或恢复"
+          : "已恢复未完成的实例导入",
+      );
+    } catch (error) {
+      await load();
+      notify(String(error));
+    } finally {
+      if (archiveRecovery.current === token) archiveRecovery.current = null;
+      setResourceTarget((current) => (current === target ? null : current));
+    }
+  }
+  function openInstanceImport() {
+    if (
+      !native ||
+      archiveAdmission.current.blocked ||
+      rootWorkingRef.current ||
+      !archiveAdmission.current.rootAvailable ||
+      importEntry.current ||
+      viewContext.current.screen !== "versions" ||
+      taskNavigation.current.epoch !== navigationEpoch ||
+      contextKey.current !== rootKey
+    )
+      return;
+    const choice = { rootKey, epoch: taskNavigation.current.epoch };
+    importEntry.current = choice;
+    setInstanceImport(choice);
+  }
+  function finishTaskCancellation(next: DownloadStatus) {
+    if (downloadSnapshot.current.task_id !== next.task_id) return;
+    const instanceTask = [
+      "instance_reset",
+      "instance_export",
+      "instance_rename",
+      "instance_import",
+      "instance_delete",
+      "instance_restore",
+    ].includes(next.kind || "");
+    notify(`${next.version || "游戏"} ${instanceTaskAction(next.kind)}已取消`);
+    if (!instanceTask) {
+      setTab("download");
+      setDownloadPage("minecraft");
+      setTaskOrigin("home");
+    }
+    setScreen((current) =>
+      current === "tasks" ? (instanceTask ? taskOrigin : "home") : current,
+    );
+  }
   const [instancePage, setInstancePage] = useState("overview");
   const [settingsPage, setSettingsPage] = useState("launch");
   const [downloadPage, setDownloadPage] = useState("minecraft");
@@ -972,6 +1101,19 @@ function App() {
       epoch: taskNavigation.current.epoch + 1,
     };
   }
+  const navigationEpoch = taskNavigation.current.epoch;
+  useEffect(() => {
+    const choice = importEntry.current;
+    if (
+      !choice ||
+      (choice.rootKey === rootKey &&
+        choice.epoch === navigationEpoch &&
+        screen === "versions")
+    )
+      return;
+    importEntry.current = null;
+    setInstanceImport((current) => (current === choice ? null : current));
+  }, [rootKey, navigationEpoch, screen]);
   const contentRef = React.useRef<HTMLElement>(null);
   useEffect(() => {
     contentRef.current?.scrollTo({ top: 0 });
@@ -987,12 +1129,27 @@ function App() {
   };
   function applyState(snapshot: State) {
     const next = normalizedState(snapshot);
+    const previous = viewContext.current;
+    const missingInstance =
+      previous.rootKey ===
+        `${next.settings.root_id || ""}:${next.settings.root}` &&
+      !!previous.selected &&
+      !next.instances.some((instance) => instance.id === previous.selected);
     if (
       !next.instances.some((i) => i.id === next.settings.selected) &&
       next.instances.length
     )
       next.settings.selected =
         next.instances.find((x) => x.mod_count > 0)?.id || next.instances[0].id;
+    if (!next.instances.length) next.settings.selected = null;
+    // Removing the physical instance invalidates its details even if another
+    // instance becomes selected. The task's back destination must agree too.
+    if (missingInstance) {
+      setScreen((current) => (current === "instance" ? "versions" : current));
+      setTaskOrigin((current) =>
+        current === "instance" ? "versions" : current,
+      );
+    }
     setClientId(next.auth.client_id);
     setData(next);
     setDraft(next.settings);
@@ -1085,6 +1242,8 @@ function App() {
     setResource(null);
     setQuery("");
     setRootMenu(null);
+    setInstanceImport(null);
+    importEntry.current = null;
     setInstancePage("overview");
     setScreen((current) =>
       ["instance", "resource"].includes(current) ? "versions" : current,
@@ -1205,6 +1364,15 @@ function App() {
     (resourceBusy && resourceTarget?.id === rootId);
   const selectedRoot = data?.roots?.find((root) => root.id === rootId);
   const rootAvailable = selectedRoot?.available !== false;
+  const instanceRecoveryBlocked =
+    !!data?.rename_recovery_error ||
+    !!data?.reset_recovery_error ||
+    !!data?.import_recovery_error ||
+    !!data?.delete_recovery_error;
+  archiveAdmission.current = {
+    blocked: !!busy || downloadBusy || resourceBusy || rootWorking,
+    rootAvailable: rootAvailable && !instanceRecoveryBlocked,
+  };
   async function save(cfg: Settings) {
     const settings = { ...cfg, root_id: cfg.root_id || rootId };
     const targetKey = `${settings.root_id || ""}:${settings.root}`;
@@ -1592,8 +1760,18 @@ function App() {
                 </button>
                 <button
                   className="side-item"
-                  disabled
-                  title="整合包导入尚未开放"
+                  disabled={
+                    !native ||
+                    archiveAdmission.current.blocked ||
+                    !archiveAdmission.current.rootAvailable ||
+                    !!instanceImport
+                  }
+                  title={
+                    !native
+                      ? "请在桌面应用中导入本地 ZIP"
+                      : "导入由本应用导出的 ZIP"
+                  }
+                  onClick={openInstanceImport}
                 >
                   <PackagePlus size={19} />
                   导入整合包
@@ -1749,6 +1927,7 @@ function App() {
                           checking ||
                           rootWorking ||
                           !rootAvailable ||
+                          instanceRecoveryBlocked ||
                           !!busy))
                     }
                     onClick={() =>
@@ -1815,6 +1994,50 @@ function App() {
             )}
           </aside>
           <main className="content" ref={contentRef}>
+            {data.import_recovery_error && screen !== "tasks" && (
+              <section className="error-banner" role="alert">
+                <TriangleAlert size={17} />
+                <span>{data.import_recovery_error}</span>
+                <button
+                  className="ce-button"
+                  disabled={
+                    !native ||
+                    archiveAdmission.current.blocked ||
+                    !rootAvailable
+                  }
+                  onClick={() => void recoverInstanceArchives("import")}
+                >
+                  恢复实例导入
+                </button>
+              </section>
+            )}
+            {data.delete_recovery_error && screen !== "tasks" && (
+              <section className="error-banner" role="alert">
+                <TriangleAlert size={17} />
+                <span>{data.delete_recovery_error}</span>
+                <button
+                  className="ce-button"
+                  title={
+                    data.roots?.find(
+                      (root) => root.id === data.delete_recovery_root_id,
+                    )?.path
+                  }
+                  disabled={
+                    !native ||
+                    archiveAdmission.current.blocked ||
+                    !data.delete_recovery_root_id ||
+                    !data.roots?.some(
+                      (root) =>
+                        root.id === data.delete_recovery_root_id &&
+                        root.available,
+                    )
+                  }
+                  onClick={() => void recoverInstanceArchives("delete")}
+                >
+                  恢复实例删除
+                </button>
+              </section>
+            )}
             {data.rename_recovery_error && screen !== "tasks" && (
               <section className="error-banner" role="alert">
                 <TriangleAlert size={17} />
@@ -1872,7 +2095,7 @@ function App() {
                 rootAvailable={rootAvailable && !rootWorking}
                 native={native}
                 installed={data.instances}
-                gameBusy={!!busy || resourceBusy}
+                gameBusy={!!busy || resourceBusy || instanceRecoveryBlocked}
                 onInstalled={load}
                 onBusyChange={setDownloadBusy}
                 onStatusChange={acceptDownloadStatus}
@@ -1899,33 +2122,21 @@ function App() {
                   native={native}
                   onNotify={notify}
                   onStatusChange={acceptDownloadStatus}
-                  onCancelled={(next) => {
-                    if (downloadSnapshot.current.task_id !== next.task_id)
-                      return;
-                    const instanceTask = [
-                      "instance_reset",
-                      "instance_export",
-                      "instance_rename",
-                    ].includes(next.kind || "");
-                    notify(
-                      `${next.version || "游戏"} ${next.kind === "instance_reset" ? "重置" : next.kind === "instance_export" ? "导出" : next.kind === "instance_rename" ? "改名" : "安装"}已取消`,
-                    );
-                    if (!instanceTask) {
-                      setTab("download");
-                      setDownloadPage("minecraft");
-                      setTaskOrigin("home");
-                    }
-                    setScreen((current) =>
-                      current === "tasks"
-                        ? instanceTask
-                          ? taskOrigin
-                          : "home"
-                        : current,
-                    );
-                  }}
+                  onCancelled={finishTaskCancellation}
                 />
               ) : screen === "versions" ? (
                 <>
+                  <InstanceTrash
+                    api={rootApi}
+                    scopeKey={rootId || data.settings.root}
+                    native={native}
+                    disabled={
+                      archiveAdmission.current.blocked ||
+                      !archiveAdmission.current.rootAvailable
+                    }
+                    onTaskStart={showInstanceTask}
+                    refreshKey={`${data.settings.revision || ""}:${downloadStatus.task_id || ""}:${downloadStatus.stage}`}
+                  />
                   {data.config_warning && (
                     <div className="error-banner" role="alert">
                       <TriangleAlert size={17} />
@@ -2023,7 +2234,8 @@ function App() {
                     downloadBusy ||
                     resourceBusy ||
                     rootWorking ||
-                    !rootAvailable
+                    !rootAvailable ||
+                    instanceRecoveryBlocked
                   }
                 />
               ) : screen === "home" ? (
@@ -2058,8 +2270,7 @@ function App() {
                           downloadBusy ||
                           resourceBusy ||
                           rootWorking ||
-                          !!data.rename_recovery_error ||
-                          !!data.reset_recovery_error
+                          instanceRecoveryBlocked
                         }
                         onInstances={instanceSettings}
                         onNotify={notify}
@@ -2093,6 +2304,30 @@ function App() {
           >
             <Download size={23} />
           </button>
+        )}
+      {data &&
+        instanceImport &&
+        instanceImport.rootKey === rootKey &&
+        screen === "versions" &&
+        instanceImport.epoch === taskNavigation.current.epoch && (
+          <InstanceImport
+            key={`${instanceImport.rootKey}:${instanceImport.epoch}`}
+            api={rootApi}
+            scopeKey={rootId || data.settings.root}
+            native={native}
+            disabled={
+              archiveAdmission.current.blocked ||
+              !archiveAdmission.current.rootAvailable
+            }
+            occupiedNames={data.instances.map((instance) => instance.id)}
+            onTaskStart={showInstanceTask}
+            onNotify={notify}
+            onClose={() =>
+              setInstanceImport((current) =>
+                current === instanceImport ? null : current,
+              )
+            }
+          />
         )}
       {rootMenu && menuRoot && (
         <div
