@@ -17,11 +17,18 @@ import {
 
 import { Favorites, LoaderCatalog, installerPages } from "./LoaderCatalog";
 import { Collapse } from "./Collapse";
-import { InstallSelection } from "./InstallSelection";
+import { InstallSelection, installNameError } from "./InstallSelection";
+import type { InstallOptions } from "./InstallSelection";
 import type { ResourceSummary } from "./ResourceDetails";
 import grassIcon from "./assets/game-icons/grass.png";
 import commandIcon from "./assets/game-icons/command.png";
 
+export type DownloadStep = {
+  id: string;
+  label: string;
+  state: "pending" | "running" | "complete";
+  progress?: number | null;
+};
 export type DownloadStatus = {
   stage:
     | "idle"
@@ -45,6 +52,7 @@ export type DownloadStatus = {
   progress?: number;
   error?: string | null;
   can_cancel?: boolean;
+  steps?: DownloadStep[];
   result?: {
     id: string;
     java_major: number;
@@ -79,6 +87,7 @@ export function DownloadPanel({
   onStatusChange,
   onResourceDetails,
   onTaskStart,
+  visible = true,
   section = "minecraft",
 }: {
   api: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -93,6 +102,7 @@ export function DownloadPanel({
   onStatusChange: (status: DownloadStatus) => void;
   onResourceDetails: (resource: ResourceSummary) => void;
   onTaskStart: () => void;
+  visible?: boolean;
 }) {
   const [catalog, setCatalog] = useState<VersionEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -104,6 +114,20 @@ export function DownloadPanel({
   const [working, setWorking] = useState(false);
   const completed = useRef("");
   const starting = useRef(false);
+  const mounted = useRef(true);
+  const statusEpoch = useRef(0);
+  const catalogEpoch = useRef(0);
+  const latestStatus = useRef<DownloadStatus>(idleDownload);
+  const context = useRef({ rootId, section, visible, api, choice });
+  if (
+    context.current.rootId !== rootId ||
+    context.current.section !== section ||
+    context.current.visible !== visible ||
+    context.current.api !== api ||
+    context.current.choice !== choice
+  )
+    context.current = { rootId, section, visible, api, choice };
+  const renderedContext = context.current;
   const callbacks = useRef({
     onInstalled,
     onBusyChange,
@@ -117,32 +141,62 @@ export function DownloadPanel({
     onTaskStart,
   };
   useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      statusEpoch.current += 1;
+      catalogEpoch.current += 1;
+    };
+  }, []);
+  useEffect(() => {
     setChoice(null);
     setError("");
   }, [section, rootId]);
   async function loadCatalog(refresh = false) {
+    const request = ++catalogEpoch.current;
     setLoading(true);
     setError("");
     try {
-      setCatalog(await api<VersionEntry[]>("download_catalog", { refresh }));
+      const entries = await api<VersionEntry[]>("download_catalog", {
+        refresh,
+      });
+      if (mounted.current && request === catalogEpoch.current)
+        setCatalog(entries);
     } catch (e) {
-      setError(String(e));
+      if (mounted.current && request === catalogEpoch.current)
+        setError(String(e));
     } finally {
-      setLoading(false);
+      if (mounted.current && request === catalogEpoch.current)
+        setLoading(false);
     }
   }
   useEffect(() => {
     void loadCatalog();
-  }, []);
+    return () => {
+      catalogEpoch.current += 1;
+    };
+  }, [api]);
   useEffect(() => {
     let disposed = false;
     let polling = false;
     async function poll() {
       if (polling || starting.current) return;
+      const epoch = statusEpoch.current;
       polling = true;
       try {
         const next = await api<DownloadStatus>("download_status");
-        if (disposed || starting.current) return;
+        if (disposed || starting.current || epoch !== statusEpoch.current)
+          return;
+        if (
+          next.task_id &&
+          next.task_id === latestStatus.current.task_id &&
+          ["complete", "error", "cancelled"].includes(
+            latestStatus.current.stage,
+          ) &&
+          active(next)
+        )
+          return;
+        latestStatus.current = next;
         setStatus(next);
         callbacks.current.onStatusChange(next);
         callbacks.current.onBusyChange(active(next));
@@ -157,10 +211,16 @@ export function DownloadPanel({
           completed.current =
             next.task_id ||
             `${next.root_id || next.root_path || ""}:${next.version}`;
-          await callbacks.current.onInstalled();
+          if (!next.root_id || next.root_id === context.current.rootId)
+            await callbacks.current.onInstalled();
         }
       } catch (e) {
-        if (!disposed) setError(String(e));
+        if (
+          !disposed &&
+          epoch === statusEpoch.current &&
+          context.current.visible
+        )
+          setError(String(e));
       } finally {
         polling = false;
       }
@@ -244,7 +304,7 @@ export function DownloadPanel({
       <button
         key={entry.id}
         className={`resource-row ce-version-row ${choice?.id === entry.id ? "chosen" : ""}`}
-        disabled={busy || gameBusy || !rootAvailable || ids.has(entry.id)}
+        disabled={busy || gameBusy || !rootAvailable}
         onClick={() => setChoice(entry)}
       >
         <span
@@ -278,29 +338,88 @@ export function DownloadPanel({
       </button>
     );
   }
-  async function start() {
-    if (!choice || gameBusy || busy || !native || !rootAvailable || !rootId)
+  async function start(options: InstallOptions) {
+    if (
+      starting.current ||
+      context.current !== renderedContext ||
+      !context.current.visible ||
+      !choice ||
+      gameBusy ||
+      busy ||
+      !native ||
+      !rootAvailable ||
+      !rootId ||
+      installNameError(options.name, installed)
+    )
       return;
+    const source = context.current;
     const targetRootId = rootId;
+    const targetVersion = choice.id;
     starting.current = true;
+    const epoch = ++statusEpoch.current;
+    let accepted = false;
     setWorking(true);
     setError("");
     callbacks.current.onBusyChange(true);
     try {
-      await api("download_start", { id: choice.id, rootId: targetRootId });
+      const taskId = await api<string>("download_start", {
+        id: targetVersion,
+        rootId: targetRootId,
+        name: options.name,
+        components: options.components,
+      });
+      accepted = true;
+      if (
+        !mounted.current ||
+        epoch !== statusEpoch.current ||
+        context.current.api !== source.api
+      )
+        return;
       completed.current = "";
+      const submitted: DownloadStatus = {
+        ...idleDownload,
+        stage: "preparing",
+        phase: "metadata",
+        message: "正在准备安装…",
+        task_id: taskId,
+        root_id: targetRootId,
+        version: options.name,
+        progress: 0,
+        can_cancel: true,
+      };
+      latestStatus.current = submitted;
+      setStatus(submitted);
+      callbacks.current.onStatusChange(submitted);
+      if (source === context.current && source.visible) {
+        setChoice(null);
+        callbacks.current.onTaskStart();
+      }
       const next = await api<DownloadStatus>("download_status");
+      if (
+        !mounted.current ||
+        epoch !== statusEpoch.current ||
+        next.task_id !== taskId ||
+        context.current.api !== source.api
+      )
+        return;
+      latestStatus.current = next;
       setStatus(next);
       callbacks.current.onStatusChange(next);
-      callbacks.current.onTaskStart();
       callbacks.current.onBusyChange(active(next));
-      setChoice(null);
     } catch (e) {
-      setError(String(e));
-      callbacks.current.onBusyChange(false);
+      if (
+        mounted.current &&
+        epoch === statusEpoch.current &&
+        source === context.current
+      )
+        setError(String(e));
+      if (mounted.current && epoch === statusEpoch.current && !accepted)
+        callbacks.current.onBusyChange(active(latestStatus.current));
     } finally {
-      starting.current = false;
-      setWorking(false);
+      if (epoch === statusEpoch.current) {
+        starting.current = false;
+        if (mounted.current) setWorking(false);
+      }
     }
   }
   return (
@@ -330,7 +449,8 @@ export function DownloadPanel({
           rootId={rootId}
           version={choice.id}
           native={native}
-          disabled={busy || gameBusy || !rootAvailable || ids.has(choice.id)}
+          disabled={busy || gameBusy || !rootAvailable}
+          installed={installed}
           onBack={() => setChoice(null)}
           onStart={start}
         />

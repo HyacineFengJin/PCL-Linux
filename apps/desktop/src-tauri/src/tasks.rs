@@ -4,7 +4,7 @@ use std::{
     collections::VecDeque,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -71,6 +71,7 @@ pub struct TaskSnapshot {
     pub bytes_done: u64,
     pub bytes_total: u64,
     pub network_bytes: u64,
+    pub steps: Vec<pcl_install::InstallStep>,
     pub result: Option<Value>,
     pub error: Option<String>,
     pub can_cancel: bool,
@@ -87,6 +88,7 @@ pub struct TaskProgress {
     pub bytes_done: u64,
     pub bytes_total: u64,
     pub network_bytes: u64,
+    pub steps: Vec<pcl_install::InstallStep>,
 }
 
 pub enum TaskOutcome {
@@ -97,6 +99,7 @@ pub enum TaskOutcome {
         error: Option<String>,
     },
     Failed(String),
+    CleanupFailed(String),
 }
 
 struct TaskRecord {
@@ -114,6 +117,7 @@ struct Inner {
 /// The worker owns its handle until it has stopped using the captured target.
 pub struct Tasks {
     inner: Mutex<Inner>,
+    finished: Condvar,
     history_limit: usize,
 }
 
@@ -156,6 +160,7 @@ impl Tasks {
                 active_id: None,
                 listener: None,
             }),
+            finished: Condvar::new(),
             history_limit: history_limit.max(1),
         }
     }
@@ -241,6 +246,7 @@ impl Tasks {
                 bytes_done: 0,
                 bytes_total: 0,
                 network_bytes: 0,
+                steps: Vec::new(),
                 result: None,
                 error: None,
                 can_cancel: true,
@@ -291,6 +297,23 @@ impl Tasks {
         Ok(snapshot)
     }
 
+    /// The worker publishes terminal state only after dropping its staging files
+    /// and stopping child processes. A cancellation caller waits for that point.
+    pub fn wait_terminal(&self, id: &str) -> Result<TaskSnapshot, String> {
+        let mut inner = self.inner.lock().unwrap();
+        loop {
+            let record = inner
+                .history
+                .iter()
+                .find(|record| record.snapshot.id == id)
+                .ok_or("找不到此任务")?;
+            if record.snapshot.stage.is_terminal() {
+                return Ok(record.snapshot.clone());
+            }
+            inner = self.finished.wait(inner).map_err(|_| "等待任务清理失败")?;
+        }
+    }
+
     fn trim(&self, inner: &mut Inner) {
         while inner.history.len() > self.history_limit {
             let Some(index) = inner
@@ -330,6 +353,25 @@ impl Tasks {
             snapshot.bytes_done = progress.bytes_done;
             snapshot.bytes_total = snapshot.bytes_total.max(progress.bytes_total);
             snapshot.network_bytes = snapshot.network_bytes.max(progress.network_bytes);
+            if !progress.steps.is_empty() {
+                // Concurrent transfer callbacks may arrive in reverse order. Keep
+                // each completed phase complete without inventing later progress.
+                for mut step in progress.steps {
+                    if let Some(old) = snapshot.steps.iter_mut().find(|old| old.id == step.id) {
+                        if old.state == "complete"
+                            || (old.state == "running" && step.state == "pending")
+                        {
+                            continue;
+                        }
+                        if let (Some(previous), Some(next)) = (old.progress, step.progress) {
+                            step.progress = Some(previous.max(next).clamp(0.0, 1.0));
+                        }
+                        *old = step;
+                    } else {
+                        snapshot.steps.push(step);
+                    }
+                }
+            }
             let ratio = if snapshot.bytes_total > 0 {
                 snapshot.bytes_done as f64 / snapshot.bytes_total as f64
             } else if snapshot.total > 0 {
@@ -337,7 +379,22 @@ impl Tasks {
             } else {
                 0.0
             };
-            snapshot.progress = snapshot.progress.max(ratio.clamp(0.0, 1.0));
+            snapshot.progress = if snapshot.steps.is_empty() {
+                snapshot.progress.max(ratio.clamp(0.0, 1.0))
+            } else {
+                snapshot
+                    .steps
+                    .iter()
+                    .map(|step| {
+                        if step.state == "complete" {
+                            1.0
+                        } else {
+                            step.progress.unwrap_or(0.0).clamp(0.0, 1.0)
+                        }
+                    })
+                    .sum::<f64>()
+                    / snapshot.steps.len() as f64
+            };
             (snapshot.clone(), inner.listener.clone())
         };
         publish(listener, snapshot.clone());
@@ -398,7 +455,7 @@ impl Tasks {
                     snapshot.phase = snapshot.stage.as_str().into();
                     snapshot.message = if cancelled {
                         match snapshot.kind {
-                            TaskKind::Install => "安装已取消，已下载的完整文件可继续复用",
+                            TaskKind::Install => "安装已取消，未完成文件已清理",
                             TaskKind::ResourceOperation => "资源操作已取消",
                         }
                         .into()
@@ -406,6 +463,12 @@ impl Tasks {
                         error.clone()
                     };
                     snapshot.error = if cancelled { None } else { Some(error) };
+                }
+                TaskOutcome::CleanupFailed(error) => {
+                    snapshot.stage = TaskStage::Error;
+                    snapshot.phase = "error".into();
+                    snapshot.message = error.clone();
+                    snapshot.error = Some(error);
                 }
             }
             snapshot.can_cancel = false;
@@ -415,6 +478,7 @@ impl Tasks {
             self.trim(&mut inner);
             (snapshot, inner.listener.clone())
         };
+        self.finished.notify_all();
         publish(listener, snapshot.clone());
         Some(snapshot)
     }
@@ -536,6 +600,88 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_waits_for_cleanup_and_returns_the_requested_task() {
+        let tasks = Arc::new(Tasks::new());
+        let first = tasks.admit(target("root-a"), TaskKind::Install).unwrap();
+        let id = first.id().to_owned();
+        tasks.cancel(&id).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let waiting = tasks.clone();
+        let submitted = id.clone();
+        let waiter = std::thread::spawn(move || {
+            tx.send(waiting.wait_terminal(&submitted).unwrap()).unwrap();
+        });
+        assert!(rx
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err());
+        assert!(tasks.admit(target("root-b"), TaskKind::Install).is_err());
+        first.finish(TaskOutcome::Failed("取消".into()));
+        let second = tasks.admit(target("root-b"), TaskKind::Install).unwrap();
+        let finished = rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        assert_eq!(finished.id, id);
+        assert_eq!(finished.stage, TaskStage::Cancelled);
+        assert!(!second.cancellation_token().load(Ordering::SeqCst));
+        waiter.join().unwrap();
+    }
+
+    #[test]
+    fn cancelled_cleanup_failure_stays_visible_as_error() {
+        let tasks = Arc::new(Tasks::new());
+        let task = tasks.admit(target("root-a"), TaskKind::Install).unwrap();
+        tasks.cancel(task.id()).unwrap();
+        task.finish(TaskOutcome::CleanupFailed(
+            "取消清理失败：文件正被使用".into(),
+        ));
+        let snapshot = tasks.wait_terminal(task.id()).unwrap();
+        assert_eq!(snapshot.stage, TaskStage::Error);
+        assert!(snapshot.error.unwrap().contains("清理失败"));
+        assert!(tasks.active().is_none());
+    }
+
+    #[test]
+    fn detailed_steps_preserve_completed_phases_on_late_callbacks() {
+        let tasks = Arc::new(Tasks::new());
+        let task = tasks.admit(target("root-a"), TaskKind::Install).unwrap();
+        let step = |id: &str, state: &str, progress| pcl_install::InstallStep {
+            id: id.into(),
+            label: id.into(),
+            state: state.into(),
+            progress,
+        };
+        let progress = |steps| TaskProgress {
+            stage: TaskStage::Downloading,
+            phase: "downloading".into(),
+            message: "下载".into(),
+            completed: 10,
+            total: 10,
+            bytes_done: 100,
+            bytes_total: 100,
+            network_bytes: 100,
+            steps,
+        };
+        task.update(progress(vec![
+            step("metadata", "complete", Some(1.0)),
+            step("files", "running", Some(0.6)),
+            step("install", "pending", None),
+        ]));
+        // Fully transferred files are still only part of installation progress.
+        assert!(tasks.snapshot(task.id()).unwrap().progress < 1.0);
+        task.update(progress(vec![
+            step("metadata", "pending", None),
+            step("files", "running", Some(0.2)),
+            step("install", "pending", None),
+        ]));
+        let snapshot = tasks.snapshot(task.id()).unwrap();
+        assert_eq!(snapshot.steps[0].state, "complete");
+        assert_eq!(snapshot.steps[1].progress, Some(0.6));
+        tasks.cancel(task.id()).unwrap();
+        task.finish(TaskOutcome::Failed("取消".into()));
+        let snapshot = tasks.wait_terminal(task.id()).unwrap();
+        assert_eq!(snapshot.steps[2].state, "pending");
+        assert!(snapshot.progress < 1.0);
+    }
+
+    #[test]
     fn history_is_bounded_and_late_cancel_cannot_touch_new_task() {
         let tasks = Arc::new(Tasks::with_history_limit(2));
         let first = tasks.admit(target("root-a"), TaskKind::Install).unwrap();
@@ -572,6 +718,7 @@ mod tests {
                 bytes_done,
                 bytes_total: 100,
                 network_bytes,
+                steps: Vec::new(),
             });
         }
         let snapshot = tasks.snapshot(task.id()).unwrap();
@@ -589,6 +736,7 @@ mod tests {
             bytes_done: 100,
             bytes_total: 100,
             network_bytes: 70,
+            steps: Vec::new(),
         });
         let snapshot = tasks.snapshot(task.id()).unwrap();
         assert_eq!(snapshot.stage, TaskStage::Processing);

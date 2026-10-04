@@ -23,6 +23,15 @@
   margin-right: 8px;
   color: #8b9299;
 }
+.ce-install-name-error {
+  margin: -18px 16px 18px;
+  color: #b34d4d;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.ce-install-name > .ce-field[aria-invalid="true"] {
+  border-color: #c97070;
+}
 .ce-install-provider {
   padding: 0 !important;
   margin-bottom: 12px;
@@ -113,6 +122,7 @@
 }
 .ce-pill-action:disabled {
   opacity: 1;
+  cursor: not-allowed;
 }
 .ce-install-action {
   position: absolute;

@@ -1,5 +1,5 @@
 use crate::tasks::{TaskHandle, TaskKind, TaskOutcome, TaskProgress, TaskStage, TaskTarget, Tasks};
-use pcl_install::{InstallResult, Installer, Progress, VersionEntry};
+use pcl_install::{InstallRequest, InstallResult, Installer, Progress, VersionEntry};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
@@ -23,6 +23,7 @@ pub struct DownloadStatus {
     pub bytes_done: u64,
     pub bytes_total: u64,
     pub network_bytes: u64,
+    pub steps: Vec<pcl_install::InstallStep>,
     pub result: Option<Value>,
     pub error: Option<String>,
     pub can_cancel: bool,
@@ -44,6 +45,7 @@ impl Default for DownloadStatus {
             bytes_done: 0,
             bytes_total: 0,
             network_bytes: 0,
+            steps: Vec::new(),
             result: None,
             error: None,
             can_cancel: false,
@@ -71,6 +73,10 @@ impl Downloads {
         let Some(snapshot) = current.and_then(|id| self.tasks.snapshot(&id)) else {
             return DownloadStatus::default();
         };
+        Self::project(snapshot)
+    }
+
+    fn project(snapshot: crate::tasks::TaskSnapshot) -> DownloadStatus {
         DownloadStatus {
             task_id: Some(snapshot.id),
             root_id: Some(snapshot.root_id),
@@ -85,10 +91,26 @@ impl Downloads {
             bytes_done: snapshot.bytes_done,
             bytes_total: snapshot.bytes_total,
             network_bytes: snapshot.network_bytes,
+            steps: snapshot.steps,
             result: snapshot.result,
             error: snapshot.error,
             can_cancel: snapshot.can_cancel,
         }
+    }
+
+    pub fn cancel_and_wait(&self, task_id: Option<&str>) -> Result<DownloadStatus, String> {
+        let id = task_id
+            .map(str::to_owned)
+            .or_else(|| self.current.lock().unwrap().clone())
+            .ok_or("找不到安装任务")?;
+        let snapshot = self.tasks.snapshot(&id).ok_or("找不到此任务")?;
+        if snapshot.kind != TaskKind::Install {
+            return Err("此任务不是安装任务".into());
+        }
+        self.tasks.cancel(&id)?;
+        // Always return the requested task. A newly admitted install must never
+        // become the target of a late cancellation or its response.
+        Ok(Self::project(self.tasks.wait_terminal(&id)?))
     }
 
     #[cfg(test)]
@@ -112,13 +134,15 @@ impl Downloads {
         self: &Arc<Self>,
         root: PathBuf,
         root_id: String,
-        id: String,
+        request: InstallRequest,
+        project: PathBuf,
         on_complete: impl FnOnce(&InstallResult) -> Result<(), String> + Send + 'static,
     ) -> Result<String, String> {
         if !root.is_absolute() {
             return Err("游戏目录需要使用绝对路径，请先在设置中修改".into());
         }
-        pcl_core::identifier(&id)?;
+        request.validate()?;
+        let id = request.name.clone();
         // Admission and the busy check share one service lock. No terminal task
         // can be mistaken for an occupied writer between these two decisions.
         let task = self.tasks.admit(
@@ -141,9 +165,14 @@ impl Downloads {
                 let cancel = task.cancellation_token();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     Installer::new().and_then(|installer| {
-                        installer.install(&root, &id, &cancel, |progress| {
-                            downloads.progress(&task, progress);
-                        })
+                        installer.with_project(&project).install_request(
+                            &root,
+                            &request,
+                            &cancel,
+                            |progress| {
+                                downloads.progress(&task, progress);
+                            },
+                        )
                     })
                 }))
                 .unwrap_or_else(|_| Err("安装任务意外退出，请重试".into()));
@@ -174,7 +203,11 @@ impl Downloads {
                         });
                     }
                     Err(error) => {
-                        task.finish(TaskOutcome::Failed(error));
+                        if error.starts_with("取消清理失败：") {
+                            task.finish(TaskOutcome::CleanupFailed(error));
+                        } else {
+                            task.finish(TaskOutcome::Failed(error));
+                        }
                     }
                 }
             })
@@ -184,8 +217,17 @@ impl Downloads {
 
     fn progress(&self, task: &TaskHandle, progress: Progress) {
         let stage = match progress.stage.as_str() {
-            "downloading" => TaskStage::Downloading,
-            "processing" | "installing" | "complete" => TaskStage::Processing,
+            "downloading"
+            | "vanilla_libraries"
+            | "vanilla_assets"
+            | "vanilla_resources"
+            | "component_download"
+            | "component_metadata"
+            | "component_main"
+            | "component_libraries"
+            | "game_libraries" => TaskStage::Downloading,
+            "processing" | "installing" | "component_install" | "component_analyze"
+            | "publishing" | "complete" | "game_install" | "game_support" => TaskStage::Processing,
             _ => TaskStage::Preparing,
         };
         let (phase, message) = if progress.stage == "complete" {
@@ -202,9 +244,11 @@ impl Downloads {
             bytes_done: progress.bytes_done,
             bytes_total: progress.bytes_total,
             network_bytes: progress.network_bytes,
+            steps: progress.steps,
         });
     }
 
+    #[cfg(test)]
     pub fn cancel(&self) {
         let current = self.current.lock().unwrap().clone();
         if let Some(id) = current {
@@ -216,6 +260,50 @@ impl Downloads {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scoped_cancel_response_does_not_cancel_a_new_install() {
+        let tasks = Arc::new(Tasks::new());
+        let downloads = Downloads::new(tasks.clone());
+        let target = || TaskTarget {
+            root_id: "fixture-root".into(),
+            root_path: "/fixture".into(),
+            instance_id: Some("Example".into()),
+        };
+        let first = tasks.admit(target(), TaskKind::Install).unwrap();
+        let first_id = first.id().to_owned();
+        tasks.cancel(&first_id).unwrap();
+        first.finish(TaskOutcome::Failed("取消".into()));
+        let second = tasks.admit(target(), TaskKind::Install).unwrap();
+        *downloads.current.lock().unwrap() = Some(second.id().into());
+        let response = downloads.cancel_and_wait(Some(&first_id)).unwrap();
+        assert_eq!(response.task_id.as_deref(), Some(first_id.as_str()));
+        assert_eq!(response.stage, "cancelled");
+        assert_eq!(downloads.snapshot().task_id.as_deref(), Some(second.id()));
+        assert!(!second
+            .cancellation_token()
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn download_cancel_rejects_resource_task() {
+        let tasks = Arc::new(Tasks::new());
+        let downloads = Downloads::new(tasks.clone());
+        let task = tasks
+            .admit(
+                TaskTarget {
+                    root_id: "fixture-root".into(),
+                    root_path: "/fixture".into(),
+                    instance_id: Some("Example".into()),
+                },
+                TaskKind::ResourceOperation,
+            )
+            .unwrap();
+        assert!(downloads.cancel_and_wait(Some(task.id())).is_err());
+        assert!(!task
+            .cancellation_token()
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
 
     #[test]
     fn legacy_projection_tracks_task_scope_cancellation_and_processing() {
@@ -244,6 +332,7 @@ mod tests {
                 bytes_done: 100,
                 bytes_total: 100,
                 network_bytes: 20,
+                steps: Vec::new(),
             },
         );
         let status = downloads.snapshot();
@@ -260,9 +349,6 @@ mod tests {
         assert!(!downloads.active());
         assert_eq!(downloads.snapshot().stage, "cancelled");
         downloads.cancel();
-        assert_eq!(
-            downloads.snapshot().message,
-            "安装已取消，已下载的完整文件可继续复用"
-        );
+        assert_eq!(downloads.snapshot().message, "安装已取消，未完成文件已清理");
     }
 }

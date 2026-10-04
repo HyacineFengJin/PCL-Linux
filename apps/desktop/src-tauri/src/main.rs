@@ -329,33 +329,54 @@ fn download_status(state: State<'_, Arc<Shared>>) -> downloads::DownloadStatus {
     state.downloads.snapshot()
 }
 #[tauri::command]
-fn download_cancel(task_id: Option<String>, state: State<'_, Arc<Shared>>) -> Result<(), String> {
-    if let Some(id) = task_id {
-        state.tasks.cancel(&id)?;
-    } else {
-        state.downloads.cancel();
-    }
-    Ok(())
+async fn download_cancel(
+    task_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<downloads::DownloadStatus, String> {
+    let downloads = state.downloads.clone();
+    tauri::async_runtime::spawn_blocking(move || downloads.cancel_and_wait(task_id.as_deref()))
+        .await
+        .map_err(|_| "取消安装的任务意外退出")?
 }
 #[tauri::command]
 fn download_start(
     id: String,
+    name: Option<String>,
+    components: Option<Vec<pcl_install::ComponentSelection>>,
     root_id: Option<String>,
     state: State<'_, Arc<Shared>>,
 ) -> Result<String, String> {
     let _operation = state.operations.lock().unwrap();
+    if state.closing.load(Ordering::SeqCst) {
+        return Err("启动器正在关闭，请重新打开后安装".into());
+    }
     let run = state.status.lock().unwrap();
-    require_account_edit(&run)?;
+    if matches!(run.stage.as_str(), "preparing" | "running") {
+        return Err("请在游戏退出后安装新实例".into());
+    }
     state.config.ensure_writable()?;
     let root = state.config.resolve(root_id.as_deref())?;
-    pcl_core::identifier(&id)?;
+    let request = pcl_install::InstallRequest {
+        name: name.unwrap_or_else(|| id.clone()),
+        minecraft: id,
+        components: components.unwrap_or_default(),
+    };
+    request.validate()?;
+    let path = pcl_core::safe_join(Path::new(&root.path), format!("versions/{}", request.name))?;
+    match fs::symlink_metadata(&path) {
+        Ok(_) => return Err("实例名称已存在，请换一个名称".into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("无法检查实例名称：{e}")),
+    }
     let shared = state.inner().clone();
     let target = root.id.clone();
-    state
-        .downloads
-        .start(PathBuf::from(root.path), root.id, id, move |result| {
-            shared.config.select_installed(&target, &result.id)
-        })
+    state.downloads.start(
+        PathBuf::from(root.path),
+        root.id,
+        request,
+        shared.project.clone(),
+        move |result| shared.config.select_installed(&target, &result.id),
+    )
 }
 
 #[tauri::command]
@@ -446,6 +467,7 @@ async fn run_resource_request(
                 bytes_done: 0,
                 bytes_total: 0,
                 network_bytes: 0,
+                steps: Vec::new(),
             });
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

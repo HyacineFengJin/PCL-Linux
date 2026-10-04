@@ -1,12 +1,14 @@
 //! Verified installation of versions from Mojang's official catalog.
-use reqwest::{blocking::Client, Url};
+use reqwest::{Client, Url};
+mod components;
+mod network;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha1::{Digest, Sha1};
 use std::{
     fs,
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
@@ -26,6 +28,7 @@ pub struct VersionEntry {
 }
 #[derive(Clone, Serialize)]
 pub struct Progress {
+    pub steps: Vec<InstallStep>,
     pub stage: String,
     pub message: String,
     pub completed: u64,
@@ -33,6 +36,58 @@ pub struct Progress {
     pub bytes_done: u64,
     pub bytes_total: u64,
     pub network_bytes: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InstallStep {
+    pub id: String,
+    pub label: String,
+    pub state: String,
+    pub progress: Option<f64>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComponentSelection {
+    pub provider: String,
+    pub version: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstallRequest {
+    pub minecraft: String,
+    pub name: String,
+    #[serde(default)]
+    pub components: Vec<ComponentSelection>,
+}
+impl InstallRequest {
+    pub fn validate(&self) -> Result<()> {
+        pcl_core::identifier(&self.minecraft)?;
+        if self.name.is_empty()
+            || self.name.len() > 120
+            || self.name.trim() != self.name
+            || self.name.chars().any(char::is_control)
+            || self.name.starts_with(".install-")
+        {
+            return Err("版本名称不能为空、超过 120 字节、包含控制字符或前后空格".into());
+        }
+        pcl_core::identifier(&self.name).map_err(|_| "版本名称包含不允许的路径字符".to_string())?;
+        if self.components.len() > 1 {
+            return Err("Fabric、Forge 与 NeoForge 不能同时安装；请选择一个加载器".into());
+        }
+        for component in &self.components {
+            pcl_core::identifier(&component.version)?;
+            if component.version.len() > 160
+                || component.version.trim() != component.version
+                || component.version.chars().any(char::is_control)
+            {
+                return Err("组件版本无效".into());
+            }
+            match component.provider.to_ascii_lowercase().as_str() {
+                "fabric" | "forge" | "neoforge" => {}
+                "optifine" => return Err("暂不支持自动安装 OptiFine，请取消此组件后重试".into()),
+                "labymod" => return Err("暂不支持自动安装 LabyMod，请取消此组件后重试".into()),
+                _ => return Err(format!("暂不支持自动安装组件：{}", component.provider)),
+            }
+        }
+        Ok(())
+    }
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct InstallResult {
@@ -43,6 +98,8 @@ pub struct InstallResult {
 }
 pub struct Installer {
     client: Client,
+    java: Option<PathBuf>,
+    project: Option<PathBuf>,
     #[cfg(test)]
     endpoint: Option<String>,
 }
@@ -112,14 +169,25 @@ impl Installer {
     pub fn new() -> Result<Self> {
         Ok(Self {
             client: Client::builder()
+                .user_agent("PCL-Linux/0.1")
                 .connect_timeout(Duration::from_secs(15))
                 .timeout(Duration::from_secs(120))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .map_err(error)?,
+            java: None,
+            project: None,
             #[cfg(test)]
             endpoint: None,
         })
+    }
+    pub fn with_java(mut self, path: impl AsRef<Path>) -> Self {
+        self.java = Some(path.as_ref().to_path_buf());
+        self
+    }
+    pub fn with_project(mut self, path: impl AsRef<Path>) -> Self {
+        self.project = Some(path.as_ref().to_path_buf());
+        self
     }
     fn manifest_url(&self) -> &str {
         #[cfg(test)]
@@ -148,10 +216,16 @@ impl Installer {
                         | "launcher.mojang.com"
                         | "libraries.minecraft.net"
                         | "resources.download.minecraft.net"
+                        | "meta.fabricmc.net"
+                        | "maven.fabricmc.net"
+                        | "maven.minecraftforge.net"
+                        | "files.minecraftforge.net"
+                        | "maven.neoforged.net"
+                        | "repo.maven.apache.org"
                 )
             )
         {
-            return Err("下载地址不是受信任的 Mojang 官方 HTTPS 地址".into());
+            return Err("下载地址不是受信任的官方 HTTPS 地址".into());
         }
         Ok(url)
     }
@@ -164,45 +238,19 @@ impl Installer {
             if attempt > 0 {
                 retry_wait(cancel, attempt)?;
             }
-            let mut response = match self.client.get(url.clone()).send() {
-                Ok(response) => response,
-                Err(e) => {
-                    last = format!("读取 {host} 的版本信息失败：{}", network_error(e));
-                    continue;
-                }
-            };
-            let status = response.status();
-            if !status.is_success() {
-                last = format!("读取 {host} 的版本信息失败：HTTP {status}");
-                if !status.is_server_error() && status.as_u16() != 429 {
-                    return Err(last);
-                }
-                continue;
-            }
             let mut out = Vec::new();
-            let mut buf = [0; 65536];
-            let body = (|| {
-                loop {
-                    check(cancel)?;
-                    let n = response
-                        .read(&mut buf)
-                        .map_err(|e| format!("读取 {host} 的版本信息中断：{e}"))?;
-                    if n == 0 {
-                        break;
-                    }
-                    if out.len() as u64 + n as u64 > limit {
-                        return Err("版本信息超过允许的大小".into());
-                    }
-                    out.extend_from_slice(&buf[..n]);
-                }
+            let body = self.transfer(&url, limit, cancel, |chunk| {
+                out.extend_from_slice(chunk);
                 Ok(())
-            })();
+            });
             match body {
                 Ok(()) => return Ok(out),
-                Err(e) if e == "版本信息超过允许的大小" => return Err(e),
                 Err(e) => {
                     check(cancel)?;
-                    last = e;
+                    last = format!("读取 {host} 的版本信息失败：{e}");
+                    if e.contains("HTTP 4") && !e.contains("HTTP 429") {
+                        return Err(last);
+                    }
                 }
             }
         }
@@ -226,14 +274,22 @@ impl Installer {
         bytes: &AtomicU64,
         network_bytes: &AtomicU64,
         byte_total: u64,
+        group_done: &AtomicU64,
+        group_total: u64,
         cb: &(impl Fn(Progress) + Send + Sync),
     ) -> Result<bool> {
         check(cancel)?;
         let path = pcl_core::safe_join(root, &d.relative)?;
         if verify(&path, &d.hash, d.size, cancel)? {
             done.fetch_add(1, Ordering::Relaxed);
+            group_done.fetch_add(1, Ordering::Relaxed);
             bytes.fetch_add(d.size, Ordering::Relaxed);
             cb(Progress {
+                steps: vec![components::download_hint(
+                    &d.relative,
+                    group_done.load(Ordering::Relaxed),
+                    group_total,
+                )],
                 stage: "downloading".into(),
                 message: "正在校验已安装文件".into(),
                 completed: done.load(Ordering::Relaxed),
@@ -251,33 +307,22 @@ impl Installer {
         for _ in 0..3 {
             check(cancel)?;
             let mut transferred = 0;
+            let mut file =
+                tempfile::NamedTempFile::new_in(path.parent().unwrap()).map_err(error)?;
             let result = (|| {
-                let mut response = self
-                    .client
-                    .get(url.clone())
-                    .send()
-                    .map_err(network_error)?
-                    .error_for_status()
-                    .map_err(network_error)?;
-                let mut file =
-                    tempfile::NamedTempFile::new_in(path.parent().unwrap()).map_err(error)?;
                 let mut digest = Sha1::new();
-                let mut buf = [0; 65536];
-                loop {
-                    check(cancel)?;
-                    let n = response.read(&mut buf).map_err(error)?;
-                    if n == 0 {
-                        break;
-                    }
-                    if transferred + n as u64 > d.size {
-                        return Err("下载文件超过官方声明的大小".into());
-                    }
-                    file.write_all(&buf[..n]).map_err(error)?;
-                    transferred += n as u64;
-                    digest.update(&buf[..n]);
-                    bytes.fetch_add(n as u64, Ordering::Relaxed);
-                    network_bytes.fetch_add(n as u64, Ordering::Relaxed);
+                self.transfer(&url, d.size, cancel, |chunk| {
+                    file.write_all(chunk).map_err(error)?;
+                    transferred += chunk.len() as u64;
+                    digest.update(chunk);
+                    bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                    network_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed);
                     cb(Progress {
+                        steps: vec![components::download_hint(
+                            &d.relative,
+                            group_done.load(Ordering::Relaxed),
+                            group_total,
+                        )],
                         stage: "downloading".into(),
                         message: download_message(&d.relative).into(),
                         completed: done.load(Ordering::Relaxed),
@@ -286,7 +331,8 @@ impl Installer {
                         bytes_total: byte_total,
                         network_bytes: network_bytes.load(Ordering::Relaxed),
                     });
-                }
+                    Ok(())
+                })?;
                 if transferred != d.size
                     || !format!("{:x}", digest.finalize()).eq_ignore_ascii_case(&d.hash)
                 {
@@ -294,13 +340,22 @@ impl Installer {
                 }
                 file.as_file().sync_all().map_err(error)?;
                 pcl_core::safe_join(root, &d.relative)?;
-                file.persist(&path).map_err(error)?;
                 Ok(())
             })();
+            let result = match result {
+                Ok(()) => persist_download(file, &path),
+                Err(e) => Err(close_download(file, e)),
+            };
             match result {
                 Ok(()) => {
                     done.fetch_add(1, Ordering::Relaxed);
+                    group_done.fetch_add(1, Ordering::Relaxed);
                     cb(Progress {
+                        steps: vec![components::download_hint(
+                            &d.relative,
+                            group_done.load(Ordering::Relaxed),
+                            group_total,
+                        )],
                         stage: "downloading".into(),
                         message: download_message(&d.relative).into(),
                         completed: done.load(Ordering::Relaxed),
@@ -313,6 +368,10 @@ impl Installer {
                 }
                 Err(e) => {
                     bytes.fetch_sub(transferred.min(d.size), Ordering::Relaxed);
+                    if e.starts_with("取消清理失败：") {
+                        return Err(e);
+                    }
+                    check(cancel)?;
                     last = e;
                 }
             }
@@ -326,9 +385,67 @@ impl Installer {
         cancel: &AtomicBool,
         on_progress: impl Fn(Progress) + Send + Sync,
     ) -> Result<InstallResult> {
+        self.install_request(
+            root,
+            &InstallRequest {
+                minecraft: id.into(),
+                name: id.into(),
+                components: vec![],
+            },
+            cancel,
+            on_progress,
+        )
+    }
+    pub fn install_request(
+        &self,
+        root: &Path,
+        request: &InstallRequest,
+        cancel: &AtomicBool,
+        on_progress: impl Fn(Progress) + Send + Sync,
+    ) -> Result<InstallResult> {
+        request.validate()?;
+        check(cancel)?;
+        if root.exists() {
+            let existing = root.join("versions").join(&request.name);
+            match fs::symlink_metadata(existing) {
+                Ok(_) => return Err("该版本目录已存在，请修改版本名称".into()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(error(e)),
+            }
+        }
+        let steps = Mutex::new(components::initial_steps(request));
+        let previous = Mutex::new(None::<Progress>);
+        let emit = |mut p: Progress| {
+            let mut steps = steps.lock().unwrap();
+            components::advance_steps(&mut steps, &p);
+            if p.stage == "complete" {
+                if let Some(previous) = previous.lock().unwrap().as_ref() {
+                    p.completed = previous.completed;
+                    p.total = previous.total;
+                    p.bytes_done = previous.bytes_done;
+                    p.bytes_total = previous.bytes_total;
+                    p.network_bytes = previous.network_bytes;
+                }
+            }
+            p.steps = steps.clone();
+            *previous.lock().unwrap() = Some(p.clone());
+            on_progress(p);
+        };
+        self.install_inner(root, request, cancel, &emit)
+    }
+    fn install_inner(
+        &self,
+        root: &Path,
+        request: &InstallRequest,
+        cancel: &AtomicBool,
+        on_progress: &(impl Fn(Progress) + Send + Sync),
+    ) -> Result<InstallResult> {
+        let id = request.minecraft.as_str();
+        let name = request.name.as_str();
         check(cancel)?;
         pcl_core::identifier(id)?;
         on_progress(Progress {
+            steps: vec![],
             stage: "metadata".into(),
             message: id.into(),
             completed: 0,
@@ -356,14 +473,14 @@ impl Installer {
         if !format!("{:x}", Sha1::digest(&raw)).eq_ignore_ascii_case(hash) {
             return Err("版本信息 SHA1 校验失败".into());
         }
-        let metadata: Value = serde_json::from_slice(&raw).map_err(error)?;
+        let mut metadata: Value = serde_json::from_slice(&raw).map_err(error)?;
         if metadata["id"].as_str() != Some(id) || metadata.get("inheritsFrom").is_some() {
             return Err("原版版本信息中的版本标识无效".into());
         }
         fs::create_dir_all(root).map_err(error)?;
         let root = fs::canonicalize(root).map_err(error)?;
-        let version = pcl_core::safe_join(&root, format!("versions/{id}"))?;
-        if version.exists() {
+        let version = pcl_core::safe_join(&root, format!("versions/{name}"))?;
+        if fs::symlink_metadata(&version).is_ok() {
             return Err("该版本目录已存在，请选择其他版本或安装目录".into());
         }
         let versions = pcl_core::safe_join(&root, "versions")?;
@@ -378,55 +495,83 @@ impl Installer {
             .map_err(error)?
             .to_string_lossy()
             .into_owned();
-        let mut downloads = vec![artifact(
-            &metadata["downloads"]["client"],
-            format!("{temp_relative}/{id}.jar"),
-        )?];
-        let index_id = metadata["assetIndex"]["id"]
-            .as_str()
-            .ok_or("Version lacks asset index")?;
-        pcl_core::identifier(index_id)?;
-        let index = artifact(
-            &metadata["assetIndex"],
-            format!("assets/indexes/{index_id}.json"),
-        )?;
-        let index_raw = self.bytes(&index.url, MAX_METADATA, cancel)?;
-        if index_raw.len() as u64 != index.size
-            || !format!("{:x}", Sha1::digest(&index_raw)).eq_ignore_ascii_case(&index.hash)
-        {
-            return Err("资源索引 SHA1 或大小校验失败".into());
-        }
-        let asset_data: Value = serde_json::from_slice(&index_raw).map_err(error)?;
-        if asset_data["virtual"].as_bool() == Some(true)
-            || asset_data["map_to_resources"].as_bool() == Some(true)
-        {
-            return Err("暂不支持旧版本的虚拟资源或 resources 资源布局".into());
-        }
-        downloads.push(index);
-        let mut natives = vec![];
-        for lib in metadata["libraries"]
-            .as_array()
-            .ok_or("Version lacks libraries")?
-        {
-            if !pcl_core::library_allowed(lib)? {
-                continue;
+        let installation = (|| {
+            let mut downloads = vec![artifact(
+                &metadata["downloads"]["client"],
+                format!("{temp_relative}/{name}.jar"),
+            )?];
+            let index_id = metadata["assetIndex"]["id"]
+                .as_str()
+                .ok_or("Version lacks asset index")?;
+            pcl_core::identifier(index_id)?;
+            let index = artifact(
+                &metadata["assetIndex"],
+                format!("assets/indexes/{index_id}.json"),
+            )?;
+            let index_raw = self.bytes(&index.url, MAX_METADATA, cancel)?;
+            if index_raw.len() as u64 != index.size
+                || !format!("{:x}", Sha1::digest(&index_raw)).eq_ignore_ascii_case(&index.hash)
+            {
+                return Err("资源索引 SHA1 或大小校验失败".into());
             }
-            if lib.get("downloads").is_none() {
-                return Err("暂不支持缺少官方校验信息的旧版本依赖库".into());
+            let asset_data: Value = serde_json::from_slice(&index_raw).map_err(error)?;
+            if asset_data["virtual"].as_bool() == Some(true)
+                || asset_data["map_to_resources"].as_bool() == Some(true)
+            {
+                return Err("暂不支持旧版本的虚拟资源或 resources 资源布局".into());
             }
-            let art = &lib["downloads"]["artifact"];
-            if !art.is_null() {
-                let d = artifact(
-                    art,
-                    format!(
-                        "libraries/{}",
-                        art["path"].as_str().ok_or("Library lacks path")?
-                    ),
-                )?;
-                if ["natives-linux", "linux-x86_64", "linux-aarch_64"]
-                    .iter()
-                    .any(|marker| lib["name"].as_str().unwrap_or("").contains(marker))
-                {
+            downloads.push(index);
+            let mut natives = vec![];
+            for lib in metadata["libraries"]
+                .as_array()
+                .ok_or("Version lacks libraries")?
+            {
+                if !pcl_core::library_allowed(lib)? {
+                    continue;
+                }
+                if lib.get("downloads").is_none() {
+                    return Err("暂不支持缺少官方校验信息的旧版本依赖库".into());
+                }
+                let art = &lib["downloads"]["artifact"];
+                if !art.is_null() {
+                    let d = artifact(
+                        art,
+                        format!(
+                            "libraries/{}",
+                            art["path"].as_str().ok_or("Library lacks path")?
+                        ),
+                    )?;
+                    if ["natives-linux", "linux-x86_64", "linux-aarch_64"]
+                        .iter()
+                        .any(|marker| lib["name"].as_str().unwrap_or("").contains(marker))
+                    {
+                        natives.push((
+                            d.relative.clone(),
+                            lib["extract"]["exclude"]
+                                .as_array()
+                                .cloned()
+                                .unwrap_or_default(),
+                        ));
+                    }
+                    downloads.push(d);
+                }
+                if let Some(class) = lib["natives"]["linux"].as_str() {
+                    let class = class.replace(
+                        "${arch}",
+                        if cfg!(target_pointer_width = "64") {
+                            "64"
+                        } else {
+                            "32"
+                        },
+                    );
+                    let art = &lib["downloads"]["classifiers"][class];
+                    let d = artifact(
+                        art,
+                        format!(
+                            "libraries/{}",
+                            art["path"].as_str().ok_or("Native library lacks path")?
+                        ),
+                    )?;
                     natives.push((
                         d.relative.clone(),
                         lib["extract"]["exclude"]
@@ -434,188 +579,276 @@ impl Installer {
                             .cloned()
                             .unwrap_or_default(),
                     ));
+                    downloads.push(d);
                 }
-                downloads.push(d);
             }
-            if let Some(class) = lib["natives"]["linux"].as_str() {
-                let class = class.replace(
-                    "${arch}",
-                    if cfg!(target_pointer_width = "64") {
-                        "64"
-                    } else {
-                        "32"
-                    },
-                );
-                let art = &lib["downloads"]["classifiers"][class];
-                let d = artifact(
-                    art,
-                    format!(
-                        "libraries/{}",
-                        art["path"].as_str().ok_or("Native library lacks path")?
-                    ),
-                )?;
-                natives.push((
-                    d.relative.clone(),
-                    lib["extract"]["exclude"]
-                        .as_array()
-                        .cloned()
-                        .unwrap_or_default(),
-                ));
-                downloads.push(d);
+            if let Some(file) = metadata["logging"]["client"].get("file") {
+                let name = file["id"].as_str().ok_or("Logging config lacks ID")?;
+                pcl_core::identifier(name)?;
+                downloads.push(artifact(file, format!("assets/log_configs/{name}"))?);
             }
-        }
-        if let Some(file) = metadata["logging"]["client"].get("file") {
-            let name = file["id"].as_str().ok_or("Logging config lacks ID")?;
-            pcl_core::identifier(name)?;
-            downloads.push(artifact(file, format!("assets/log_configs/{name}"))?);
-        }
-        for obj in asset_data["objects"]
-            .as_object()
-            .ok_or("Invalid asset objects")?
-            .values()
-        {
-            let hash = obj["hash"]
-                .as_str()
-                .filter(|h| hash_valid(h))
-                .ok_or("Invalid asset hash")?;
-            downloads.push(Download {
-                url: format!(
-                    "https://resources.download.minecraft.net/{}/{hash}",
-                    &hash[..2]
-                ),
-                hash: hash.into(),
-                size: obj["size"].as_u64().ok_or("Invalid asset size")?,
-                relative: format!("assets/objects/{}/{hash}", &hash[..2]),
-            });
-        }
-        let mut fingerprints = std::collections::HashMap::new();
-        for d in &downloads {
-            if let Some(previous) =
-                fingerprints.insert(d.relative.clone(), (d.hash.clone(), d.size))
+            for obj in asset_data["objects"]
+                .as_object()
+                .ok_or("Invalid asset objects")?
+                .values()
             {
-                if previous != (d.hash.clone(), d.size) {
-                    return Err("版本信息包含相互冲突的文件路径".into());
-                }
-            }
-        }
-        let mut seen = std::collections::HashMap::new();
-        downloads.retain(|d| {
-            if seen.contains_key(&d.relative) {
-                false
-            } else {
-                seen.insert(d.relative.clone(), (d.hash.clone(), d.size));
-                true
-            }
-        });
-        for d in &downloads {
-            self.url(&d.url)?;
-            pcl_core::safe_join(&root, &d.relative)?;
-        }
-        let total = downloads.len() as u64;
-        let byte_total = downloads
-            .iter()
-            .try_fold(0u64, |n, d| n.checked_add(d.size))
-            .ok_or("下载文件总大小超出范围")?;
-        let done = AtomicU64::new(0);
-        let bytes = AtomicU64::new(0);
-        let network_bytes = AtomicU64::new(0);
-        let downloaded = AtomicU64::new(0);
-        let next = AtomicU64::new(0);
-        let failure = Mutex::new(None);
-        std::thread::scope(|scope| {
-            for _ in 0..4 {
-                scope.spawn(|| loop {
-                    if failure.lock().unwrap().is_some() {
-                        break;
-                    }
-                    let i = next.fetch_add(1, Ordering::Relaxed) as usize;
-                    let Some(d) = downloads.get(i) else {
-                        break;
-                    };
-                    match self.download(
-                        &root,
-                        d,
-                        cancel,
-                        &done,
-                        total,
-                        &bytes,
-                        &network_bytes,
-                        byte_total,
-                        &on_progress,
-                    ) {
-                        Ok(true) => {
-                            downloaded.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Ok(false) => {}
-                        Err(e) => {
-                            *failure.lock().unwrap() = Some(e);
-                            break;
-                        }
-                    }
+                let hash = obj["hash"]
+                    .as_str()
+                    .filter(|h| hash_valid(h))
+                    .ok_or("Invalid asset hash")?;
+                downloads.push(Download {
+                    url: format!(
+                        "https://resources.download.minecraft.net/{}/{hash}",
+                        &hash[..2]
+                    ),
+                    hash: hash.into(),
+                    size: obj["size"].as_u64().ok_or("Invalid asset size")?,
+                    relative: format!("assets/objects/{}/{hash}", &hash[..2]),
                 });
             }
-        });
-        if let Some(e) = failure.into_inner().map_err(error)? {
-            return Err(e);
-        }
-        check(cancel)?;
-        let native_dir = temporary.path().join("natives");
-        on_progress(Progress {
-            stage: "installing".into(),
-            message: "解压运行库并安装游戏".into(),
-            completed: total,
-            total,
-            bytes_done: byte_total,
-            bytes_total: byte_total,
-            network_bytes: network_bytes.load(Ordering::Relaxed),
-        });
-        fs::create_dir(&native_dir).map_err(error)?;
-        for (path, excludes) in natives {
+            let mut fingerprints = std::collections::HashMap::new();
+            for d in &downloads {
+                if let Some(previous) =
+                    fingerprints.insert(d.relative.clone(), (d.hash.clone(), d.size))
+                {
+                    if previous != (d.hash.clone(), d.size) {
+                        return Err("版本信息包含相互冲突的文件路径".into());
+                    }
+                }
+            }
+            let mut seen = std::collections::HashMap::new();
+            downloads.retain(|d| {
+                if seen.contains_key(&d.relative) {
+                    false
+                } else {
+                    seen.insert(d.relative.clone(), (d.hash.clone(), d.size));
+                    true
+                }
+            });
+            for d in &downloads {
+                self.url(&d.url)?;
+                pcl_core::safe_join(&root, &d.relative)?;
+            }
+            let total = downloads.len() as u64;
+            let byte_total = downloads
+                .iter()
+                .try_fold(0u64, |n, d| n.checked_add(d.size))
+                .ok_or("下载文件总大小超出范围")?;
+            let group_done = [AtomicU64::new(0), AtomicU64::new(0)];
+            let group_total = [
+                downloads
+                    .iter()
+                    .filter(|d| !d.relative.starts_with("assets/"))
+                    .count() as u64,
+                downloads
+                    .iter()
+                    .filter(|d| d.relative.starts_with("assets/"))
+                    .count() as u64,
+            ];
+            let done = AtomicU64::new(0);
+            let bytes = AtomicU64::new(0);
+            let network_bytes = AtomicU64::new(0);
+            let downloaded = AtomicU64::new(0);
+            let next = AtomicU64::new(0);
+            let failure = Mutex::new(None);
+            std::thread::scope(|scope| {
+                for _ in 0..4 {
+                    scope.spawn(|| loop {
+                        if failure.lock().unwrap().is_some() {
+                            break;
+                        }
+                        let i = next.fetch_add(1, Ordering::Relaxed) as usize;
+                        let Some(d) = downloads.get(i) else {
+                            break;
+                        };
+                        match self.download(
+                            &root,
+                            d,
+                            cancel,
+                            &done,
+                            total,
+                            &bytes,
+                            &network_bytes,
+                            byte_total,
+                            &group_done[usize::from(d.relative.starts_with("assets/"))],
+                            group_total[usize::from(d.relative.starts_with("assets/"))],
+                            &on_progress,
+                        ) {
+                            Ok(true) => {
+                                downloaded.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Ok(false) => {}
+                            Err(e) => {
+                                record_failure(&failure, e);
+                                break;
+                            }
+                        }
+                    });
+                }
+            });
+            if let Some(e) = failure.into_inner().map_err(error)? {
+                return Err(e);
+            }
             check(cancel)?;
-            pcl_core::extract_natives(&pcl_core::safe_join(&root, path)?, &native_dir, &excludes)?;
-        }
-        check(cancel)?;
-        fs::write(temporary.path().join(format!("{id}.json")), raw).map_err(error)?;
-        // An empty reservation prevents racing installers from replacing a completed version.
-        pcl_core::safe_join(&root, format!("versions/{id}"))?;
-        fs::create_dir(&version).map_err(|e| format!("无法创建版本目录（可能已存在）：{e}"))?;
-        let publish = (|| {
-            fs::rename(
-                temporary.path().join(format!("{id}.jar")),
-                version.join(format!("{id}.jar")),
+            let native_dir = temporary.path().join("natives");
+            on_progress(Progress {
+                steps: vec![],
+                stage: "installing".into(),
+                message: "解压运行库并安装游戏".into(),
+                completed: total,
+                total,
+                bytes_done: byte_total,
+                bytes_total: byte_total,
+                network_bytes: network_bytes.load(Ordering::Relaxed),
+            });
+            fs::create_dir(&native_dir).map_err(error)?;
+            for (path, excludes) in natives {
+                check(cancel)?;
+                pcl_core::extract_natives(
+                    &pcl_core::safe_join(&root, path)?,
+                    &native_dir,
+                    &excludes,
+                )?;
+            }
+            check(cancel)?;
+            let mut component_stats = components::ComponentStats::new(
+                total,
+                byte_total,
+                network_bytes.load(Ordering::Relaxed),
+                downloaded.load(Ordering::Relaxed),
+                total - downloaded.load(Ordering::Relaxed),
+            );
+            if let Some(component) = request.components.first() {
+                metadata = self.install_component(
+                    &root,
+                    temporary.path(),
+                    name,
+                    id,
+                    metadata,
+                    component,
+                    cancel,
+                    &mut component_stats,
+                    on_progress,
+                )?;
+                fs::create_dir(temporary.path().join("mods")).map_err(error)?;
+            }
+            if request.components.is_empty() {
+                on_progress(component_stats.event("game_install", "正在安装游戏", 0.0));
+            }
+            metadata["id"] = Value::String(name.into());
+            metadata["jar"] = Value::String(name.into());
+            metadata["clientVersion"] = Value::String(id.into());
+            metadata
+                .as_object_mut()
+                .ok_or("版本信息无效")?
+                .remove("inheritsFrom");
+            fs::write(
+                temporary.path().join(format!("{name}.json")),
+                serde_json::to_vec_pretty(&metadata).map_err(error)?,
             )
             .map_err(error)?;
-            fs::rename(&native_dir, version.join("natives")).map_err(error)?;
             check(cancel)?;
-            fs::rename(
-                temporary.path().join(format!("{id}.json")),
-                version.join(format!("{id}.json")),
-            )
-            .map_err(error)
+            if !request.components.is_empty() {
+                self.publish_component_libraries(
+                    &root,
+                    &temporary.path().join("component-work"),
+                    cancel,
+                    &component_stats,
+                    on_progress,
+                )?;
+            }
+            on_progress(component_stats.event("publishing", "正在完成安装", 1.0));
+            if temporary.path().join("component-work").exists() {
+                fs::remove_dir_all(temporary.path().join("component-work"))
+                    .map_err(|e| format!("取消清理失败：{e}"))?;
+            }
+            check(cancel)?;
+            pcl_core::safe_join(&root, format!("versions/{name}"))?;
+            // Commit the whole directory in one operation. Once committed, a late
+            // cancellation is a successful installation, never a partial rollback.
+            publish_directory(temporary.path(), &version)?;
+            Ok(InstallResult {
+                id: name.into(),
+                java_major: metadata["javaVersion"]["majorVersion"]
+                    .as_u64()
+                    .unwrap_or(8) as u32,
+                files_downloaded: component_stats.downloaded,
+                files_reused: component_stats.reused,
+            })
         })();
-        if let Err(e) = publish {
-            let _ = fs::remove_dir_all(&version);
-            return Err(e);
+        if installation.is_ok() {
+            // Atomic publication moved this directory; disarm its old path.
+            let _ = temporary.keep();
+        } else if let Err(cleanup) = temporary.close() {
+            return Err(format!(
+                "取消清理失败：{cleanup}；原错误：{}",
+                installation.as_ref().unwrap_err()
+            ));
         }
-        on_progress(Progress {
-            stage: "complete".into(),
-            message: id.into(),
-            completed: total,
-            total,
-            bytes_done: byte_total,
-            bytes_total: byte_total,
-            network_bytes: network_bytes.load(Ordering::Relaxed),
-        });
-        let count = downloaded.load(Ordering::Relaxed);
-        Ok(InstallResult {
-            id: id.into(),
-            java_major: metadata["javaVersion"]["majorVersion"]
-                .as_u64()
-                .unwrap_or(8) as u32,
-            files_downloaded: count,
-            files_reused: total - count,
-        })
+        if installation.is_ok() {
+            on_progress(Progress {
+                steps: vec![],
+                stage: "complete".into(),
+                message: name.into(),
+                completed: 1,
+                total: 1,
+                bytes_done: 0,
+                bytes_total: 0,
+                network_bytes: 0,
+            });
+        }
+        installation
     }
+}
+fn record_failure(failure: &Mutex<Option<String>>, new: String) {
+    let mut failure = failure.lock().unwrap();
+    if failure.is_none()
+        || (new.starts_with("取消清理失败：")
+            && !failure.as_ref().unwrap().starts_with("取消清理失败："))
+    {
+        *failure = Some(new);
+    }
+}
+fn close_download(file: tempfile::NamedTempFile, original: String) -> String {
+    match file.close() {
+        Ok(()) => original,
+        Err(cleanup) => format!("取消清理失败：无法移除未完成文件：{cleanup}；原错误：{original}"),
+    }
+}
+fn persist_download(file: tempfile::NamedTempFile, path: &Path) -> Result<()> {
+    match file.persist(path) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let original = error(&e.error);
+            Err(close_download(e.file, original))
+        }
+    }
+}
+#[cfg(target_os = "linux")]
+fn publish_directory(source: &Path, target: &Path) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let source = std::ffi::CString::new(source.as_os_str().as_bytes()).map_err(error)?;
+    let target = std::ffi::CString::new(target.as_os_str().as_bytes()).map_err(error)?;
+    let status = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            target.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if status != 0 {
+        return Err(format!(
+            "无法完成版本安装（目标可能已存在）：{}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+#[cfg(not(target_os = "linux"))]
+fn publish_directory(_source: &Path, _target: &Path) -> Result<()> {
+    Err("当前平台不支持不覆盖现有实例的原子安装".into())
 }
 fn download_message(relative: &str) -> &'static str {
     if relative.starts_with("libraries/") {
@@ -889,10 +1122,17 @@ mod tests {
         i.endpoint = Some(url.clone());
         assert!(i.catalog().unwrap().is_empty());
         worker.join().unwrap();
-        let err = i
-            .client
-            .get(format!("{url}?token=private-value"))
-            .send()
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let err = rt
+            .block_on(async {
+                i.client
+                    .get(format!("{url}?token=private-value"))
+                    .send()
+                    .await
+            })
             .unwrap_err();
         let message = network_error(err);
         assert!(message.contains("Connection refused") || message.contains("connect"));
@@ -931,3 +1171,6 @@ mod tests {
         .is_err());
     }
 }
+
+#[cfg(test)]
+mod loader_tests;

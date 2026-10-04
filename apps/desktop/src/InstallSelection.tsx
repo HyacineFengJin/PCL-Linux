@@ -17,6 +17,34 @@ import forge from "./assets/game-icons/forge.png";
 import neoForge from "./assets/game-icons/neoforge.png";
 import "./install-selection.css";
 const providers = ["Forge", "NeoForge", "Fabric", "LabyMod", "OptiFine"];
+const unavailableProviders: Record<string, string> = {
+  LabyMod: "LabyMod 安装暂未开放",
+  OptiFine: "OptiFine 安装暂未开放",
+};
+
+export type InstallComponent = { provider: string; version: string };
+export type InstallOptions = {
+  name: string;
+  components: InstallComponent[];
+};
+
+export function installNameError(name: string, installed: { id: string }[]) {
+  if (!name.trim()) return "请输入实例名称";
+  if (name !== name.trim()) return "实例名称不能以空白字符开头或结尾";
+  if (name.startsWith(".install-")) return "实例名称不能使用 .install- 前缀";
+  if (
+    name === "." ||
+    name === ".." ||
+    /[/\\:]/.test(name) ||
+    /\p{Cc}/u.test(name)
+  )
+    return "实例名称不能包含路径分隔符、冒号或控制字符";
+  if (new TextEncoder().encode(name).length > 120)
+    return "实例名称过长，请缩短到 120 字节以内";
+  if (installed.some((instance) => instance.id === name))
+    return "此游戏目录中已存在同名实例，请修改名称";
+  return "";
+}
 
 function ComponentIcon({ name }: { name: string }) {
   if (name === "Forge" || name === "NeoForge")
@@ -31,6 +59,7 @@ export function InstallSelection({
   version,
   native,
   disabled,
+  installed = [],
   onBack,
   onStart,
 }: {
@@ -39,10 +68,12 @@ export function InstallSelection({
   version: string;
   native: boolean;
   disabled: boolean;
+  installed?: { id: string }[];
   onBack: () => void;
-  onStart: () => void;
+  onStart: (options: InstallOptions) => void;
 }) {
   const [name, setName] = useState(version);
+  const [nameEdited, setNameEdited] = useState(false);
   const [open, setOpen] = useState<string[]>([]);
   const [choices, setChoices] = useState<Record<string, string>>({});
   const [catalogs, setCatalogs] = useState<Record<string, string[]>>({});
@@ -51,6 +82,7 @@ export function InstallSelection({
   useEffect(() => {
     let disposed = false;
     setName(version);
+    setNameEdited(false);
     setOpen([]);
     setChoices({});
     setCatalogs({});
@@ -85,17 +117,27 @@ export function InstallSelection({
       (provider !== "Forge" && !!choices.OptiFine)
     );
   }
-  const hasComponents = Object.keys(choices).length > 0;
-  const canInstall = native && !disabled && !hasComponents && name === version;
+  const components = providers.flatMap((provider) =>
+    choices[provider] ? [{ provider, version: choices[provider] }] : [],
+  );
+  const automaticName = [
+    version,
+    ...components.map(
+      (component) => `${component.provider}_${component.version}`,
+    ),
+  ].join("-");
+  const instanceName = nameEdited ? name : automaticName;
+  const nameError = installNameError(instanceName, installed);
+  const componentError = components
+    .map((component) => unavailableProviders[component.provider])
+    .find(Boolean);
+  const canInstall = native && !disabled && !nameError && !componentError;
   const unavailable = !native
     ? "界面预览不能下载文件"
-    : hasComponents
-      ? "组件安装尚未开放"
-      : name !== version
-        ? "自定义实例名称尚未开放"
-        : disabled
-          ? "请等待当前任务结束"
-          : "";
+    : nameError || componentError || (disabled ? "当前无法开始安装" : "");
+  function submit() {
+    if (canInstall) onStart({ name: instanceName, components });
+  }
   return (
     <div className="ce-install-selection ce-page-enter">
       <section className="ce-card ce-install-name">
@@ -110,16 +152,34 @@ export function InstallSelection({
         <input
           className="ce-field"
           aria-label="实例名称"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
+          value={instanceName}
+          maxLength={120}
+          disabled={disabled}
+          aria-invalid={!!nameError}
+          aria-describedby={nameError ? "ce-install-name-error" : undefined}
+          onChange={(e) => {
+            setNameEdited(true);
+            setName(e.target.value);
+          }}
         />
       </section>
+      {nameError && (
+        <p
+          className="ce-install-name-error"
+          id="ce-install-name-error"
+          role="status"
+        >
+          {nameError}
+        </p>
+      )}
       {providers.map((provider) => {
         const values = catalogs[provider] || [];
         const incompatible = conflict(provider);
+        const unavailableProvider = unavailableProviders[provider];
         const expanded = open.includes(provider);
         const subtitle =
           choices[provider] ||
+          unavailableProvider ||
           (incompatible
             ? "与所选组件不兼容"
             : loading.includes(provider)
@@ -154,9 +214,15 @@ export function InstallSelection({
             </button>
             <Collapse open={expanded}>
               <div className="ce-install-versions">
+                {unavailableProvider && (
+                  <p className="muted" role="status">
+                    {unavailableProvider}
+                  </p>
+                )}
                 {choices[provider] && (
                   <button
                     className="ce-button"
+                    disabled={disabled}
                     onClick={() =>
                       setChoices((old) => {
                         const next = { ...old };
@@ -184,7 +250,9 @@ export function InstallSelection({
                   <>
                     <button
                       className={`ce-install-version ${choices[provider] === values[0] ? "selected" : ""}`}
-                      disabled={incompatible}
+                      disabled={
+                        disabled || incompatible || !!unavailableProvider
+                      }
                       onClick={() =>
                         setChoices((old) => ({ ...old, [provider]: values[0] }))
                       }
@@ -202,7 +270,9 @@ export function InstallSelection({
                       <button
                         key={value}
                         className={`ce-install-version ${choices[provider] === value ? "selected" : ""}`}
-                        disabled={incompatible}
+                        disabled={
+                          disabled || incompatible || !!unavailableProvider
+                        }
                         onClick={() =>
                           setChoices((old) => ({ ...old, [provider]: value }))
                         }
@@ -225,14 +295,12 @@ export function InstallSelection({
           className="ce-pill-action"
           disabled={!canInstall}
           title={unavailable || undefined}
-          onClick={onStart}
+          onClick={submit}
         >
           <Download size={19} />
           开始下载
         </button>
-        {(hasComponents || name !== version) && (
-          <small role="status">{unavailable}</small>
-        )}
+        {unavailable && <small role="status">{unavailable}</small>}
       </div>
     </div>
   );

@@ -58,6 +58,9 @@
   justify-content: center;
   flex-shrink: 0;
 }
+.ce-task-card.error .ce-task-step.running .ce-task-step-status {
+  color: #b34d4d;
+}
 .ce-task-message {
   margin: 12px 7px 0;
   font-size: 12px;

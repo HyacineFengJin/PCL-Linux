@@ -739,6 +739,26 @@ function App() {
   >("home");
   const [downloadStatus, setDownloadStatus] =
     useState<DownloadStatus>(idleDownload);
+  const downloadSnapshot = React.useRef<DownloadStatus>(idleDownload);
+  const previousDownloadTasks = React.useRef(new Set<string>());
+  const acceptDownloadStatus = React.useCallback((next: DownloadStatus) => {
+    const old = downloadSnapshot.current;
+    const terminal = (value: DownloadStatus) =>
+      ["complete", "error", "cancelled"].includes(value.stage);
+    if (old.task_id && !next.task_id && !terminal(old)) return;
+    if (old.task_id && next.task_id && old.task_id !== next.task_id) {
+      if (previousDownloadTasks.current.has(next.task_id)) return;
+      previousDownloadTasks.current.add(old.task_id);
+      if (previousDownloadTasks.current.size > 64) {
+        const first = previousDownloadTasks.current.values().next().value;
+        if (first) previousDownloadTasks.current.delete(first);
+      }
+    }
+    if (old.task_id === next.task_id && terminal(old) && !terminal(next))
+      return;
+    downloadSnapshot.current = next;
+    setDownloadStatus(next);
+  }, []);
   const speed = useDownloadSpeed(downloadStatus);
   const [accountType, setAccountType] = useState("");
   const [profileList, setProfileList] = useState(false);
@@ -1651,6 +1671,7 @@ function App() {
           <main className="content" ref={contentRef}>
             <div hidden={screen !== "home" || tab !== "download"}>
               <DownloadPanel
+                visible={screen === "home" && tab === "download"}
                 section={downloadPage}
                 api={api}
                 rootId={rootId}
@@ -1660,7 +1681,7 @@ function App() {
                 gameBusy={!!busy || resourceBusy}
                 onInstalled={load}
                 onBusyChange={setDownloadBusy}
-                onStatusChange={setDownloadStatus}
+                onStatusChange={acceptDownloadStatus}
                 onResourceDetails={showResource}
                 onTaskStart={showTasks}
               />
@@ -1683,6 +1704,18 @@ function App() {
                   status={downloadStatus}
                   native={native}
                   onNotify={notify}
+                  onStatusChange={acceptDownloadStatus}
+                  onCancelled={(next) => {
+                    if (downloadSnapshot.current.task_id !== next.task_id)
+                      return;
+                    notify(`${next.version || "游戏"} 安装已取消`);
+                    setTab("download");
+                    setDownloadPage("minecraft");
+                    setTaskOrigin("home");
+                    setScreen((current) =>
+                      current === "tasks" ? "home" : current,
+                    );
+                  }}
                 />
               ) : screen === "versions" ? (
                 <>
@@ -1832,16 +1865,17 @@ function App() {
           </main>
         </div>
       )}
-      {downloadStatus.stage !== "idle" && screen !== "tasks" && (
-        <button
-          className="ce-task-entry"
-          title="任务管理"
-          aria-label="任务管理"
-          onClick={showTasks}
-        >
-          <Download size={23} />
-        </button>
-      )}
+      {!["idle", "cancelled"].includes(downloadStatus.stage) &&
+        screen !== "tasks" && (
+          <button
+            className="ce-task-entry"
+            title="任务管理"
+            aria-label="任务管理"
+            onClick={showTasks}
+          >
+            <Download size={23} />
+          </button>
+        )}
       {rootMenu && menuRoot && (
         <div
           className="ce-root-menu"
