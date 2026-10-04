@@ -6,13 +6,26 @@ use std::{
     ffi::CString,
     fs::File,
     io::{Read, Write},
-    os::{fd::AsRawFd, unix::ffi::OsStrExt},
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::ffi::OsStrExt,
+    },
     path::{Component, Path},
     sync::atomic::{AtomicU64, Ordering},
 };
 
 const LIMIT: u64 = 64 * 1024;
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+struct PresetLock(File);
+impl Drop for PresetLock {
+    fn drop(&mut self) {
+        // A Java probe can fork while this writer is finishing. Release the
+        // shared lock description explicitly, even if a pre-exec child still
+        // holds a copied descriptor; close alone is insufficient.
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,7 +48,6 @@ fn c(s: impl AsRef<std::ffi::OsStr>) -> Result<CString, String> {
     CString::new(s.as_ref().as_bytes()).map_err(|_| "配置路径无效".into())
 }
 fn open_dir(parent: &File, name: &CString) -> std::io::Result<File> {
-    use std::os::fd::FromRawFd;
     let fd = unsafe {
         libc::openat(
             parent.as_raw_fd(),
@@ -142,17 +154,7 @@ pub fn read(
     check(&preset, root_id, root, id)?;
     Ok(Some(preset.request))
 }
-pub fn save(
-    project: &Path,
-    root_id: &str,
-    root: &Path,
-    id: &str,
-    request: ExportRequest,
-) -> Result<(), String> {
-    request.validate()?;
-    use std::os::fd::FromRawFd;
-    let dir = directory(project, true)?.ok_or("无法创建配置目录")?;
-    let filename = c(name(root_id, id))?;
+fn lock_preset(dir: &File, root_id: &str, id: &str) -> Result<PresetLock, String> {
     let lockname = c(format!("{}.lock", name(root_id, id)))?;
     let fd = unsafe {
         libc::openat(
@@ -174,6 +176,20 @@ pub fn save(
     {
         return Err("导出配置正被另一个启动器使用".into());
     }
+    Ok(PresetLock(lock))
+}
+
+pub fn save(
+    project: &Path,
+    root_id: &str,
+    root: &Path,
+    id: &str,
+    request: ExportRequest,
+) -> Result<(), String> {
+    request.validate()?;
+    let dir = directory(project, true)?.ok_or("无法创建配置目录")?;
+    let filename = c(name(root_id, id))?;
+    let _lock = lock_preset(&dir, root_id, id)?;
     crate::instance_rename_refs::ensure_project_ready(project)?;
     if let Some(old) = read_at(&dir, &filename)? {
         check(&old, root_id, root, id)?;
@@ -281,6 +297,38 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+    #[test]
+    fn preset_save_can_follow_owner_drop_while_duplicate_descriptor_stays_open() {
+        let fixture = Fixture::new();
+        let dir = directory(&fixture.0, true).unwrap().unwrap();
+        let owner = lock_preset(&dir, "a", "Example").unwrap();
+        let inherited = owner.0.try_clone().unwrap();
+        assert!(save(
+            &fixture.0,
+            "a",
+            Path::new("/game"),
+            "Example",
+            Fixture::request()
+        )
+        .is_err());
+        drop(owner);
+        save(
+            &fixture.0,
+            "a",
+            Path::new("/game"),
+            "Example",
+            Fixture::request(),
+        )
+        .unwrap();
+        assert_eq!(
+            read(&fixture.0, "a", Path::new("/game"), "Example")
+                .unwrap()
+                .unwrap()
+                .name,
+            "Example"
+        );
+        drop(inherited);
     }
     #[test]
     fn scoped_presets_survive_restart_and_reject_retargeting() {

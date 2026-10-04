@@ -1,10 +1,13 @@
-//! Persisted launcher settings and registered game directories.
+//! Settings v3 with registered roots and an active-root UI projection.
+//! Transport revisions reject stale saves. V2 upgrades are deferred while a
+//! rename journal binds its original bytes, then backed up before the next write.
+use pcl_core::java::JavaSelection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashSet, VecDeque},
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Mutex, MutexGuard,
@@ -12,7 +15,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
+const MAX_JAVA_PATHS: usize = 64;
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
 /// The active root projection used by existing settings and launch commands.
@@ -28,6 +32,12 @@ pub struct Settings {
     pub selected: Option<String>,
     #[serde(default)]
     pub overrides: BTreeMap<String, u32>,
+    #[serde(default)]
+    pub java: JavaSelection,
+    #[serde(default)]
+    pub java_paths: Vec<String>,
+    #[serde(default)]
+    pub java_overrides: BTreeMap<String, JavaSelection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -39,6 +49,8 @@ pub struct GameRoot {
     pub selected: Option<String>,
     #[serde(default)]
     pub overrides: BTreeMap<String, u32>,
+    #[serde(default)]
+    pub java_overrides: BTreeMap<String, JavaSelection>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -48,6 +60,7 @@ pub struct RootSummary {
     pub path: String,
     pub selected: Option<String>,
     pub overrides: BTreeMap<String, u32>,
+    pub java_overrides: BTreeMap<String, JavaSelection>,
     pub available: bool,
     pub error: Option<String>,
 }
@@ -60,6 +73,88 @@ struct Persisted {
     player: String,
     memory_gib: u32,
     roots: Vec<GameRoot>,
+    #[serde(default)]
+    java: JavaSelection,
+    #[serde(default)]
+    java_paths: Vec<String>,
+}
+
+// Preserve this exact v2 field layout for already journalled rename payloads.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VersionTwo {
+    schema_version: u32,
+    active_root_id: String,
+    player: String,
+    memory_gib: u32,
+    roots: Vec<VersionTwoRoot>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VersionTwoRoot {
+    id: String,
+    name: String,
+    path: String,
+    selected: Option<String>,
+    #[serde(default)]
+    overrides: BTreeMap<String, u32>,
+}
+impl VersionTwo {
+    fn normalize(self) -> Persisted {
+        Persisted {
+            schema_version: SCHEMA_VERSION,
+            active_root_id: self.active_root_id,
+            player: self.player,
+            memory_gib: self.memory_gib,
+            roots: self
+                .roots
+                .into_iter()
+                .map(|root| GameRoot {
+                    id: root.id,
+                    name: root.name,
+                    path: root.path,
+                    selected: root.selected,
+                    overrides: root.overrides,
+                    java_overrides: BTreeMap::new(),
+                })
+                .collect(),
+            java: JavaSelection::Auto,
+            java_paths: vec![],
+        }
+    }
+    fn from_normalized(config: Persisted) -> Self {
+        Self {
+            schema_version: 2,
+            active_root_id: config.active_root_id,
+            player: config.player,
+            memory_gib: config.memory_gib,
+            roots: config
+                .roots
+                .into_iter()
+                .map(|root| VersionTwoRoot {
+                    id: root.id,
+                    name: root.name,
+                    path: root.path,
+                    selected: root.selected,
+                    overrides: root.overrides,
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Migration {
+    Legacy,
+    VersionTwo,
+}
+impl Migration {
+    fn version(self) -> u32 {
+        match self {
+            Self::Legacy => 1,
+            Self::VersionTwo => 2,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -78,6 +173,7 @@ struct Stored {
     blocked: Option<String>,
     disk: crate::instance_rename_refs::DiskSnapshot,
     revision: String,
+    pending_migration: Option<Migration>,
 }
 
 pub struct ConfigStore {
@@ -121,7 +217,10 @@ fn defaults(project: &Path) -> Persisted {
             path: path.to_string_lossy().into_owned(),
             selected: None,
             overrides: BTreeMap::new(),
+            java_overrides: BTreeMap::new(),
         }],
+        java: JavaSelection::Auto,
+        java_paths: vec![],
     }
 }
 
@@ -155,13 +254,168 @@ fn validate_root_values(root: &GameRoot) -> Result<(), String> {
     if let Some(selected) = &root.selected {
         pcl_core::identifier(selected)?;
     }
+    if root.overrides.len() > 4096 || root.java_overrides.len() > 4096 {
+        return Err("实例设置超过 4096 条上限".into());
+    }
     for (id, memory) in &root.overrides {
         pcl_core::identifier(id)?;
         if !(2..=64).contains(memory) {
             return Err("内存应为 2–64 GiB".into());
         }
     }
+    for (id, selection) in &root.java_overrides {
+        pcl_core::identifier(id)?;
+        validate_java(selection)?;
+    }
     Ok(())
+}
+
+fn validate_java_path(value: &str) -> Result<(), String> {
+    let path = Path::new(value);
+    if value.is_empty()
+        || value.len() > 4096
+        || value.chars().any(char::is_control)
+        || !path.is_absolute()
+        || path
+            .components()
+            .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
+        || path.components().collect::<PathBuf>().as_os_str() != path.as_os_str()
+    {
+        return Err("Java 路径需要是规范的绝对路径，且不超过 4096 字节".into());
+    }
+    Ok(())
+}
+fn validate_java(selection: &JavaSelection) -> Result<(), String> {
+    match selection {
+        JavaSelection::Auto => Ok(()),
+        JavaSelection::Manual { path } => validate_java_path(path),
+    }
+}
+fn add_java_path(config: &mut Persisted, path: &str) -> Result<(), String> {
+    validate_java_path(path)?;
+    if !config.java_paths.iter().any(|old| old == path) {
+        if config.java_paths.len() >= MAX_JAVA_PATHS {
+            return Err("手动 Java 最多保存 64 个路径".into());
+        }
+        config.java_paths.push(path.into());
+    }
+    Ok(())
+}
+
+/// Resolve existing symlinks without requiring the executable to exist. A
+/// missing tail stays attached to its resolved parent, including dangling
+/// symlink targets. This reads path metadata only and never executes Java.
+fn java_path_points_into(path: &Path, folder: &Path) -> Result<bool, String> {
+    if path.starts_with(folder) {
+        return Ok(true);
+    }
+    let mut pending: VecDeque<_> = path
+        .components()
+        .map(|part| part.as_os_str().to_os_string())
+        .collect();
+    let mut resolved = PathBuf::new();
+    let mut symlinks = 0;
+    while let Some(part) = pending.pop_front() {
+        if part == "/" {
+            resolved = PathBuf::from("/");
+            continue;
+        }
+        if part == "." {
+            continue;
+        }
+        if part == ".." {
+            resolved.pop();
+            continue;
+        }
+        let candidate = resolved.join(&part);
+        // Linux must traverse this directory even if a later symlink target
+        // component is `..`; its final canonical destination is insufficient.
+        if candidate.starts_with(folder) {
+            return Ok(true);
+        }
+        match fs::symlink_metadata(&candidate) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                symlinks += 1;
+                if symlinks > 40 {
+                    return Err("无法确认 Java 路径指向，请修复符号链接后再重命名".into());
+                }
+                let target = fs::read_link(&candidate)
+                    .map_err(|e| format!("无法确认 Java 路径指向，请修复路径后再重命名：{e}"))?;
+                for part in target.components().rev() {
+                    pending.push_front(part.as_os_str().to_os_string());
+                }
+            }
+            Ok(_) => resolved = candidate,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => resolved = candidate,
+            Err(error) => {
+                return Err(format!(
+                    "无法确认 Java 路径指向，请修复路径后再重命名：{error}"
+                ))
+            }
+        }
+    }
+    Ok(resolved.starts_with(folder))
+}
+
+fn decode_settings(bytes: &[u8]) -> Result<(Persisted, Option<Migration>), String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    let (config, migration) = match value.get("schema_version") {
+        Some(version) if version.as_u64() == Some(3) => (
+            serde_json::from_value::<Persisted>(value).map_err(|e| e.to_string())?,
+            None,
+        ),
+        Some(version) if version.as_u64() == Some(2) => (
+            serde_json::from_value::<VersionTwo>(value)
+                .map_err(|e| e.to_string())?
+                .normalize(),
+            Some(Migration::VersionTwo),
+        ),
+        Some(version) => return Err(format!("不支持设置版本 {version}，请使用兼容的启动器")),
+        None => {
+            let old: LegacySettings = serde_json::from_value(value).map_err(|e| e.to_string())?;
+            (
+                Persisted {
+                    schema_version: SCHEMA_VERSION,
+                    active_root_id: "root-legacy".into(),
+                    player: old.player,
+                    memory_gib: old.memory_gib,
+                    roots: vec![GameRoot {
+                        id: "root-legacy".into(),
+                        name: root_name(Path::new(&old.root)),
+                        path: old.root,
+                        selected: old.selected,
+                        overrides: old.overrides,
+                        java_overrides: BTreeMap::new(),
+                    }],
+                    java: JavaSelection::Auto,
+                    java_paths: vec![],
+                },
+                Some(Migration::Legacy),
+            )
+        }
+    };
+    validate_config(&config)?;
+    Ok((config, migration))
+}
+
+fn backup_migration(
+    project: &Path,
+    bytes: &[u8],
+    disk: &crate::instance_rename_refs::DiskSnapshot,
+    migration: Migration,
+) -> Result<(), String> {
+    match migration {
+        Migration::Legacy => {
+            crate::instance_rename_refs::backup_legacy_checked(project, bytes, disk)
+        }
+        Migration::VersionTwo => crate::instance_rename_refs::backup_settings_checked(
+            project,
+            bytes,
+            disk,
+            migration.version(),
+        ),
+    }
+    .map_err(|e| format!("旧版设置备份失败：{e}"))
 }
 
 fn validate_name(name: &str) -> Result<(), String> {
@@ -176,6 +430,17 @@ fn validate_config(config: &Persisted) -> Result<(), String> {
         return Err(format!("不支持设置版本 {}", config.schema_version));
     }
     validate_globals(&config.player, config.memory_gib)?;
+    validate_java(&config.java)?;
+    if config.java_paths.len() > MAX_JAVA_PATHS {
+        return Err("手动 Java 最多保存 64 个路径".into());
+    }
+    let mut java_paths = HashSet::new();
+    for path in &config.java_paths {
+        validate_java_path(path)?;
+        if !java_paths.insert(path) {
+            return Err("手动 Java 路径不能重复".into());
+        }
+    }
     if config.roots.is_empty() {
         return Err("设置中至少需要一个游戏目录".into());
     }
@@ -214,6 +479,7 @@ impl ConfigStore {
         let mut config = defaults(project);
         let mut blocked = None;
         let mut disk = crate::instance_rename_refs::DiskSnapshot::default();
+        let mut pending_migration = None;
         match crate::instance_rename_refs::store_snapshot(project, "settings.json", 2 * 1024 * 1024)
         {
             Ok((snapshot, None)) => {
@@ -223,40 +489,22 @@ impl ConfigStore {
             Ok((snapshot, Some(bytes))) => {
                 disk = snapshot;
                 let loaded = (|| -> Result<Persisted, String> {
-                    let value: serde_json::Value =
-                        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-                    if let Some(version) = value.get("schema_version") {
-                        if version.as_u64() != Some(u64::from(SCHEMA_VERSION)) {
-                            return Err(format!("不支持设置版本 {version}，请使用兼容的启动器"));
-                        }
-                        let loaded: Persisted =
-                            serde_json::from_value(value).map_err(|e| e.to_string())?;
-                        validate_config(&loaded)?;
-                        return Ok(loaded);
-                    }
-                    let old: LegacySettings =
-                        serde_json::from_value(value).map_err(|e| e.to_string())?;
-                    let migrated = Persisted {
-                        schema_version: SCHEMA_VERSION,
-                        active_root_id: "root-legacy".into(),
-                        player: old.player,
-                        memory_gib: old.memory_gib,
-                        roots: vec![GameRoot {
-                            id: "root-legacy".into(),
-                            name: root_name(Path::new(&old.root)),
-                            path: old.root,
-                            selected: old.selected,
-                            overrides: old.overrides,
-                        }],
-                    };
-                    validate_config(&migrated)?;
+                    let (migrated, migration) = decode_settings(&bytes)?;
                     // Keep the actual legacy values visible if backing up or
                     // committing migration fails, while continuing to block saves.
                     config = migrated.clone();
+                    pending_migration = migration;
+                    let Some(migration) = migration else {
+                        return Ok(migrated);
+                    };
+                    // A pending rename binds exact v2 before/after bytes. Read
+                    // them normally, then defer their upgrade until recovery.
+                    if crate::instance_rename_refs::pending_root(project)?.is_some() {
+                        return Ok(migrated);
+                    }
                     crate::instance_rename_refs::with_settings_lock(project, || {
                         crate::instance_rename_refs::ensure_project_ready(project)?;
-                        crate::instance_rename_refs::backup_legacy_checked(project, &bytes, &disk)
-                            .map_err(|e| format!("旧版设置备份失败：{e}"))?;
+                        backup_migration(project, &bytes, &disk, migration)?;
                         let data = encode(&migrated)?;
                         disk = crate::instance_rename_refs::write_store_checked(
                             project,
@@ -268,6 +516,7 @@ impl ConfigStore {
                         Ok(())
                     })
                     .map_err(|e| format!("设置迁移失败：{e}"))?;
+                    pending_migration = None;
                     Ok(migrated)
                 })();
                 match loaded {
@@ -289,6 +538,7 @@ impl ConfigStore {
                     blocked,
                     disk,
                     revision: transport_revision(),
+                    pending_migration,
                 }),
             },
             warning,
@@ -310,6 +560,15 @@ impl ConfigStore {
         let data = encode(&next)?;
         let disk = crate::instance_rename_refs::with_settings_lock(project, || {
             crate::instance_rename_refs::ensure_project_ready(project)?;
+            if let Some(migration) = current.pending_migration {
+                let (_, bytes) = crate::instance_rename_refs::store_snapshot(
+                    project,
+                    "settings.json",
+                    2 * 1024 * 1024,
+                )?;
+                let bytes = bytes.ok_or("等待迁移的旧设置已消失，原设置已保留")?;
+                backup_migration(project, &bytes, &current.disk, migration)?;
+            }
             crate::instance_rename_refs::write_store_checked(
                 project,
                 "settings.json",
@@ -320,6 +579,7 @@ impl ConfigStore {
         })?;
         current.disk = disk;
         current.config = next;
+        current.pending_migration = None;
         current.revision = transport_revision();
         Ok(())
     }
@@ -404,6 +664,7 @@ impl ConfigStore {
             path,
             selected: None,
             overrides: BTreeMap::new(),
+            java_overrides: BTreeMap::new(),
         };
         validate_root_values(&root)?;
         loop {
@@ -518,7 +779,38 @@ impl ConfigStore {
         next.memory_gib = settings.memory_gib;
         next.roots[index].selected = settings.selected;
         next.roots[index].overrides = settings.overrides;
+        next.java = settings.java;
+        next.roots[index].java_overrides = settings.java_overrides;
+        let selections: Vec<_> = std::iter::once(&next.java)
+            .chain(next.roots[index].java_overrides.values())
+            .cloned()
+            .collect();
+        for selection in selections {
+            if let JavaSelection::Manual { path } = selection {
+                add_java_path(&mut next, &path)?;
+            }
+        }
+        // java_paths is a readonly projection; imported paths use register_java.
         self.commit(&mut current, next)
+    }
+
+    pub fn register_java(
+        &self,
+        path: String,
+        revision: &str,
+        root_id: &str,
+    ) -> Result<Settings, String> {
+        let mut current = self.lock();
+        if revision != current.revision {
+            return Err("设置已更新，请刷新后再添加 Java".into());
+        }
+        if root_id != current.config.active_root_id {
+            return Err("当前游戏目录已改变，请刷新后再添加 Java".into());
+        }
+        let mut next = current.config.clone();
+        add_java_path(&mut next, &path)?;
+        self.commit(&mut current, next)?;
+        Ok(project_settings(&current.config, &current.revision))
     }
 
     /// Updates the operation's bound root even if another root is now active.
@@ -574,13 +866,14 @@ impl ConfigStore {
             if current.disk.file_exists() && !disk.file_exists() {
                 return Err("设置文件已消失，已保留当前设置并禁止写入".into());
             }
-            let config = match bytes {
-                Some(bytes) => serde_json::from_slice::<Persisted>(&bytes)
-                    .map_err(|_| "设置损坏或格式不受支持，原文件已保留".to_string())?,
-                None => defaults(project),
+            let (config, migration) = match bytes {
+                Some(bytes) => decode_settings(&bytes)
+                    .map_err(|e| format!("设置损坏或格式不受支持，原文件已保留：{e}"))?,
+                None => (defaults(project), None),
             };
             validate_config(&config)?;
             current.config = config;
+            current.pending_migration = migration;
             current.disk = disk;
             current.revision = transport_revision();
             current.blocked = None;
@@ -593,7 +886,7 @@ impl ConfigStore {
     }
 }
 
-fn encode(config: &Persisted) -> Result<Vec<u8>, String> {
+fn encode(config: &impl Serialize) -> Result<Vec<u8>, String> {
     let mut data = serde_json::to_vec_pretty(config).map_err(|error| error.to_string())?;
     data.push(b'\n');
     if data.len() > 2 * 1024 * 1024 {
@@ -611,9 +904,40 @@ pub(crate) fn rename_bytes(
 ) -> Result<Vec<u8>, String> {
     pcl_core::identifier(old)?;
     pcl_core::identifier(new)?;
-    let mut config: Persisted = serde_json::from_slice(bytes)
-        .map_err(|_| "设置损坏或格式不受支持，原文件已保留".to_string())?;
+    let (mut config, migration) =
+        decode_settings(bytes).map_err(|_| "设置损坏或格式不受支持，原文件已保留".to_string())?;
+    if matches!(migration, Some(Migration::Legacy)) {
+        return Err("旧版设置尚未迁移，无法重命名".into());
+    }
     validate_config(&config)?;
+    let source_folder = root.join("versions").join(old);
+    let selected_paths = std::iter::once(&config.java)
+        .chain(
+            config
+                .roots
+                .iter()
+                .flat_map(|root| root.java_overrides.values()),
+        )
+        .filter_map(|selection| match selection {
+            JavaSelection::Manual { path } => Some(path.as_str()),
+            _ => None,
+        });
+    let java_paths: HashSet<_> = config
+        .java_paths
+        .iter()
+        .map(String::as_str)
+        // Unavailable registry entries remain visible but cannot participate in
+        // automatic Java selection. Moving and re-adding a runtime must not
+        // leave its missing old registry path as a permanent rename blocker.
+        // Explicit Manual choices below remain dependencies even when missing.
+        .filter(|path| fs::metadata(path).is_ok_and(|metadata| metadata.is_file()))
+        .chain(selected_paths)
+        .collect();
+    for path in java_paths {
+        if java_path_points_into(Path::new(path), &source_folder)? {
+            return Err("Java 位于待改名实例内，请先移到实例之外并重新添加".into());
+        }
+    }
     let selected = config
         .roots
         .iter_mut()
@@ -622,8 +946,11 @@ pub(crate) fn rename_bytes(
     if canonical_root(&selected.path)? != root {
         return Err("设置中的游戏目录与重命名范围不符".into());
     }
-    if selected.overrides.contains_key(new) || selected.selected.as_deref() == Some(new) {
-        return Err("目标名称已有选择或内存配置，请选择其他名称".into());
+    if selected.overrides.contains_key(new)
+        || selected.java_overrides.contains_key(new)
+        || selected.selected.as_deref() == Some(new)
+    {
+        return Err("目标名称已有选择、内存或 Java 配置，请选择其他名称".into());
     }
     let mut changed = false;
     if selected.selected.as_deref() == Some(old) {
@@ -634,11 +961,18 @@ pub(crate) fn rename_bytes(
         selected.overrides.insert(new.into(), memory);
         changed = true;
     }
+    if let Some(java) = selected.java_overrides.remove(old) {
+        selected.java_overrides.insert(new.into(), java);
+        changed = true;
+    }
     if !changed {
         return Ok(bytes.to_vec());
     }
     validate_config(&config)?;
-    encode(&config)
+    match migration {
+        Some(Migration::VersionTwo) => encode(&VersionTwo::from_normalized(config)),
+        _ => encode(&config),
+    }
 }
 
 fn project_settings(config: &Persisted, revision: &str) -> Settings {
@@ -655,6 +989,9 @@ fn project_settings(config: &Persisted, revision: &str) -> Settings {
         memory_gib: config.memory_gib,
         selected: root.selected.clone(),
         overrides: root.overrides.clone(),
+        java: config.java.clone(),
+        java_paths: config.java_paths.clone(),
+        java_overrides: root.java_overrides.clone(),
     }
 }
 
@@ -669,6 +1006,7 @@ fn summarize_roots(roots: Vec<GameRoot>) -> Vec<RootSummary> {
                 path: root.path,
                 selected: root.selected,
                 overrides: root.overrides,
+                java_overrides: root.java_overrides,
                 available: error.is_none(),
                 error,
             }
@@ -677,291 +1015,4 @@ fn summarize_roots(roots: Vec<GameRoot>) -> Vec<RootSummary> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn projection(mut settings: Settings) -> Settings {
-        settings.revision.clear();
-        settings
-    }
-
-    struct Fixture(PathBuf);
-    impl Fixture {
-        fn new() -> Self {
-            let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../work/config-tests");
-            let project = base.join(nonce());
-            fs::create_dir_all(project.join("Minecraft/.minecraft")).unwrap();
-            Self(fs::canonicalize(project).unwrap())
-        }
-        fn file(&self) -> PathBuf {
-            self.0.join(".pcl-rust/settings.json")
-        }
-        fn root(&self, name: &str) -> String {
-            let path = self.0.join(name);
-            fs::create_dir_all(&path).unwrap();
-            path.to_str().unwrap().into()
-        }
-        fn write(&self, bytes: &[u8]) {
-            fs::create_dir_all(self.file().parent().unwrap()).unwrap();
-            fs::write(self.file(), bytes).unwrap();
-        }
-    }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    #[test]
-    fn legacy_migration_preserves_values_exact_path_and_original_backup_once() {
-        let fixture = Fixture::new();
-        let root = fixture.root("legacy");
-        let exact = format!("{root}/../legacy");
-        let original = json!({
-            "root":exact,"player":"Old_Player","memory_gib":14,"selected":"Same Instance",
-            "overrides":{"Same Instance":12,"Other":8}
-        })
-        .to_string()
-        .into_bytes();
-        fixture.write(&original);
-        let (store, warning) = ConfigStore::load(&fixture.0);
-        assert!(warning.is_none());
-        let settings = store.snapshot();
-        assert_eq!(settings.root, exact);
-        assert_eq!(settings.player, "Old_Player");
-        assert_eq!(settings.memory_gib, 14);
-        assert_eq!(settings.selected.as_deref(), Some("Same Instance"));
-        assert_eq!(
-            settings.overrides,
-            BTreeMap::from([("Same Instance".into(), 12), ("Other".into(), 8)])
-        );
-        let backups = || {
-            fs::read_dir(fixture.file().parent().unwrap())
-                .unwrap()
-                .map(|entry| entry.unwrap().path())
-                .filter(|path| {
-                    path.file_name()
-                        .unwrap()
-                        .to_string_lossy()
-                        .starts_with("settings.v1-backup-")
-                })
-                .collect::<Vec<_>>()
-        };
-        let before = backups();
-        assert_eq!(before.len(), 1);
-        assert_eq!(fs::read(&before[0]).unwrap(), original);
-        let persisted: serde_json::Value =
-            serde_json::from_slice(&fs::read(fixture.file()).unwrap()).unwrap();
-        assert_eq!(persisted["schema_version"], 2);
-        assert_eq!(persisted["roots"][0]["path"], exact);
-        let (reloaded, warning) = ConfigStore::load(&fixture.0);
-        assert!(warning.is_none());
-        assert_eq!(projection(reloaded.snapshot()), projection(settings));
-        assert_eq!(backups(), before);
-    }
-
-    #[test]
-    fn same_instance_id_has_independent_root_selection_and_memory() {
-        let fixture = Fixture::new();
-        let (store, _) = ConfigStore::load(&fixture.0);
-        let first = store.snapshot().root_id;
-        let second = store
-            .register(fixture.root("second"), Some("Second".into()))
-            .unwrap();
-        let mut settings = store.snapshot();
-        settings.selected = Some("Same".into());
-        settings.overrides.insert("Same".into(), 14);
-        store.save(settings).unwrap();
-        let mut settings = store.select(&second.id).unwrap();
-        settings.overrides.insert("Same".into(), 4);
-        settings.selected = Some("Different".into());
-        settings.memory_gib = 10;
-        store.save(settings).unwrap();
-        store.select(&first).unwrap();
-        store.select_installed(&second.id, "Same").unwrap();
-        assert_eq!(store.snapshot().root_id, first);
-        assert_eq!(store.snapshot().overrides["Same"], 14);
-        assert_eq!(store.snapshot().memory_gib, 10);
-        assert_eq!(
-            store.registered(&second.id).unwrap().selected.as_deref(),
-            Some("Same")
-        );
-        assert_eq!(store.registered(&second.id).unwrap().overrides["Same"], 4);
-        let (reloaded, warning) = ConfigStore::load(&fixture.0);
-        assert!(warning.is_none());
-        assert_eq!(
-            projection(reloaded.snapshot()),
-            projection(store.snapshot())
-        );
-        assert_eq!(
-            reloaded.registered(&second.id).unwrap(),
-            store.registered(&second.id).unwrap()
-        );
-    }
-
-    #[test]
-    fn stale_active_root_and_changed_path_saves_leave_settings_unchanged() {
-        let fixture = Fixture::new();
-        let (store, _) = ConfigStore::load(&fixture.0);
-        let stale = store.snapshot();
-        let second = store.register(fixture.root("second"), None).unwrap();
-        store.select(&second.id).unwrap();
-        let before = fs::read(fixture.file()).unwrap();
-        assert!(store.save(stale).unwrap_err().contains("设置已更新"));
-        let mut changed = store.snapshot();
-        changed.root = fixture.root("replacement");
-        assert!(store.save(changed).unwrap_err().contains("目录管理"));
-        let mut missing_id = store.snapshot();
-        missing_id.root_id.clear();
-        assert!(store.save(missing_id).is_err());
-        assert_eq!(fs::read(fixture.file()).unwrap(), before);
-        assert_eq!(store.snapshot().root_id, second.id);
-    }
-
-    #[test]
-    fn unavailable_root_stays_registered_and_can_be_selected_then_recover() {
-        let fixture = Fixture::new();
-        let (store, _) = ConfigStore::load(&fixture.0);
-        let path = fixture.root("removable");
-        let root = store.register(path.clone(), None).unwrap();
-        let moved = fixture.0.join("temporarily-absent");
-        fs::rename(&path, &moved).unwrap();
-        let selected = store.select(&root.id).unwrap();
-        assert_eq!(selected.root, path);
-        assert_eq!(store.registered(&root.id).unwrap().path, path);
-        assert!(store.resolve(Some(&root.id)).is_err());
-        let (settings, summaries) = store.view();
-        assert_eq!(settings.root_id, root.id);
-        let summary = summaries
-            .iter()
-            .find(|summary| summary.id == root.id)
-            .unwrap();
-        assert!(!summary.available);
-        assert!(summary.error.is_some());
-        let (reloaded, warning) = ConfigStore::load(&fixture.0);
-        assert!(warning.is_none());
-        assert_eq!(projection(reloaded.snapshot()), projection(selected));
-        fs::rename(moved, &path).unwrap();
-        assert!(
-            store
-                .roots()
-                .iter()
-                .find(|summary| summary.id == root.id)
-                .unwrap()
-                .available
-        );
-        assert_eq!(store.resolve(None).unwrap().id, root.id);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn canonical_alias_registration_reuses_stable_id() {
-        let fixture = Fixture::new();
-        let (store, _) = ConfigStore::load(&fixture.0);
-        let initial = store.snapshot();
-        let alias = fixture.0.join("alias");
-        std::os::unix::fs::symlink(&initial.root, &alias).unwrap();
-        let duplicate = store
-            .register(alias.to_str().unwrap().into(), Some("Alias".into()))
-            .unwrap();
-        assert_eq!(duplicate.id, initial.root_id);
-        assert_eq!(duplicate.path, initial.root);
-        assert_eq!(store.roots().len(), 1);
-        assert_eq!(
-            store.resolve(Some(&duplicate.id)).unwrap().path,
-            fs::canonicalize(&initial.root).unwrap().to_str().unwrap()
-        );
-        assert!(store.register("relative".into(), None).is_err());
-        let regular_file = fixture.0.join("file");
-        fs::write(&regular_file, "fixture").unwrap();
-        assert!(store
-            .register(regular_file.to_str().unwrap().into(), None)
-            .is_err());
-    }
-
-    #[test]
-    fn malformed_or_future_settings_block_all_writes_and_preserve_original() {
-        for bytes in [
-            b"{broken".as_slice(),
-            br#"{"schema_version":3,"player":"Future","memory_gib":14,"roots":[]}"#.as_slice(),
-            br#"{"schema_version":2,"active_root_id":"missing","player":"Player","memory_gib":6,"roots":[]}"#.as_slice(),
-            br#"{"root":"/example","player":"Player","memory_gib":6,"selected":null,"version":5}"#.as_slice(),
-        ] {
-            let fixture = Fixture::new();
-            fixture.write(bytes);
-            let (store, warning) = ConfigStore::load(&fixture.0);
-            assert!(warning.as_deref().unwrap().contains("禁止保存"));
-            assert_eq!(store.warning(), warning);
-            assert!(store.ensure_writable().is_err());
-            assert!(store.save(store.snapshot()).is_err());
-            assert!(store.select(&store.snapshot().root_id).is_err());
-            assert!(store.update(&store.snapshot().root_id, Some("Changed".into()), None).is_err());
-            assert!(store.register(fixture.root("other"), None).is_err());
-            assert!(store.select_installed(&store.snapshot().root_id, "Example").is_err());
-            assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn dangling_settings_link_is_preserved_and_blocks_saves() {
-        let fixture = Fixture::new();
-        fs::create_dir_all(fixture.file().parent().unwrap()).unwrap();
-        let target = fixture.0.join("unavailable-settings.json");
-        std::os::unix::fs::symlink(&target, fixture.file()).unwrap();
-        let (store, warning) = ConfigStore::load(&fixture.0);
-        assert!(warning.is_some());
-        assert!(store.ensure_writable().is_err());
-        assert!(store.save(store.snapshot()).is_err());
-        assert_eq!(fs::read_link(fixture.file()).unwrap(), target);
-        assert!(!target.exists());
-    }
-
-    #[test]
-    fn removal_only_forgets_reference_and_reorder_survives_reload() {
-        let fixture = Fixture::new();
-        let (store, _) = ConfigStore::load(&fixture.0);
-        let first = store.snapshot().root_id;
-        let path = fixture.root("second");
-        let game_file = Path::new(&path).join("save-fixture");
-        fs::write(&game_file, b"unchanged").unwrap();
-        let second = store.register(path, None).unwrap();
-        store
-            .update(&second.id, Some("Renamed".into()), Some(0))
-            .unwrap();
-        let (reloaded, warning) = ConfigStore::load(&fixture.0);
-        assert!(warning.is_none());
-        assert_eq!(reloaded.roots()[0].id, second.id);
-        assert_eq!(reloaded.roots()[0].name, "Renamed");
-        assert!(reloaded.update(&second.id, None, Some(2)).is_err());
-        reloaded.select(&second.id).unwrap();
-        assert_eq!(reloaded.remove(&second.id).unwrap().root_id, first);
-        assert_eq!(fs::read(&game_file).unwrap(), b"unchanged");
-        assert!(reloaded.registered(&second.id).is_err());
-        assert!(reloaded.remove(&first).is_err());
-        assert_eq!(reloaded.roots().len(), 1);
-    }
-
-    #[test]
-    fn failed_atomic_save_keeps_previous_memory_state_and_cleans_temporary_file() {
-        let fixture = Fixture::new();
-        let (store, _) = ConfigStore::load(&fixture.0);
-        let original = store.snapshot();
-        store.save(original.clone()).unwrap();
-        let original = store.snapshot();
-        fs::remove_file(fixture.file()).unwrap();
-        fs::create_dir(fixture.file()).unwrap();
-        let mut changed = original.clone();
-        changed.memory_gib = 14;
-        assert!(store.save(changed).is_err());
-        assert_eq!(store.snapshot(), original);
-        assert!(fs::read_dir(fixture.file().parent().unwrap())
-            .unwrap()
-            .all(|entry| !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .ends_with(".tmp")));
-    }
-}
+mod tests;

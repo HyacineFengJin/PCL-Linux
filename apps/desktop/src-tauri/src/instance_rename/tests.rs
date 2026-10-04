@@ -1,5 +1,25 @@
 use super::*;
 use std::{os::unix::fs::symlink, sync::Mutex};
+
+#[test]
+fn rename_lock_owner_drop_releases_lock_even_with_a_duplicate_descriptor() {
+    let fixture = Fixture::new();
+    let root = Dir::open(&fixture.root).unwrap();
+    let store = storage(&root, true).unwrap().unwrap();
+    let owner = lock(&store).unwrap();
+    // dup shares the same lock description as an inherited pre-exec fd, without
+    // relying on fork scheduling to reproduce the completion/recovery race.
+    let inherited = owner.0.try_clone().unwrap();
+    assert!(lock(&store).is_err());
+    drop(owner);
+    let next_owner = lock(&store).unwrap();
+    assert!(lock(&store).is_err());
+    drop(inherited);
+    assert!(lock(&store).is_err());
+    drop(next_owner);
+    assert!(lock(&store).is_ok());
+}
+
 struct Fixture {
     path: PathBuf,
     root: PathBuf,

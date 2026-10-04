@@ -1,4 +1,5 @@
 //! Native launch planning for installed Mojang-format instances.
+pub mod java;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -6,9 +7,6 @@ use std::{
     collections::{BTreeMap, HashSet},
     fs,
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
-    thread,
-    time::{Duration, Instant},
 };
 
 type Result<T> = std::result::Result<T, String>;
@@ -265,13 +263,6 @@ fn loader_description(data: &Value) -> String {
         None => name.into(),
     }
 }
-fn java_compatible(major: u32, required: u32, exact: bool) -> bool {
-    if exact {
-        major == required
-    } else {
-        major >= required
-    }
-}
 pub fn scan_instances(root: &Path) -> Result<Vec<Instance>> {
     Ok(scan_instances_report(root)?.instances)
 }
@@ -512,84 +503,6 @@ pub fn extract_natives(archive: &Path, target: &Path, excludes: &[Value]) -> Res
     }
     Ok(())
 }
-fn java_major(path: &Path) -> Option<u32> {
-    let mut child = Command::new(path)
-        .arg("-version")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) => {}
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-        if start.elapsed() > Duration::from_secs(5) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-    let output = child.wait_with_output().ok()?;
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Regex::new(r#"version "(?:1\.)?(\d+)"#)
-        .ok()?
-        .captures(&text)?
-        .get(1)?
-        .as_str()
-        .parse()
-        .ok()
-}
-fn choose_java(project: &Path, required: u32, exact: bool) -> Result<PathBuf> {
-    let mut candidates = vec![];
-    for base in [project.to_path_buf(), project.join("PCL-Linux")] {
-        for runtime in ["runtime", "runtime-21", "runtime-25"] {
-            candidates.push(base.join(runtime).join("bin/java"));
-        }
-    }
-    if let Some(path) = std::env::var_os("JAVA_HOME") {
-        candidates.push(PathBuf::from(path).join("bin/java"));
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        candidates.extend(std::env::split_paths(&path).map(|p| p.join("java")));
-    }
-    if let Ok(entries) = fs::read_dir("/usr/lib/jvm") {
-        candidates.extend(
-            entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.path().join("bin/java")),
-        );
-    }
-    let mut seen = HashSet::new();
-    let mut suitable = vec![];
-    for path in candidates {
-        if let Ok(path) = fs::canonicalize(path) {
-            if seen.insert(path.clone()) {
-                if let Some(major) = java_major(&path) {
-                    if java_compatible(major, required, exact) {
-                        suitable.push((major, path));
-                    }
-                }
-            }
-        }
-    }
-    suitable.sort_by_key(|(major, _)| *major);
-    suitable.into_iter().next().map(|(_,path)| path).ok_or_else(|| {
-        let requirement = if exact { format!("Java {required} is required for this Forge/NeoForge instance; newer major releases are not selected automatically") } else { format!("Java {required} or newer is required") };
-        format!("{requirement}. Put a matching runtime in the project or set JAVA_HOME.")
-    })
-}
 fn expand(
     raw: &[Value],
     replacements: &BTreeMap<&str, String>,
@@ -640,7 +553,37 @@ pub fn build_launch_plan(
     player: &str,
     memory_gib: u32,
 ) -> Result<LaunchPlan> {
-    build_launch_plan_inner(root, project, id, player, memory_gib, None)
+    build_launch_plan_with_java(
+        root,
+        project,
+        id,
+        player,
+        memory_gib,
+        &java::JavaSelection::Auto,
+        &[],
+    )
+}
+
+/// Build an offline plan using the same Java policy as discovery and settings.
+pub fn build_launch_plan_with_java(
+    root: &Path,
+    project: &Path,
+    id: &str,
+    player: &str,
+    memory_gib: u32,
+    java: &java::JavaSelection,
+    extra_java_paths: &[String],
+) -> Result<LaunchPlan> {
+    build_launch_plan_inner(
+        root,
+        project,
+        id,
+        player,
+        memory_gib,
+        None,
+        java,
+        extra_java_paths,
+    )
 }
 
 pub fn build_launch_plan_authenticated(
@@ -649,6 +592,27 @@ pub fn build_launch_plan_authenticated(
     id: &str,
     identity: &OnlineIdentity,
     memory_gib: u32,
+) -> Result<LaunchPlan> {
+    build_launch_plan_authenticated_with_java(
+        root,
+        project,
+        id,
+        identity,
+        memory_gib,
+        &java::JavaSelection::Auto,
+        &[],
+    )
+}
+
+/// Authenticated arguments remain private even when Java validation fails.
+pub fn build_launch_plan_authenticated_with_java(
+    root: &Path,
+    project: &Path,
+    id: &str,
+    identity: &OnlineIdentity,
+    memory_gib: u32,
+    java: &java::JavaSelection,
+    extra_java_paths: &[String],
 ) -> Result<LaunchPlan> {
     if identity.uuid.len() != 32
         || !identity.uuid.chars().all(|c| c.is_ascii_hexdigit())
@@ -665,6 +629,8 @@ pub fn build_launch_plan_authenticated(
         &identity.name,
         memory_gib,
         Some(identity),
+        java,
+        extra_java_paths,
     )
     .map_err(|error| error.replace(&identity.access_token, "<redacted>"))
 }
@@ -675,6 +641,8 @@ fn build_launch_plan_inner(
     player: &str,
     memory_gib: u32,
     online: Option<&OnlineIdentity>,
+    java: &java::JavaSelection,
+    extra_java_paths: &[String],
 ) -> Result<LaunchPlan> {
     identifier(id)?;
     if !Regex::new(r"^[A-Za-z0-9_]{3,16}$")
@@ -797,7 +765,14 @@ fn build_launch_plan_inner(
     }
     let loader = loader_description(&data);
     let exact_java = loader.starts_with("Forge ") || loader.starts_with("NeoForge ");
-    let java = choose_java(project, required_java(&data), exact_java)?;
+    let java = java::select(
+        project,
+        Some(&root),
+        extra_java_paths,
+        java,
+        required_java(&data),
+        exact_java,
+    )?;
     let natives = safe_join(&root, format!(".pcl-linux/natives/{id}"))?;
     fs::create_dir_all(&natives).map_err(err)?;
     for (path, lib) in native_jars {
@@ -1076,10 +1051,10 @@ mod tests {
     }
     #[test]
     fn forge_java_policy_rejects_newer_major() {
-        assert!(java_compatible(17, 17, true));
-        assert!(!java_compatible(25, 17, true));
-        assert!(!java_compatible(8, 17, true));
-        assert!(java_compatible(25, 17, false));
+        assert!(java::compatible(17, 17, true));
+        assert!(!java::compatible(25, 17, true));
+        assert!(!java::compatible(8, 17, true));
+        assert!(java::compatible(25, 17, false));
     }
     #[test]
     fn rules_obey_order_os_and_false_features() {

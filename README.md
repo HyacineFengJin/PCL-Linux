@@ -12,7 +12,7 @@
 - 已有实例的组件重置、核心备份与中断恢复；按内容选择导出本地 ZIP，并保存导出配置。
 - 本地模组单个／批量启禁，模组、资源包与光影包导入，以及可撤销的删除。
 - 多游戏目录登记、切换、排序与显示名称管理，使用系统文件夹选择器。
-- Java 自动匹配、全局和单实例内存设置。
+- Java 自动匹配、手动添加与全局／单实例选择，以及全局和单实例内存设置。
 - 版本继承、依赖库与 Linux 原生库解析。
 - 游戏进程管理、退出状态与日志查看。
 - PCL CE 风格导航、账号侧栏、实例修改／导出、资源详情及任务管理界面。
@@ -30,7 +30,7 @@ cd PCL-Linux
 ./start-native.sh
 ```
 
-首次使用时，在「启动 → 实例选择」中添加已有的游戏文件夹，然后从「下载」安装原版，或选择目录中已有的版本。支持管理多个目录，各目录分别记住所选实例与实例内存设置。Java 会根据版本要求自动选择。详细步骤见[使用指南](docs/USAGE.md)。安装桌面应用入口需提供 `desktop-file-validate` 命令：
+首次使用时，在「启动 → 实例选择」中添加已有的游戏文件夹，然后从「下载」安装原版，或选择目录中已有的版本。支持管理多个目录，各目录分别记住所选实例、内存和 Java 覆盖设置。Java 默认按版本要求自动选择，也可在「设置 → Java」指定。详细步骤见[使用指南](docs/USAGE.md)。安装桌面应用入口需提供 `desktop-file-validate` 命令：
 
 ```sh
 ./install-desktop.sh
@@ -62,7 +62,7 @@ npm run dev --prefix apps/desktop
 
 ## English
 
-PCL Linux is an experimental native Linux launcher for Minecraft: Java Edition, built with Rust, Tauri 2, React, and TypeScript. It installs vanilla, Fabric, and modern Forge/NeoForge versions with custom instance names, launches existing game installations, selects Java runtimes, and displays game logs. Tasks support cancellation and incomplete-file cleanup. Local management includes multiple game directories, instance display preferences, physical renaming with reference migration and recovery, mod toggling, resource imports, and recoverable removal. Supported existing instances can reset their loader components with core backups and interruption recovery, or export selected content to a local ZIP. Some legacy layouts, OptiFine/LabyMod installation, online resource downloads, and mod updates are not yet available.
+PCL Linux is an experimental native Linux launcher for Minecraft: Java Edition, built with Rust, Tauri 2, React, and TypeScript. It installs vanilla, Fabric, and modern Forge/NeoForge versions with custom instance names, launches existing game installations, and displays game logs. Java can be selected automatically or registered manually, with global and per-instance choices. Tasks support cancellation and incomplete-file cleanup. Local management includes multiple game directories, instance display preferences, physical renaming with reference migration and recovery, mod toggling, resource imports, and recoverable removal. Supported existing instances can reset their loader components with core backups and interruption recovery, or export selected content to a local ZIP. Some legacy layouts, OptiFine/LabyMod installation, online resource downloads, and mod updates are not yet available.
 
 Microsoft sign-in is not yet available. The project maintainers are responsible for completing the service integration.
 

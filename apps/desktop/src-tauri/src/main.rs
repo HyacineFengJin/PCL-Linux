@@ -8,6 +8,8 @@ mod instance_rename;
 mod instance_rename_refs;
 mod instance_rename_service;
 mod instance_reset;
+mod java_commands;
+mod java_service;
 mod platform;
 mod resource_details;
 mod resource_ops;
@@ -1242,12 +1244,14 @@ async fn inspect_instance(
         resource_ops::ensure_ready(Path::new(&root.path))?;
         instance_reset::ensure_ready(Path::new(&root.path))?;
         ensure_rename_ready(&s, &root)?;
-        let plan = pcl_core::build_launch_plan(
+        let plan = pcl_core::build_launch_plan_with_java(
             Path::new(&root.path),
             &s.project,
             &id,
             &cfg.player,
             *root.overrides.get(&id).unwrap_or(&cfg.memory_gib),
+            java_service::effective_choice(&cfg, &root, &id),
+            &cfg.java_paths,
         )?;
         Ok(Inspection {
             java: plan.java.display().to_string(),
@@ -1339,7 +1343,7 @@ fn launch_game(
         let task = || -> Result<(), String> {
             let memory = *root.overrides.get(&id).unwrap_or(&cfg.memory_gib);
             let plan = match s.accounts.identity()? {
-                Some(identity) => pcl_core::build_launch_plan_authenticated(
+                Some(identity) => pcl_core::build_launch_plan_authenticated_with_java(
                     Path::new(&root.path),
                     &s.project,
                     &id,
@@ -1351,13 +1355,17 @@ fn launch_game(
                         client_id: identity.client_id,
                     },
                     memory,
+                    java_service::effective_choice(&cfg, &root, &id),
+                    &cfg.java_paths,
                 )?,
-                None => pcl_core::build_launch_plan(
+                None => pcl_core::build_launch_plan_with_java(
                     Path::new(&root.path),
                     &s.project,
                     &id,
                     &cfg.player,
                     memory,
+                    java_service::effective_choice(&cfg, &root, &id),
+                    &cfg.java_paths,
                 )?,
             };
             if s.stop.load(Ordering::SeqCst) {
@@ -1559,7 +1567,8 @@ fn main() {
             ui_catalog::launcher_read_log,
             ui_catalog::instance_servers,
             ui_data::system_info,
-            ui_data::java_list,
+            java_commands::java_catalog,
+            java_commands::java_add,
             ui_data::instance_resources,
             ui_data::modrinth_search,
             save_settings,
@@ -1599,6 +1608,7 @@ fn main() {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+    use std::thread;
     use tasks::{TaskKind, TaskOutcome, TaskTarget};
 
     struct Fixture(PathBuf);
@@ -1887,6 +1897,7 @@ mod integration_tests {
 
     #[test]
     fn captured_instance_context_survives_browsing_another_root() {
+        use pcl_core::java::JavaSelection;
         let fixture = Fixture::new();
         let state = fixture.shared();
         let first = state.config.snapshot().root_id;
@@ -1894,17 +1905,44 @@ mod integration_tests {
         let mut settings = state.config.snapshot();
         settings.memory_gib = 14;
         settings.overrides.insert("Same".into(), 12);
+        let global_java = JavaSelection::Manual {
+            path: fixture.0.join("global/bin/java").to_str().unwrap().into(),
+        };
+        settings.java = global_java.clone();
+        settings
+            .java_overrides
+            .insert("Same".into(), JavaSelection::Auto);
         state.config.save(settings).unwrap();
         let (captured_settings, captured_root) =
             instance_context(&state.config, None, "Same").unwrap();
         let mut settings = state.config.select(&second.id).unwrap();
         settings.overrides.insert("Same".into(), 4);
+        let second_java = JavaSelection::Manual {
+            path: fixture.0.join("other/bin/java").to_str().unwrap().into(),
+        };
+        settings
+            .java_overrides
+            .insert("Same".into(), second_java.clone());
         state.config.save(settings).unwrap();
         assert_eq!(captured_root.id, first);
         assert_eq!(captured_settings.memory_gib, 14);
         assert_eq!(captured_root.overrides["Same"], 12);
+        assert_eq!(
+            java_service::effective_choice(&captured_settings, &captured_root, "Same"),
+            &JavaSelection::Auto,
+        );
+        assert_eq!(
+            java_service::effective_choice(&captured_settings, &captured_root, "Other"),
+            &global_java,
+        );
         let (_, bound) = instance_context(&state.config, Some(&first), "Same").unwrap();
         assert_eq!(bound, captured_root);
+        let (current_settings, current_root) =
+            instance_context(&state.config, None, "Same").unwrap();
+        assert_eq!(
+            java_service::effective_choice(&current_settings, &current_root, "Same"),
+            &second_java,
+        );
         assert_eq!(
             instance_context(&state.config, None, "Same")
                 .unwrap()
@@ -1912,6 +1950,97 @@ mod integration_tests {
                 .overrides["Same"],
             4
         );
+    }
+
+    fn java_fixture(fixture: &Fixture, wait_for_release: bool) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = fixture.0.join("jdk/bin/java");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let wait = if wait_for_release {
+            "while [ ! -f \"$0.release\" ]; do sleep 0.01; done\n"
+        } else {
+            ""
+        };
+        fs::write(&path, format!(
+            "#!/bin/sh\nprintf inspected > \"$0.inspected\"\n{wait}printf 'java.specification.version = 21\\njava.vendor = Fixture\\nos.arch = {}\\n' >&2\n",
+            std::env::consts::ARCH,
+        )).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn java_registration_rejects_stale_requests_before_execution_and_keeps_selection() {
+        use pcl_core::java::JavaSelection;
+        let fixture = Fixture::new();
+        let state = fixture.shared();
+        let java = java_fixture(&fixture, false);
+        let settings = state.config.snapshot();
+        let context =
+            java_service::registration_context(&state, Some(&settings.root_id), &settings.revision)
+                .unwrap();
+        let mut newer = settings;
+        newer.memory_gib = 14;
+        state.config.save(newer).unwrap();
+        assert!(java_service::register(&state, &java, &context).is_err());
+        assert!(!java.with_file_name("java.inspected").exists());
+        assert!(state.config.snapshot().java_paths.is_empty());
+
+        let settings = state.config.snapshot();
+        let context =
+            java_service::registration_context(&state, Some(&settings.root_id), &settings.revision)
+                .unwrap();
+        let registered = java_service::register(&state, &java, &context).unwrap();
+        assert_ne!(registered.revision, settings.revision);
+        assert_eq!(registered.memory_gib, 14);
+        assert_eq!(registered.java, JavaSelection::Auto);
+        assert_eq!(registered.java_paths, vec![java.to_str().unwrap()]);
+        let repeated = java_service::registration_context(
+            &state,
+            Some(&registered.root_id),
+            &registered.revision,
+        )
+        .unwrap();
+        assert_eq!(
+            java_service::register(&state, &java, &repeated)
+                .unwrap()
+                .java_paths,
+            registered.java_paths
+        );
+
+        let second = fixture.second(&state.config);
+        state.config.select(&second.id).unwrap();
+        fs::remove_file(java.with_file_name("java.inspected")).unwrap();
+        assert!(java_service::register(&state, &java, &repeated).is_err());
+        assert!(!java.with_file_name("java.inspected").exists());
+    }
+
+    #[test]
+    fn java_registration_rechecks_settings_after_the_probe() {
+        let fixture = Fixture::new();
+        let state = Arc::new(fixture.shared());
+        let java = java_fixture(&fixture, true);
+        let settings = state.config.snapshot();
+        let context =
+            java_service::registration_context(&state, Some(&settings.root_id), &settings.revision)
+                .unwrap();
+        let worker_state = state.clone();
+        let worker_java = java.clone();
+        let worker =
+            thread::spawn(move || java_service::register(&worker_state, &worker_java, &context));
+        let started = java.with_file_name("java.inspected");
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !started.exists() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(started.exists());
+        let mut changed = state.config.snapshot();
+        changed.memory_gib = 14;
+        state.config.save(changed).unwrap();
+        fs::write(java.with_file_name("java.release"), b"continue").unwrap();
+        assert!(worker.join().unwrap().is_err());
+        assert_eq!(state.config.snapshot().memory_gib, 14);
+        assert!(state.config.snapshot().java_paths.is_empty());
     }
 
     #[test]

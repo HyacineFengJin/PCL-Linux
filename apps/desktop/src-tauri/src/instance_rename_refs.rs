@@ -587,16 +587,32 @@ pub(crate) fn backup_legacy_checked(
     bytes: &[u8],
     expected: &DiskSnapshot,
 ) -> Result<(), String> {
+    backup_settings_checked(project, bytes, expected, 1)
+}
+
+pub(crate) fn backup_settings_checked(
+    project: &Path,
+    bytes: &[u8],
+    expected: &DiskSnapshot,
+    source_version: u32,
+) -> Result<(), String> {
+    if !matches!(source_version, 1 | 2) {
+        return Err("设置备份版本无效".into());
+    }
     let dir = app_directory(project, false)?.ok_or("设置目录不可用")?;
     let (now, current) = store_snapshot(project, "settings.json", SETTINGS_LIMIT)?;
     if !expected.compatible(&now) || current.as_deref() != Some(bytes) {
         return Err("旧设置在备份前已变化，原文件已保留".into());
     }
-    let name = format!("settings.v1-backup-{}.json", nonce());
+    let name = format!("settings.v{source_version}-backup-{}.json", nonce());
     let mut file = dir.create(&name)?;
     file.write_all(bytes)
         .and_then(|_| file.sync_all())
         .map_err(|e| e.to_string())?;
+    let (token, saved) = dir.read(&name, SETTINGS_LIMIT)?.ok_or("旧设置备份已消失")?;
+    if token.stamp != Stamp::of(&file.metadata().map_err(|e| e.to_string())?) || saved != bytes {
+        return Err("旧设置备份已被外部修改，原设置已保留".into());
+    }
     dir.sync()
 }
 

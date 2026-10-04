@@ -14,7 +14,7 @@ struct Fixture {
 impl Fixture {
     fn new(isolated: bool) -> Self {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../work/instance-rename-2026-10-04/refs-fixtures")
+            .join("../../../work/java-management-2026-10-04/rename-ref-fixtures")
             .join(nonce());
         fs::create_dir_all(&path).unwrap();
         let project = path.canonicalize().unwrap();
@@ -39,9 +39,9 @@ impl Fixture {
             root,
             other,
         };
-        fixture.save_settings(json!({"schema_version":2,"active_root_id":"root-a","player":"FixturePlayer","memory_gib":10,
-            "roots":[{"id":"root-a","name":"A","path":fixture.root,"selected":"Old","overrides":{"Old":12,"Unrelated":8}},
-            {"id":"root-b","name":"B","path":fixture.other,"selected":"Old","overrides":{"Old":6}}]}));
+        fixture.save_settings(json!({"schema_version":3,"active_root_id":"root-a","player":"FixturePlayer","memory_gib":10,"java":{"mode":"auto"},"java_paths":[],
+            "roots":[{"id":"root-a","name":"A","path":fixture.root,"selected":"Old","overrides":{"Old":12,"Unrelated":8},"java_overrides":{}},
+            {"id":"root-b","name":"B","path":fixture.other,"selected":"Old","overrides":{"Old":6},"java_overrides":{}}]}));
         fixture
     }
     fn path(&self, name: &str) -> PathBuf {
@@ -696,6 +696,329 @@ fn settings_transport_revision_rejects_dtos_captured_before_rename_refresh() {
         assert!(config.save(after).is_err());
         assert!(fixture.settings().get("revision").is_none());
     }
+}
+
+#[test]
+fn pending_version_two_rename_preserves_golden_bytes_and_defers_backed_upgrade() {
+    let fixture = Fixture::new(true);
+    let mut old = fixture.settings();
+    old["schema_version"] = json!(2);
+    old["memory_gib"] = json!(14);
+    old.as_object_mut().unwrap().remove("java");
+    old.as_object_mut().unwrap().remove("java_paths");
+    for root in old["roots"].as_array_mut().unwrap() {
+        root.as_object_mut().unwrap().remove("java_overrides");
+    }
+    fixture.save_settings(old);
+    let before = fs::read(fixture.path("settings.json")).unwrap();
+    let refs = fixture.refs();
+    let expected = r#"{
+  "schema_version": 2,
+  "active_root_id": "root-a",
+  "player": "FixturePlayer",
+  "memory_gib": 14,
+  "roots": [
+    {
+      "id": "root-a",
+      "name": "A",
+      "path": @ROOT@,
+      "selected": "New",
+      "overrides": {
+        "New": 12,
+        "Unrelated": 8
+      }
+    },
+    {
+      "id": "root-b",
+      "name": "B",
+      "path": @OTHER@,
+      "selected": "Old",
+      "overrides": {
+        "Old": 6
+      }
+    }
+  ]
+}
+"#
+    .replace("@ROOT@", &serde_json::to_string(&fixture.root).unwrap())
+    .replace("@OTHER@", &serde_json::to_string(&fixture.other).unwrap())
+    .into_bytes();
+    let delta = refs
+        .changes
+        .iter()
+        .find(|delta| delta.target == Target::Settings)
+        .unwrap();
+    assert_eq!(
+        decoded(&delta.after, SETTINGS_LIMIT).unwrap().unwrap(),
+        expected
+    );
+    refs.mark_pending(&fixture.project, &fixture.root, "n-abc-1-1")
+        .unwrap();
+    let (config, warning) = ConfigStore::load(&fixture.project);
+    assert!(warning.is_none());
+    assert_eq!(config.snapshot().java, pcl_core::java::JavaSelection::Auto);
+    assert_eq!(config.snapshot().memory_gib, 14);
+    assert_eq!(fs::read(fixture.path("settings.json")).unwrap(), before);
+    assert!(config
+        .save(config.snapshot())
+        .unwrap_err()
+        .contains(PENDING_ERROR));
+    let backups = || {
+        fs::read_dir(fixture.path("settings.json").parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("settings.v2-backup-")
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(backups().is_empty());
+    refs.apply(&fixture.project, &fixture.root).unwrap();
+    refs.clear_pending(&fixture.project, &fixture.root, "n-abc-1-1")
+        .unwrap();
+    config.refresh_after_rename().unwrap();
+    assert_eq!(config.snapshot().selected.as_deref(), Some("New"));
+    assert_eq!(fs::read(fixture.path("settings.json")).unwrap(), expected);
+    assert!(backups().is_empty());
+    let current = config.snapshot();
+    let java = fixture
+        .project
+        .join("fixture-java/bin/java")
+        .to_string_lossy()
+        .into_owned();
+    config
+        .register_java(java.clone(), &current.revision, &current.root_id)
+        .unwrap();
+    assert_eq!(backups().len(), 1);
+    assert_eq!(fs::read(&backups()[0]).unwrap(), expected);
+    assert_eq!(fixture.settings()["schema_version"], 3);
+    assert_eq!(config.snapshot().memory_gib, 14);
+    assert_eq!(config.snapshot().java_paths, vec![java]);
+}
+
+#[test]
+fn java_overrides_move_back_and_other_root_global_registry_stay_unchanged() {
+    let fixture = Fixture::new(true);
+    let global = fixture
+        .project
+        .join("java-global/bin/java")
+        .to_string_lossy()
+        .into_owned();
+    let own = fixture
+        .project
+        .join("java-own/bin/java")
+        .to_string_lossy()
+        .into_owned();
+    let other = fixture
+        .project
+        .join("java-other/bin/java")
+        .to_string_lossy()
+        .into_owned();
+    let mut settings = fixture.settings();
+    settings["java"] = json!({"mode":"manual","path":global});
+    settings["java_paths"] = json!([global, own, other]);
+    settings["roots"][0]["java_overrides"] =
+        json!({"Old":{"mode":"manual","path":own},"ExplicitAuto":{"mode":"auto"}});
+    settings["roots"][1]["java_overrides"] = json!({"Old":{"mode":"manual","path":other}});
+    fixture.save_settings(settings.clone());
+    let refs = fixture.refs();
+    refs.apply(&fixture.project, &fixture.root).unwrap();
+    let after = fixture.settings();
+    assert_eq!(after["java"], settings["java"]);
+    assert_eq!(after["java_paths"], settings["java_paths"]);
+    assert_eq!(after["roots"][1], settings["roots"][1]);
+    assert_eq!(
+        after["roots"][0]["java_overrides"]["New"],
+        settings["roots"][0]["java_overrides"]["Old"]
+    );
+    assert_eq!(
+        after["roots"][0]["java_overrides"]["ExplicitAuto"],
+        json!({"mode":"auto"})
+    );
+    assert!(after["roots"][0]["java_overrides"].get("Old").is_none());
+    prepare(&fixture.project, "root-a", &fixture.root, "New", "Old")
+        .unwrap()
+        .apply(&fixture.project, &fixture.root)
+        .unwrap();
+    assert_eq!(fixture.settings(), settings);
+    let mut collision = settings;
+    collision["roots"][0]["java_overrides"]["New"] = json!({"mode":"auto"});
+    fixture.save_settings(collision.clone());
+    assert!(prepare(&fixture.project, "root-a", &fixture.root, "Old", "New").is_err());
+    assert_eq!(fixture.settings(), collision);
+}
+
+#[test]
+fn any_registered_java_inside_renamed_folder_refuses_and_prefix_siblings_work() {
+    let fixture = Fixture::new(true);
+    let baseline = fixture.settings();
+    let inside = fixture
+        .root
+        .join("versions/Old/runtime/bin/java")
+        .to_string_lossy()
+        .into_owned();
+    fs::create_dir_all(Path::new(&inside).parent().unwrap()).unwrap();
+    fs::write(&inside, b"fixture only, never executed").unwrap();
+    for location in 0..4 {
+        let mut value = baseline.clone();
+        match location {
+            0 => value["java_paths"] = json!([inside]),
+            1 => value["java"] = json!({"mode":"manual","path":inside}),
+            index => {
+                value["roots"][index - 2]["java_overrides"] =
+                    json!({"Old":{"mode":"manual","path":inside}})
+            }
+        }
+        fixture.save_settings(value.clone());
+        assert!(
+            prepare(&fixture.project, "root-a", &fixture.root, "Old", "New")
+                .unwrap_err()
+                .contains("Java 位于待改名实例内")
+        );
+        assert_eq!(fixture.settings(), value);
+    }
+    let mut sibling = baseline;
+    sibling["java_paths"] = json!([fixture.root.join("versions/Old-Sibling/runtime/bin/java")]);
+    fixture.save_settings(sibling);
+    assert!(prepare(&fixture.project, "root-a", &fixture.root, "Old", "New").is_ok());
+}
+
+#[test]
+fn outside_java_aliases_to_old_runtime_refuse_even_with_a_missing_executable() {
+    let fixture = Fixture::new(true);
+    let baseline = fixture.settings();
+    let runtime = fixture.root.join("versions/Old/runtime");
+    fs::create_dir_all(runtime.join("bin")).unwrap();
+    fs::write(runtime.join("bin/java"), b"fixture only, never executed").unwrap();
+    let alias = fixture.project.join("outside-java");
+    std::os::unix::fs::symlink(&runtime, &alias).unwrap();
+    let path = alias.join("bin/java").to_string_lossy().into_owned();
+    for missing in [false, true] {
+        if missing {
+            fs::remove_file(runtime.join("bin/java")).unwrap();
+        }
+        for location in 0..4 {
+            let mut value = baseline.clone();
+            match location {
+                0 => value["java_paths"] = json!([path]),
+                1 => value["java"] = json!({"mode":"manual","path":path}),
+                index => {
+                    value["roots"][index - 2]["java_overrides"] =
+                        json!({"Old":{"mode":"manual","path":path}})
+                }
+            }
+            fixture.save_settings(value.clone());
+            let result = prepare(&fixture.project, "root-a", &fixture.root, "Old", "New");
+            if location == 0 && missing {
+                assert!(result.is_ok());
+            } else {
+                assert!(result.unwrap_err().contains("Java 位于待改名实例内"));
+            }
+            assert_eq!(fixture.settings(), value);
+        }
+    }
+    let dangling = fixture.project.join("dangling-java");
+    std::os::unix::fs::symlink("game/versions/Old/runtime/bin/java", &dangling).unwrap();
+    let mut value = baseline;
+    value["java"] = json!({"mode":"manual","path":dangling});
+    fixture.save_settings(value.clone());
+    assert!(
+        prepare(&fixture.project, "root-a", &fixture.root, "Old", "New")
+            .unwrap_err()
+            .contains("Java 位于待改名实例内")
+    );
+    assert_eq!(fixture.settings(), value);
+    value["java"] = json!({"mode":"auto"});
+    value["java_paths"] = json!([dangling]);
+    fixture.save_settings(value.clone());
+    assert!(prepare(&fixture.project, "root-a", &fixture.root, "Old", "New").is_ok());
+    assert_eq!(fixture.settings(), value);
+}
+
+#[test]
+fn relocated_java_keeps_unavailable_registry_entry_and_allows_rename() {
+    let fixture = Fixture::new(true);
+    let original = fixture.root.join("versions/Old/runtime/bin/java");
+    fs::create_dir_all(original.parent().unwrap()).unwrap();
+    fs::write(&original, b"fixture only, never executed").unwrap();
+    let mut settings = fixture.settings();
+    settings["memory_gib"] = json!(14);
+    settings["java"] = json!({"mode":"manual","path":original});
+    settings["java_paths"] = json!([original]);
+    fixture.save_settings(settings);
+    let (config, warning) = ConfigStore::load(&fixture.project);
+    assert!(warning.is_none());
+    assert!(
+        prepare(&fixture.project, "root-a", &fixture.root, "Old", "New")
+            .unwrap_err()
+            .contains("Java 位于待改名实例内")
+    );
+    let outside = fixture.project.join("relocated-java/bin/java");
+    fs::create_dir_all(outside.parent().unwrap()).unwrap();
+    fs::rename(&original, &outside).unwrap();
+    let current = config.snapshot();
+    let mut updated = config
+        .register_java(
+            outside.to_string_lossy().into_owned(),
+            &current.revision,
+            &current.root_id,
+        )
+        .unwrap();
+    updated.java = pcl_core::java::JavaSelection::Manual {
+        path: outside.to_string_lossy().into_owned(),
+    };
+    config.save(updated).unwrap();
+    let refs = fixture.refs();
+    refs.apply(&fixture.project, &fixture.root).unwrap();
+    config.refresh_after_rename().unwrap();
+    let final_settings = config.snapshot();
+    assert_eq!(final_settings.memory_gib, 14);
+    assert_eq!(final_settings.selected.as_deref(), Some("New"));
+    assert_eq!(
+        final_settings.java,
+        pcl_core::java::JavaSelection::Manual {
+            path: outside.to_string_lossy().into_owned()
+        }
+    );
+    assert_eq!(
+        final_settings.java_paths,
+        vec![
+            original.to_string_lossy().into_owned(),
+            outside.to_string_lossy().into_owned()
+        ]
+    );
+    assert!(!original.exists());
+    assert_eq!(fs::read(outside).unwrap(), b"fixture only, never executed");
+}
+
+#[test]
+fn java_alias_traversing_old_then_parent_refuses_even_when_destination_is_outside() {
+    let fixture = Fixture::new(true);
+    let shared = fixture.root.join("versions/Shared/bin");
+    fs::create_dir_all(&shared).unwrap();
+    fs::write(shared.join("java"), b"fixture only, never executed").unwrap();
+    let alias = fixture.project.join("outside-traversing-java");
+    let old = fixture.root.join("versions/Old");
+    std::os::unix::fs::symlink(old.join("../Shared/bin/java"), &alias).unwrap();
+    assert_eq!(fs::canonicalize(&alias).unwrap(), shared.join("java"));
+    let mut settings = fixture.settings();
+    settings["java"] = json!({"mode":"manual","path":alias});
+    fixture.save_settings(settings.clone());
+    assert!(
+        prepare(&fixture.project, "root-a", &fixture.root, "Old", "New")
+            .unwrap_err()
+            .contains("Java 位于待改名实例内")
+    );
+    assert_eq!(fixture.settings(), settings);
+    // Demonstrate the actual lookup dependency without running the game or Java.
+    fs::rename(old, fixture.root.join("versions/New")).unwrap();
+    assert_eq!(
+        fs::canonicalize(alias).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
 }
 
 #[test]

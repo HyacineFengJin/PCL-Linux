@@ -689,7 +689,20 @@ fn storage(root: &Dir, create: bool) -> Result<Option<Dir>> {
         }
     }
 }
-fn lock(storage: &Dir) -> Result<File> {
+struct ResetLock {
+    file: File,
+}
+impl Drop for ResetLock {
+    fn drop(&mut self) {
+        // flock belongs to the open file description shared by fork/dup. Closing
+        // our descriptor alone can leave it locked until a child reaches exec.
+        unsafe {
+            libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
+fn lock(storage: &Dir) -> Result<ResetLock> {
     let file = match storage.stat(".lock")? {
         Some(_) => storage.regular(".lock")?,
         None => storage.create_file(".lock")?,
@@ -697,7 +710,7 @@ fn lock(storage: &Dir) -> Result<File> {
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err("其他进程正在重置或恢复实例组件，请稍后重试".into());
     }
-    Ok(file)
+    Ok(ResetLock { file })
 }
 fn validate_journal(j: &Journal, name: &str) -> Result<()> {
     let invalid = || "实例重置记录无效，已保留原文件与备份".to_owned();
@@ -1611,6 +1624,22 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn reset_lock_releases_even_when_an_inherited_descriptor_remains_open() {
+        let fixture = Fixture::new();
+        let root = Dir::open(fixture.root()).unwrap();
+        let store = storage(&root, true).unwrap().unwrap();
+        let owned = lock(&store).unwrap();
+        let inherited = owned.file.try_clone().unwrap();
+        assert!(lock(&store).is_err());
+        drop(owned);
+        let next = lock(&store).unwrap();
+        assert!(inherited.metadata().is_ok());
+        assert!(lock(&store).is_err());
+        drop(next);
+        assert!(lock(&store).is_ok());
     }
 
     #[test]

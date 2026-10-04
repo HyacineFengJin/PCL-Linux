@@ -23,6 +23,25 @@ export type Settings = {
   memory_gib: number;
   selected: string | null;
   overrides: Record<string, number>;
+  java?: JavaSelection;
+  java_paths?: string[];
+  java_overrides?: Record<string, JavaSelection>;
+};
+export type JavaSelection = { mode: "auto" } | { mode: "manual"; path: string };
+export type JavaRuntime = {
+  path: string;
+  major: number;
+  vendor: string;
+  arch: string;
+};
+export type JavaCatalog = {
+  runtimes: JavaRuntime[];
+  unavailable: { path: string; error: string }[];
+};
+export type JavaAddResult = {
+  status: "selected" | "cancelled" | "unavailable";
+  settings?: Settings;
+  message?: string;
 };
 export type RootSummary = {
   id: string;
@@ -30,6 +49,7 @@ export type RootSummary = {
   path: string;
   selected: string | null;
   overrides?: Record<string, number>;
+  java_overrides?: Record<string, JavaSelection>;
   available: boolean;
   error?: string | null;
 };

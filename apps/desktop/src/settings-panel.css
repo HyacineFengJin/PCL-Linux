@@ -182,10 +182,18 @@
 .ce-java-list {
   padding: 19.5px 27px !important;
 }
-.ce-java-auto {
+.ce-java-row {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   position: relative;
 }
-.ce-java-auto:before {
+.ce-java-row.is-selected:before {
   content: "";
   position: absolute;
   width: 4.5px;
@@ -197,8 +205,26 @@
 }
 .ce-java-auto strong {
   font-size: 14.25px;
-  color: #2278d8;
   font-weight: 400;
+}
+.ce-java-row.is-selected,
+.ce-java-row.is-selected strong {
+  color: #2278d8;
+}
+.ce-java-add button:disabled,
+.ce-java-row:disabled {
+  cursor: default;
+}
+.ce-java-add button:disabled {
+  opacity: 0.5;
+}
+.ce-java-row:disabled {
+  opacity: 1;
+}
+.ce-java-row:focus-visible {
+  outline: 2px solid #247ee6;
+  outline-offset: 4px;
+  border-radius: 3px;
 }
 .ce-java-auto p,
 .ce-java-entry p {
@@ -221,6 +247,21 @@
 .ce-java-status {
   color: #858d96;
   font-size: 11.25px;
+}
+.ce-java-unavailable p,
+.ce-java-status[role="alert"] {
+  color: #ad4d43;
+}
+.ce-java-select-control {
+  min-width: 0;
+}
+.ce-java-select-control select {
+  width: 100%;
+}
+.ce-java-select-control .ce-java-status {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
 }
 @media (max-width: 850px) {
   .ce-settings-row {

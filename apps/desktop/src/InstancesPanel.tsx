@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { Collapse } from "./Collapse";
 import { InstanceOperations } from "./InstanceOperations";
+import { JavaSelect } from "./JavaSelect";
 import commandIcon from "./assets/game-icons/command.png";
 import lampTexture from "./assets/game-icons/redstone-lamp.png";
 import grassIcon from "./assets/game-icons/grass.png";
@@ -1170,12 +1171,15 @@ export function InstancePanel({
                 title={notReady}
               />
             </label>
-            <label className="ce-row">
-              <span>游戏 Java</span>
-              <select className="ce-field" disabled title={notReady}>
-                <option>跟随全局设置</option>
-              </select>
-            </label>
+            <JavaSelect
+              instance={instance}
+              settings={settings}
+              api={api}
+              native={native}
+              disabled={disabled || !!mutationDisabled}
+              onSave={onSave}
+              onNotify={onNotify}
+            />
           </div>
         </section>
         <section className="ce-card ce-memory-card">

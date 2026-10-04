@@ -1,16 +1,9 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, ChevronDown, PlusCircle } from "lucide-react";
+import { ArrowRight, ChevronDown } from "lucide-react";
 import "./settings-panel.css";
 import { Collapse } from "./Collapse";
-
-type Settings = {
-  root: string;
-  player: string;
-  memory_gib: number;
-  selected: string | null;
-  overrides: Record<string, number>;
-};
-type Java = { path: string; major: number; vendor: string; arch: string };
+import { JavaPanel } from "./JavaPanel";
+import type { Api, Settings } from "./types";
 type SystemInfo = {
   total_memory_bytes: number;
   available_memory_bytes: number;
@@ -19,11 +12,12 @@ type Props = {
   section: string;
   settings: Settings;
   onSave: (settings: Settings) => Promise<void>;
-  api: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
+  api: Api;
   native: boolean;
   disabled: boolean;
   onInstances: () => void;
   onNotify: (message: string) => void;
+  onRefresh: () => Promise<void>;
 };
 const unavailable = "此选项尚未开放，当前不会应用到游戏启动";
 const jvm =
@@ -81,13 +75,11 @@ export function SettingsPanel({
   disabled,
   onInstances,
   onNotify,
+  onRefresh,
 }: Props) {
   const [memory, setMemory] = useState(settings.memory_gib);
   const [advanced, setAdvanced] = useState(false);
   const [system, setSystem] = useState<SystemInfo | null>(null);
-  const [javas, setJavas] = useState<Java[]>([]);
-  const [javaError, setJavaError] = useState("");
-  const [javaLoading, setJavaLoading] = useState(false);
   useEffect(() => {
     setMemory(settings.memory_gib);
   }, [settings.memory_gib]);
@@ -102,25 +94,6 @@ export function SettingsPanel({
       current = false;
     };
   }, [api, native]);
-  useEffect(() => {
-    if (section !== "java") return;
-    let current = true;
-    setJavaError("");
-    setJavaLoading(true);
-    api<Java[]>("java_list", { root: settings.root })
-      .then((v) => {
-        if (current) setJavas(v);
-      })
-      .catch(() => {
-        if (current) setJavaError("暂时无法获取本机 Java 列表");
-      })
-      .finally(() => {
-        if (current) setJavaLoading(false);
-      });
-    return () => {
-      current = false;
-    };
-  }, [section, settings.root, api]);
   const saveMemory = async () => {
     if (memory === settings.memory_gib || disabled) return;
     try {
@@ -131,34 +104,15 @@ export function SettingsPanel({
   };
   if (section === "java")
     return (
-      <div className="ce-settings-panel">
-        <div className="ce-card ce-java-add">
-          <button disabled title="手动添加 Java 尚未开放">
-            <PlusCircle size={20} />
-            添加
-          </button>
-        </div>
-        <section className="ce-card ce-java-list">
-          <div className="ce-java-auto">
-            <strong>自动选择</strong>
-            <p>Java 选择自动档，依据游戏需要自动选择合适的 Java</p>
-          </div>
-          {javas.map((java) => (
-            <div className="ce-java-entry" key={java.path}>
-              <div>JDK {java.major}</div>
-              <p>
-                <span>{java.arch}</span> <span>{java.vendor}</span> {java.path}
-              </p>
-            </div>
-          ))}
-          {javaError && <p className="ce-java-status">{javaError}</p>}
-          {!javaError && javas.length === 0 && (
-            <p className="ce-java-status">
-              {javaLoading ? "正在扫描本机 Java…" : "未找到可用的 Java"}
-            </p>
-          )}
-        </section>
-      </div>
+      <JavaPanel
+        settings={settings}
+        api={api}
+        native={native}
+        disabled={disabled}
+        onSave={onSave}
+        onRefresh={onRefresh}
+        onNotify={onNotify}
+      />
     );
   if (!["launch", "启动", "game"].includes(section))
     return (

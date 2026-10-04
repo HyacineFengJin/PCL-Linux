@@ -2,14 +2,11 @@ use crate::Shared;
 use base64::Engine;
 use serde::Serialize;
 use std::{
-    collections::BTreeSet,
     fs,
     io::Read,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     sync::Arc,
-    thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tauri::State;
 
@@ -44,109 +41,6 @@ fn parse_memory(text: &str) -> Result<SystemInfo, String> {
 #[tauri::command]
 pub fn system_info() -> Result<SystemInfo, String> {
     parse_memory(&fs::read_to_string("/proc/meminfo").map_err(|e| e.to_string())?)
-}
-
-#[derive(Serialize)]
-pub struct JavaInfo {
-    path: String,
-    major: u32,
-    vendor: String,
-    arch: String,
-}
-
-fn inspect_java(path: &Path) -> Option<JavaInfo> {
-    let mut child = Command::new(path)
-        .args(["-XshowSettings:properties", "-version"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
-    let stderr = child.stderr.take()?;
-    let reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = stderr.take(65536).read_to_end(&mut bytes);
-        String::from_utf8_lossy(&bytes).into_owned()
-    });
-    let start = Instant::now();
-    let success = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.success(),
-            Ok(None) if start.elapsed() < Duration::from_secs(5) => {
-                thread::sleep(Duration::from_millis(20))
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break false;
-            }
-        }
-    };
-    let text = reader.join().ok()?;
-    if !success {
-        return None;
-    }
-    let property = |name: &str| {
-        text.lines().find_map(|line| {
-            let (key, value) = line.trim().split_once('=')?;
-            (key.trim() == name).then(|| value.trim().to_owned())
-        })
-    };
-    let version = property("java.specification.version")?;
-    let major = version
-        .strip_prefix("1.")
-        .unwrap_or(&version)
-        .split('.')
-        .next()?
-        .parse()
-        .ok()?;
-    Some(JavaInfo {
-        path: path.display().to_string(),
-        major,
-        vendor: property("java.vendor").unwrap_or_default(),
-        arch: property("os.arch").unwrap_or_default(),
-    })
-}
-
-#[tauri::command]
-pub async fn java_list(
-    root: String,
-    state: State<'_, Arc<Shared>>,
-) -> Result<Vec<JavaInfo>, String> {
-    let project = state.project.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut candidates = Vec::new();
-        for base in [
-            project.clone(),
-            project.join("PCL-Linux"),
-            PathBuf::from(root),
-        ] {
-            for runtime in ["runtime", "runtime-21", "runtime-25"] {
-                candidates.push(base.join(runtime).join("bin/java"));
-            }
-        }
-        if let Some(home) = std::env::var_os("JAVA_HOME") {
-            candidates.push(PathBuf::from(home).join("bin/java"));
-        }
-        if let Some(path) = std::env::var_os("PATH") {
-            candidates.extend(std::env::split_paths(&path).map(|p| p.join("java")));
-        }
-        if let Ok(entries) = fs::read_dir("/usr/lib/jvm") {
-            candidates.extend(
-                entries
-                    .filter_map(Result::ok)
-                    .map(|e| e.path().join("bin/java")),
-            );
-        }
-        let paths: BTreeSet<_> = candidates
-            .into_iter()
-            .filter_map(|p| p.canonicalize().ok())
-            .collect();
-        let mut runtimes: Vec<_> = paths.into_iter().filter_map(|p| inspect_java(&p)).collect();
-        runtimes.sort_by(|a, b| a.major.cmp(&b.major).then(a.path.cmp(&b.path)));
-        runtimes
-    })
-    .await
-    .map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]

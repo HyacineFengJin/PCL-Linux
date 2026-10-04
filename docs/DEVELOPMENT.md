@@ -9,12 +9,15 @@
 | 前端状态与桌面调用 | `apps/desktop/src/main.tsx` | 页面、当前目录、bootstrap、作用域 API 与响应接纳 |
 | 实例管理界面 | `InstancesPanel.tsx`、`InstanceOperations.tsx` | 实例资料、改名确认、组件修改与导出 |
 | 下载与任务界面 | `DownloadPanel.tsx`、`TaskManager.tsx` | 任务轮询、完成刷新、取消后返回 |
+| Java 管理界面 | `JavaPanel.tsx`、`JavaSelect.tsx`、`javaManagement.ts` | 全局与实例选择、目录/修订作用域、过期响应排除 |
 | 桌面命令与应用生命周期 | `apps/desktop/src-tauri/src/main.rs` | 命令参数、目标绑定、任务调度、游戏进程与关闭处理 |
 | 改名编排 | `instance_rename_service.rs` | 组合文件/资料 revision、进度、错误归类与缓存刷新 |
 | 持久设置与实例资料 | `config.rs`、`instance_meta.rs`、`export_presets.rs` | 多目录、选择与内存、元资料、导出配置 |
+| Java 桌面服务 | `java_commands.rs`、`java_service.rs`、`platform.rs` | 选择器、登记请求绑定与探测前后校验 |
 | 文件操作 | `resource_ops.rs`、`instance_reset.rs`、`instance_export.rs` | 本地资源事务、组件重置、ZIP 导出 |
 | 任务协调 | `tasks.rs`、`downloads.rs` | 单写入任务、取消与结束语义、下载页面的任务投影 |
-| Minecraft 核心 | `crates/core/src/lib.rs` | 版本识别、继承、依赖、Java 选择和启动参数 |
+| Minecraft 核心 | `crates/core/src/lib.rs` | 版本识别、继承、依赖和启动参数 |
+| Java 核心 | `crates/core/src/java.rs` | 有限时探测、发现、架构与版本策略、启动选择 |
 | 下载与安装 | `crates/install/src/` | 网络请求、校验缓存、原版与加载器安装 |
 | 账号 | `crates/auth/src/lib.rs`、桌面的 `accounts.rs` | 认证协议、密钥环、账号状态与刷新 |
 
@@ -43,10 +46,21 @@
 - **界面重新出现旧选择或内存设置**：检查 config 的 transport revision、`save_settings` 返回值及前端响应接纳条件。保存成功后的新 revision 必须被采用；旧响应不能覆盖已经更新的 bootstrap。
 - **切到另一个目录后恢复按钮不可用**：检查 bootstrap 中待恢复的根目录匹配。登记路径可以是别名，事务绑定的是规范路径和目录身份。
 
+## Java 的数据与启动路径
+
+`config.rs` 的 v3 保存全局 `java`、登记路径 `java_paths` 与各目录的 `java_overrides`。缺少实例覆盖表示跟随全局；显式 `Auto` 表示该实例独立自动选择。`Settings` 只投影当前目录的覆盖，启动使用捕获的 `GameRoot`，避免切换目录后读取另一个同名实例的选择。普通设置保存不能直接替换 Java 路径登记表。
+
+添加流程从 `JavaPanel` 经 `java_commands::java_add`、`platform::pick_java` 到 `java_service::register`。目录 ID 和 transport revision 在弹窗前捕获，在执行探测前和提交登记前各检查一次。探测运行在阻塞工作线程中，期间不持有操作互斥锁。添加成功的设置由前端应用入口接纳；原页面卸载后仍需更新已提交的登记表和 revision。
+
+`crates/core/src/java.rs` 统一列表与启动选择。每次探测限制时长和输出，自动发现限制候选数量及总时长。程序使用独立进程组，超时或退出后清理组内子进程，并等待直接子进程；不要改成持锁执行或无界管道读取。手动选择在启动时重新探测，错误不会退回自动选择。Forge/NeoForge 的主版本策略也在核心执行，前端禁用不兼容选项只是提前提示。
+
+v2 设置在普通启动时备份并迁移。已有改名 journal 的引用载荷必须按原 v2 字段顺序重放；存在项目待恢复标记时，只在内存中规范化，保留磁盘字节。完成恢复后的首次合法设置写入再备份恢复后的原始 v2 字节并升级。排查升级与改名交叉问题时，先读 `VersionTwo`、`rename_bytes` 和 `pending_migration`，不要让新字段提前改变 journal 的预期快照。
+
 ## 修改时维持的约束
 
 - **明确目标和所有权**：命令捕获 `root_id`、规范目录和实例 ID；后台任务不随当前页面重新选择目标。删除或清理只处理已登记且仍匹配的文件。
 - **文件操作与资料同步分清提交边界**：改变 journal 状态顺序、fsync、原子发布或 marker 清理顺序时，必须重新检查各崩溃窗口的恢复行为。反例用例放在改名模块的 `tests.rs` 中。
+- **进程与文件锁的生命周期**：Java 探测可能与后台文件操作并行。`flock` 由打开的文件描述共享，复制或 fork 后仅关闭父进程的描述符不足以保证解锁；锁守卫应在工作结束时显式 `LOCK_UN`，仍保留非阻塞互斥。见 [Linux flock 文档](https://man7.org/linux/man-pages/man2/flock.2.html)。重置与改名的重复描述符用例覆盖这一边界，避免只依赖线程调度复现偶发占用。
 - **注释说明原因**：记录不可破坏的约束、锁顺序、失败/恢复策略以及不明显的平台限制。普通语句用清楚的命名表达；过长流程先按职责提取函数。
 - **避免含糊的组合值**：有关联的计划、引用和 revision 使用具名结构；错误和副作用应在调用处可见。
 - **变更说明和回归用例一起维护**：深层 bug 的用例应覆盖导致故障的时序或数据状态；仅复述实现步骤的测试不能证明恢复正确。
@@ -60,6 +74,9 @@ cargo test --workspace --locked --features pcl-desktop/custom-protocol
 # 改名文件事务及引用迁移的定向用例。
 cargo test --locked -p pcl-desktop --features custom-protocol instance_rename
 
+# Java 探测、策略及登记边界。
+cargo test --locked -p pcl-core -p pcl-desktop --features pcl-desktop/custom-protocol java
+
 # 类型检查与前端生产构建。
 npm run build --prefix apps/desktop
 
@@ -67,6 +84,6 @@ npm run build --prefix apps/desktop
 cargo fmt --all -- --check
 ```
 
-改名文件事务用例在 `apps/desktop/src-tauri/src/instance_rename/tests.rs`，引用迁移用例在 `instance_rename_refs/tests.rs`，应用集成用例在桌面 `main.rs`。它们使用独立样例目录；不要把个人实例路径或账号数据写入公开测试。
+改名文件事务用例在 `apps/desktop/src-tauri/src/instance_rename/tests.rs`，引用迁移用例在 `instance_rename_refs/tests.rs`，设置迁移用例在 `config/tests.rs`，Java 核心用例在 `crates/core/src/java_tests.rs`，应用集成用例在桌面 `main.rs`。它们使用独立样例目录；不要把个人实例路径或账号数据写入公开测试。
 
 Rust 测试不能证明真实桌面选择器、网络授权页面或 Minecraft 启动正常。涉及这些边界时，还需要按[使用指南](USAGE.md)在专用实例中手动验证。

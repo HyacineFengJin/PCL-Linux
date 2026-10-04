@@ -87,6 +87,7 @@ import type {
   Api,
   Instance,
   InstanceMetadata,
+  JavaAddResult,
   MetaView,
   RootSummary,
   Settings,
@@ -161,6 +162,8 @@ const resourceWrites = new Set([
   "instance_export_config_save",
 ]);
 const rootCommands = new Set([
+  "java_catalog",
+  "java_add",
   "launch_game",
   "inspect_instance",
   "open_folder",
@@ -271,7 +274,13 @@ function normalizedState(value: State): State {
   return {
     ...value,
     roots,
-    settings: { ...value.settings, root_id: rootId },
+    settings: {
+      ...value.settings,
+      root_id: rootId,
+      java: value.settings.java || { mode: "auto" },
+      java_paths: value.settings.java_paths || [],
+      java_overrides: value.settings.java_overrides || {},
+    },
     scan_issues: value.scan_issues || [],
     auth: value.auth || emptyAuth,
   };
@@ -289,6 +298,9 @@ function preparePreviewRoots() {
         overrides: selected
           ? { ...preview.settings.overrides }
           : { ...root.overrides },
+        java_overrides: selected
+          ? { ...preview.settings.java_overrides }
+          : { ...root.java_overrides },
         ...stored?.settings,
         root_id: root.id,
         root: root.path,
@@ -533,7 +545,8 @@ async function api<T>(
     ) as T;
   }
   if (command === "system_info") return preview!.system as T;
-  if (command === "java_list") return (preview!.java || []) as T;
+  if (command === "java_catalog")
+    return { runtimes: preview!.java || [], unavailable: [] } as T;
   if (command === "download_status")
     return (preview!.download_status || idleDownload) as T;
   if (command === "resource_import")
@@ -803,6 +816,32 @@ function App() {
   const rootKey = `${rootId || ""}:${data?.settings.root || ""}`;
   const contextKey = React.useRef(rootKey);
   contextKey.current = rootKey;
+  function acceptJavaRegistration(
+    capturedContext: string,
+    revision: unknown,
+    result: JavaAddResult,
+  ) {
+    const saved = result.settings;
+    if (result.status !== "selected" || !saved || typeof revision !== "string")
+      return false;
+    const targetKey = `${saved.root_id || ""}:${saved.root}`;
+    if (targetKey !== capturedContext) return false;
+    const currentSubmission = (current: Settings) =>
+      `${current.root_id || ""}:${current.root}` === targetKey &&
+      (current.revision === revision || current.revision === saved.revision);
+    // A native chooser can finish after its panel unmounts. The application
+    // owns the committed registry/token; a stale view only loses its notices.
+    setData((current) =>
+      current && currentSubmission(current.settings)
+        ? { ...current, settings: saved }
+        : current,
+    );
+    if (contextKey.current === targetKey)
+      setDraft((current) =>
+        current && currentSubmission(current) ? saved : current,
+      );
+    return true;
+  }
   const rootApi = React.useMemo<Api>(
     () =>
       async <T,>(
@@ -817,6 +856,18 @@ function App() {
             command,
             rootCommands.has(command) ? { ...args, rootId } : args,
           );
+          if (
+            command === "java_add" &&
+            acceptJavaRegistration(
+              capturedContext,
+              args?.revision,
+              result as JavaAddResult,
+            )
+          )
+            // Invalidate older in-flight bootstrap reads, including when the
+            // original Java panel has gone away. Root navigation owns its own
+            // newer bootstrap while rootWorkingRef is set.
+            await load();
           if (
             ["instance_reset_recover", "instance_rename_recover"].includes(
               command,
@@ -2001,7 +2052,15 @@ function App() {
                         api={rootApi}
                         native={native}
                         onSave={save}
-                        disabled={!!busy || downloadBusy}
+                        onRefresh={load}
+                        disabled={
+                          !!busy ||
+                          downloadBusy ||
+                          resourceBusy ||
+                          rootWorking ||
+                          !!data.rename_recovery_error ||
+                          !!data.reset_recovery_error
+                        }
                         onInstances={instanceSettings}
                         onNotify={notify}
                       />

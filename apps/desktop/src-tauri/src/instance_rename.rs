@@ -868,7 +868,16 @@ fn storage(root: &Dir, create: bool) -> Result<Option<Dir>> {
         }
     }
 }
-fn lock(store: &Dir) -> Result<File> {
+struct RenameLock(File);
+impl Drop for RenameLock {
+    fn drop(&mut self) {
+        // A concurrent fork can retain this open-file description until exec.
+        // Closing our fd alone would let that child prolong a finished writer's
+        // lock. Explicitly unlock at the owner's lifetime boundary.
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+fn lock(store: &Dir) -> Result<RenameLock> {
     let file = match store.stat(".lock")? {
         Some(_) => store.regular(".lock")?,
         None => store.create_file(".lock")?,
@@ -876,7 +885,7 @@ fn lock(store: &Dir) -> Result<File> {
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err("其他进程正在重命名或恢复实例，请稍后重试".into());
     }
-    Ok(file)
+    Ok(RenameLock(file))
 }
 fn validate(j: &Journal, name: &str) -> Result<()> {
     if j.schema != 1
