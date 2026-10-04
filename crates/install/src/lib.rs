@@ -1,5 +1,6 @@
 //! Verified installation of versions from Mojang's official catalog.
 use reqwest::{Client, Url};
+mod cache;
 mod components;
 mod network;
 use serde::{Deserialize, Serialize};
@@ -100,6 +101,7 @@ pub struct Installer {
     client: Client,
     java: Option<PathBuf>,
     project: Option<PathBuf>,
+    cache_source: Option<cache::CacheSource>,
     #[cfg(test)]
     endpoint: Option<String>,
 }
@@ -177,6 +179,7 @@ impl Installer {
                 .map_err(error)?,
             java: None,
             project: None,
+            cache_source: None,
             #[cfg(test)]
             endpoint: None,
         })
@@ -188,6 +191,12 @@ impl Installer {
     pub fn with_project(mut self, path: impl AsRef<Path>) -> Self {
         self.project = Some(path.as_ref().to_path_buf());
         self
+    }
+    /// Reuse only SHA1/size-verified library and asset bytes by copying them into
+    /// this installation. Source files are opened read-only beneath a pinned FD.
+    pub fn with_cache_source(mut self, root: impl AsRef<Path>) -> Result<Self> {
+        self.cache_source = Some(cache::CacheSource::open(root.as_ref())?);
+        Ok(self)
     }
     fn manifest_url(&self) -> &str {
         #[cfg(test)]
@@ -280,7 +289,12 @@ impl Installer {
     ) -> Result<bool> {
         check(cancel)?;
         let path = pcl_core::safe_join(root, &d.relative)?;
-        if verify(&path, &d.hash, d.size, cancel)? {
+        if verify(&path, &d.hash, d.size, cancel)?
+            || match &self.cache_source {
+                Some(cache) => cache.copy(root, d, cancel)?,
+                None => false,
+            }
+        {
             done.fetch_add(1, Ordering::Relaxed);
             group_done.fetch_add(1, Ordering::Relaxed);
             bytes.fetch_add(d.size, Ordering::Relaxed);

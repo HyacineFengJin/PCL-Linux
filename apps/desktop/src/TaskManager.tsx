@@ -69,7 +69,9 @@ export function TaskStatistics({
       <div>
         <span>下载速度</span>
         <strong>
-          {terminalCancelled || speed === null
+          {terminalCancelled ||
+          speed === null ||
+          status.kind === "instance_export"
             ? "—"
             : `${(speed / 1048576).toFixed(2)} MiB/s`}
         </strong>
@@ -145,6 +147,12 @@ export function TaskManager({
   const active = ["downloading", "preparing", "processing"].includes(
     status.stage,
   );
+  const action =
+    status.kind === "instance_reset"
+      ? "重置"
+      : status.kind === "instance_export"
+        ? "导出"
+        : "安装";
   const phase =
     status.phase ||
     (status.stage === "downloading" ? "downloading" : "metadata");
@@ -230,21 +238,21 @@ export function TaskManager({
     return (
       <section className="ce-card ce-task-empty">
         <Download size={36} />
-        <p>暂无下载任务</p>
+        <p>暂无任务</p>
       </section>
     );
   return (
     <section className={`ce-card ce-task-card ${status.stage}`}>
       <div className="ce-task-heading">
         <strong
-          title={status.root_path ? `安装目录：${status.root_path}` : undefined}
+          title={status.root_path ? `游戏目录：${status.root_path}` : undefined}
         >
-          {status.version} 安装
+          {status.version} {action}
         </strong>
         <button
           className="icon-button"
-          aria-label={cancelling ? "正在清理未完成文件" : "取消安装任务"}
-          title={cancelling ? "正在清理…" : "取消安装任务"}
+          aria-label={cancelling ? "正在清理未完成文件" : `取消${action}任务`}
+          title={cancelling ? "正在清理…" : `取消${action}任务`}
           disabled={
             !native || !active || status.can_cancel === false || cancelling
           }

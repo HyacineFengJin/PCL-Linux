@@ -10,6 +10,7 @@ use std::{
 
 #[derive(Clone, Serialize)]
 pub struct DownloadStatus {
+    pub kind: Option<TaskKind>,
     pub task_id: Option<String>,
     pub root_id: Option<String>,
     pub root_path: Option<String>,
@@ -32,6 +33,7 @@ pub struct DownloadStatus {
 impl Default for DownloadStatus {
     fn default() -> Self {
         Self {
+            kind: None,
             task_id: None,
             root_id: None,
             root_path: None,
@@ -78,6 +80,7 @@ impl Downloads {
 
     fn project(snapshot: crate::tasks::TaskSnapshot) -> DownloadStatus {
         DownloadStatus {
+            kind: Some(snapshot.kind),
             task_id: Some(snapshot.id),
             root_id: Some(snapshot.root_id),
             root_path: Some(snapshot.root_path),
@@ -104,13 +107,21 @@ impl Downloads {
             .or_else(|| self.current.lock().unwrap().clone())
             .ok_or("找不到安装任务")?;
         let snapshot = self.tasks.snapshot(&id).ok_or("找不到此任务")?;
-        if snapshot.kind != TaskKind::Install {
-            return Err("此任务不是安装任务".into());
+        if !matches!(
+            snapshot.kind,
+            TaskKind::Install | TaskKind::InstanceReset | TaskKind::InstanceExport
+        ) {
+            return Err("此任务不在任务管理页面中".into());
         }
         self.tasks.cancel(&id)?;
         // Always return the requested task. A newly admitted install must never
         // become the target of a late cancellation or its response.
         Ok(Self::project(self.tasks.wait_terminal(&id)?))
+    }
+
+    pub fn track(&self, task: &TaskHandle) {
+        *self.current.lock().unwrap() = Some(task.id().to_owned());
+        task.publish();
     }
 
     #[cfg(test)]
@@ -215,7 +226,7 @@ impl Downloads {
         Ok(task_id)
     }
 
-    fn progress(&self, task: &TaskHandle, progress: Progress) {
+    pub fn progress(&self, task: &TaskHandle, progress: Progress) {
         let stage = match progress.stage.as_str() {
             "downloading"
             | "vanilla_libraries"
@@ -227,7 +238,8 @@ impl Downloads {
             | "component_libraries"
             | "game_libraries" => TaskStage::Downloading,
             "processing" | "installing" | "component_install" | "component_analyze"
-            | "publishing" | "complete" | "game_install" | "game_support" => TaskStage::Processing,
+            | "publishing" | "complete" | "game_install" | "game_support" | "reset_commit"
+            | "reset_merge" | "export-archive" | "export-finalize" => TaskStage::Processing,
             _ => TaskStage::Preparing,
         };
         let (phase, message) = if progress.stage == "complete" {
@@ -260,6 +272,34 @@ impl Downloads {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn instance_job_projection_and_cancel_target_are_scoped() {
+        for kind in [TaskKind::InstanceReset, TaskKind::InstanceExport] {
+            let tasks = Arc::new(Tasks::new());
+            let downloads = Downloads::new(tasks.clone());
+            let task = tasks
+                .admit(
+                    TaskTarget {
+                        root_id: "a".into(),
+                        root_path: "/game-a".into(),
+                        instance_id: Some("Example".into()),
+                    },
+                    kind,
+                )
+                .unwrap();
+            let id = task.id().to_owned();
+            downloads.track(&task);
+            assert_eq!(downloads.snapshot().kind, Some(kind));
+            assert_eq!(downloads.snapshot().root_id.as_deref(), Some("a"));
+            tasks.cancel(&id).unwrap();
+            assert!(tasks.active().is_some());
+            task.finish(TaskOutcome::Failed("cancelled".into()));
+            let result = downloads.cancel_and_wait(Some(&id)).unwrap();
+            assert_eq!(result.stage, "cancelled");
+            assert_eq!(result.task_id.as_deref(), Some(id.as_str()));
+        }
+    }
 
     #[test]
     fn scoped_cancel_response_does_not_cancel_a_new_install() {

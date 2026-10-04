@@ -1,7 +1,10 @@
 mod accounts;
 mod config;
 mod downloads;
+mod export_presets;
+mod instance_export;
 mod instance_meta;
+mod instance_reset;
 mod platform;
 mod resource_details;
 mod resource_ops;
@@ -9,7 +12,7 @@ mod tasks;
 mod ui_catalog;
 mod ui_data;
 use config::{ConfigStore, GameRoot, RootSummary, Settings};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
@@ -53,6 +56,7 @@ struct Bootstrap {
     roots: Vec<RootSummary>,
     scan_issues: Vec<pcl_core::ScanIssue>,
     scan_error: Option<String>,
+    reset_recovery_error: Option<String>,
     config_warning: Option<String>,
     status: RunStatus,
     auth: accounts::AuthState,
@@ -105,12 +109,23 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
         .into_iter()
         .flatten()
         .collect();
+    let resetting_here = s.tasks.active().is_some_and(|task| {
+        task.kind == tasks::TaskKind::InstanceReset && task.root_id == settings.root_id
+    });
+    let reset_recovery_error = if resetting_here {
+        None
+    } else {
+        canonical
+            .as_ref()
+            .and_then(|path| instance_reset::ensure_ready(path).err())
+    };
     Bootstrap {
         settings,
         roots,
         instances,
         scan_issues,
         scan_error,
+        reset_recovery_error,
         config_warning: (!warnings.is_empty()).then(|| warnings.join("\n")),
         status: s.status.lock().unwrap().clone(),
         auth: s.accounts.snapshot(),
@@ -392,6 +407,315 @@ fn task_snapshot(id: String, state: State<'_, Arc<Shared>>) -> Option<tasks::Tas
 #[tauri::command]
 fn task_cancel(id: String, state: State<'_, Arc<Shared>>) -> Result<tasks::TaskSnapshot, String> {
     state.tasks.cancel(&id)
+}
+
+fn require_instance_job(s: &Shared) -> Result<(), String> {
+    s.config.ensure_writable()?;
+    if s.closing.load(Ordering::SeqCst) {
+        return Err("启动器正在关闭，请重新打开后再操作实例".into());
+    }
+    if matches!(
+        s.status.lock().unwrap().stage.as_str(),
+        "preparing" | "running"
+    ) {
+        return Err("请在游戏退出后操作实例文件".into());
+    }
+    if s.tasks.active().is_some() {
+        return Err("请在当前文件操作结束后操作实例".into());
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct ResetSubmission {
+    revision: String,
+    id: String,
+    components: Vec<pcl_install::ComponentSelection>,
+}
+#[derive(Deserialize)]
+struct ExportSubmission {
+    revision: String,
+    instance_id: String,
+    request: instance_export::ExportRequest,
+}
+
+#[tauri::command]
+async fn instance_reset_plan(
+    id: String,
+    components: Vec<pcl_install::ComponentSelection>,
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<instance_reset::ResetPlan, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = s.operations.lock().unwrap();
+        require_instance_job(&s)?;
+        let root = s.config.resolve(root_id.as_deref())?;
+        resource_ops::ensure_ready(Path::new(&root.path))?;
+        instance_reset::prepare(Path::new(&root.path), &id, components)
+    })
+    .await
+    .map_err(|_| "检查重置方案的任务意外退出".to_string())?
+}
+
+#[tauri::command]
+async fn instance_reset_start(
+    plan: ResetSubmission,
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<String, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = s.operations.lock().unwrap();
+        require_instance_job(&s)?;
+        let root = s.config.resolve(root_id.as_deref())?;
+        resource_ops::ensure_ready(Path::new(&root.path))?;
+        let checked = instance_reset::prepare(Path::new(&root.path), &plan.id, plan.components)?;
+        if checked.revision != plan.revision {
+            return Err("实例或重置方案已改变，请重新检查".into());
+        }
+        let task = s.tasks.admit(
+            tasks::TaskTarget {
+                root_id: root.id,
+                root_path: root.path.clone(),
+                instance_id: Some(plan.id),
+            },
+            tasks::TaskKind::InstanceReset,
+        )?;
+        let task_id = task.id().to_owned();
+        s.downloads.track(&task);
+        let worker = s.clone();
+        std::thread::Builder::new()
+            .name(format!("pcl-reset-{task_id}"))
+            .spawn(move || {
+                let cancel = task.cancellation_token();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    instance_reset::execute(
+                        Path::new(&root.path),
+                        &worker.project,
+                        checked,
+                        &cancel,
+                        |p| worker.downloads.progress(&task, p),
+                    )
+                }))
+                .unwrap_or_else(|_| {
+                    Err("取消清理失败：重置任务意外退出，请恢复未完成的重置后重试".into())
+                });
+                finish_instance_task(task, result, "实例核心重置完成，游戏内容已保留");
+            })
+            .map_err(|e| format!("无法启动重置任务：{e}"))?;
+        Ok(task_id)
+    })
+    .await
+    .map_err(|_| "启动重置任务失败".to_string())?
+}
+
+fn finish_instance_task(
+    task: tasks::TaskHandle,
+    result: Result<serde_json::Value, String>,
+    message: &str,
+) {
+    match result {
+        Ok(result) => {
+            let warning = result
+                .get("warning")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            task.finish(tasks::TaskOutcome::Complete {
+                message: warning
+                    .as_ref()
+                    .map_or_else(|| message.into(), |warning| format!("{message}；{warning}")),
+                result: Some(result),
+                error: warning,
+            })
+        }
+        Err(error) if error.starts_with("取消清理失败：") => {
+            task.finish(tasks::TaskOutcome::CleanupFailed(error))
+        }
+        Err(error) => task.finish(tasks::TaskOutcome::Failed(error)),
+    };
+}
+
+#[tauri::command]
+async fn instance_reset_recover(
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<serde_json::Value, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = s.operations.lock().unwrap();
+        require_instance_job(&s)?;
+        let root = s.config.resolve(root_id.as_deref())?;
+        let task = s.tasks.admit(
+            tasks::TaskTarget {
+                root_id: root.id,
+                root_path: root.path.clone(),
+                instance_id: None,
+            },
+            tasks::TaskKind::ResourceOperation,
+        )?;
+        task.begin_finishing();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            instance_reset::recover_pending(Path::new(&root.path))
+        }))
+        .unwrap_or_else(|_| Err("恢复重置任务意外退出，原文件和备份已保留".into()));
+        finish_instance_task(task, result.clone(), "已恢复未完成的实例重置");
+        result
+    })
+    .await
+    .map_err(|_| "恢复重置任务失败".to_string())?
+}
+
+#[tauri::command]
+async fn instance_export_plan(
+    id: String,
+    request: instance_export::ExportRequest,
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<instance_export::ExportPlan, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = s.operations.lock().unwrap();
+        require_instance_job(&s)?;
+        let root = s.config.resolve(root_id.as_deref())?;
+        resource_ops::ensure_ready(Path::new(&root.path))?;
+        instance_reset::ensure_ready(Path::new(&root.path))?;
+        instance_export::prepare(Path::new(&root.path), &id, request)
+    })
+    .await
+    .map_err(|_| "检查导出文件的任务意外退出".to_string())?
+}
+
+#[tauri::command]
+async fn instance_export_start(
+    plan: ExportSubmission,
+    root_id: Option<String>,
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<Shared>>,
+) -> Result<Option<String>, String> {
+    let s = state.inner().clone();
+    let (root, checked) = tauri::async_runtime::spawn_blocking(move || {
+        let _operation = s.operations.lock().unwrap();
+        require_instance_job(&s)?;
+        let root = s.config.resolve(root_id.as_deref())?;
+        resource_ops::ensure_ready(Path::new(&root.path))?;
+        instance_reset::ensure_ready(Path::new(&root.path))?;
+        let checked =
+            instance_export::prepare(Path::new(&root.path), &plan.instance_id, plan.request)?;
+        if checked.revision != plan.revision {
+            return Err("导出内容或选项已改变，请重新检查".to_string());
+        }
+        Ok((root, checked))
+    })
+    .await
+    .map_err(|_| "检查导出方案的任务意外退出".to_string())??;
+    let filename = format!("{}-{}.zip", checked.request.name, checked.request.version)
+        .chars()
+        .map(|c| {
+            if c.is_control() || "/\\:*?\"<>|".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let choice = state
+        .desktop
+        .save_zip(window, state.project.clone(), filename)
+        .await?;
+    if choice.status == "cancelled" {
+        return Ok(None);
+    }
+    if choice.status != "selected" {
+        return Err(choice
+            .message
+            .unwrap_or_else(|| "无法选择导出文件位置".into()));
+    }
+    let destination = choice
+        .paths
+        .into_iter()
+        .next()
+        .ok_or("未选择导出文件位置")?;
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = s.operations.lock().unwrap();
+        require_instance_job(&s)?;
+        let current = s.config.resolve(Some(&root.id))?;
+        if current.path != root.path {
+            return Err("游戏目录位置已改变，请重新导出".into());
+        }
+        let task = s.tasks.admit(
+            tasks::TaskTarget {
+                root_id: root.id,
+                root_path: root.path,
+                instance_id: Some(checked.instance_id.clone()),
+            },
+            tasks::TaskKind::InstanceExport,
+        )?;
+        let task_id = task.id().to_owned();
+        s.downloads.track(&task);
+        let worker = s.clone();
+        std::thread::Builder::new()
+            .name(format!("pcl-export-{task_id}"))
+            .spawn(move || {
+                let cancel = task.cancellation_token();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    instance_export::execute(checked, &destination, &cancel, |p| {
+                        worker.downloads.progress(&task, p)
+                    })
+                }))
+                .unwrap_or_else(|_| {
+                    Err("取消清理失败：导出任务意外退出，请检查保存目录中的临时文件".into())
+                });
+                let message = result
+                    .as_ref()
+                    .ok()
+                    .and_then(|v| v.get("file_name"))
+                    .and_then(|v| v.as_str())
+                    .map(|name| format!("导出完成：{name}"))
+                    .unwrap_or_else(|| "导出完成".into());
+                finish_instance_task(task, result, &message);
+            })
+            .map_err(|e| format!("无法启动导出任务：{e}"))?;
+        Ok(Some(task_id))
+    })
+    .await
+    .map_err(|_| "启动导出任务失败".to_string())?
+}
+
+#[tauri::command]
+async fn instance_export_config_read(
+    id: String,
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<Option<instance_export::ExportRequest>, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        pcl_core::identifier(&id)?;
+        let root = s.config.resolve(root_id.as_deref())?;
+        export_presets::read(&s.project, &root.id, Path::new(&root.path), &id)
+    })
+    .await
+    .map_err(|_| "读取导出配置失败".to_string())?
+}
+#[tauri::command]
+async fn instance_export_config_save(
+    id: String,
+    request: instance_export::ExportRequest,
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<(), String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = s.operations.lock().unwrap();
+        require_instance_job(&s)?;
+        let root = s.config.resolve(root_id.as_deref())?;
+        // Validate the exact choices before retaining them for this instance.
+        instance_export::prepare(Path::new(&root.path), &id, request.clone())?;
+        export_presets::save(&s.project, &root.id, Path::new(&root.path), &id, request)
+    })
+    .await
+    .map_err(|_| "保存导出配置失败".to_string())?
 }
 
 enum ResourceRequest {
@@ -743,6 +1067,7 @@ async fn inspect_instance(
         }
         let (cfg, root) = instance_context(&s.config, root_id.as_deref(), &id)?;
         resource_ops::ensure_ready(Path::new(&root.path))?;
+        instance_reset::ensure_ready(Path::new(&root.path))?;
         let plan = pcl_core::build_launch_plan(
             Path::new(&root.path),
             &s.project,
@@ -809,6 +1134,7 @@ fn launch_game(
     state.config.ensure_writable()?;
     let (cfg, root) = instance_context(&state.config, root_id.as_deref(), &id)?;
     resource_ops::ensure_ready(Path::new(&root.path))?;
+    instance_reset::ensure_ready(Path::new(&root.path))?;
     {
         let mut st = state.status.lock().unwrap();
         if state.tasks.active().is_some() {
@@ -1079,6 +1405,13 @@ fn main() {
             download_catalog,
             download_status,
             download_start,
+            instance_reset_plan,
+            instance_reset_start,
+            instance_reset_recover,
+            instance_export_plan,
+            instance_export_start,
+            instance_export_config_read,
+            instance_export_config_save,
             download_cancel
         ])
         .run(tauri::generate_context!())
@@ -1166,6 +1499,44 @@ mod integration_tests {
                 .overrides["Same"],
             4
         );
+    }
+
+    #[test]
+    fn instance_jobs_wait_for_game_and_all_writers_and_refuse_shutdown() {
+        let fixture = Fixture::new();
+        let state = fixture.shared();
+        assert!(require_instance_job(&state).is_ok());
+        for stage in ["preparing", "running"] {
+            state.status.lock().unwrap().stage = stage.into();
+            assert!(require_instance_job(&state).is_err());
+        }
+        state.status.lock().unwrap().stage = "idle".into();
+        let root = state.config.resolve(None).unwrap();
+        for kind in [
+            TaskKind::Install,
+            TaskKind::ResourceOperation,
+            TaskKind::InstanceReset,
+            TaskKind::InstanceExport,
+        ] {
+            let task = state
+                .tasks
+                .admit(
+                    TaskTarget {
+                        root_id: root.id.clone(),
+                        root_path: root.path.clone(),
+                        instance_id: Some("Example".into()),
+                    },
+                    kind,
+                )
+                .unwrap();
+            assert!(require_instance_job(&state).is_err());
+            state.tasks.cancel(task.id()).unwrap();
+            assert!(require_instance_job(&state).is_err());
+            task.finish(TaskOutcome::Failed("stopped".into()));
+            assert!(require_instance_job(&state).is_ok());
+        }
+        state.closing.store(true, Ordering::SeqCst);
+        assert!(require_instance_job(&state).is_err());
     }
 
     #[test]

@@ -30,6 +30,7 @@ export type DownloadStep = {
   progress?: number | null;
 };
 export type DownloadStatus = {
+  kind?: "install" | "instance_reset" | "instance_export" | null;
   stage:
     | "idle"
     | "preparing"
@@ -212,7 +213,8 @@ export function DownloadPanel({
             next.task_id ||
             `${next.root_id || next.root_path || ""}:${next.version}`;
           if (!next.root_id || next.root_id === context.current.rootId)
-            await callbacks.current.onInstalled();
+            if (next.kind !== "instance_export")
+              await callbacks.current.onInstalled();
         }
       } catch (e) {
         if (

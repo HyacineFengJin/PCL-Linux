@@ -291,6 +291,51 @@
   pointer-events: auto;
   opacity: 1;
 }
+.ce-operation-floating-action button:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+.ce-operation-error,
+.ce-operation-note {
+  margin: 12px 10px;
+  font-size: 12px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+.ce-operation-error {
+  color: #c44b3b;
+}
+.ce-operation-recovery {
+  margin: 10px;
+}
+.ce-operation-note {
+  color: #9299a3;
+}
+.ce-operation-confirmation dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 16px;
+  margin: 0 7px 16px;
+  font-size: 14px;
+  line-height: 21px;
+}
+.ce-operation-confirmation dt {
+  color: #9299a3;
+}
+.ce-operation-confirmation dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.ce-operation-confirmation > p {
+  margin: 10px 7px;
+  font-size: 13px;
+  line-height: 21px;
+  overflow-wrap: anywhere;
+}
+.ce-operation-confirmation {
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+}
 .ce-export-name-card {
   display: grid;
   grid-template-columns: auto minmax(90px, 1fr) auto 138px;

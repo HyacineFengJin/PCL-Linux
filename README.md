@@ -9,12 +9,13 @@
 - 模组加载器安装包目录，以及 Modrinth 模组、整合包、数据包、资源包和光影包搜索、版本详情与依赖浏览。
 - 游戏版本扫描、搜索、选择与实例设置。
 - 实例描述、内置图标、列表分类与收藏管理。
+- 已有实例的组件重置、核心备份与中断恢复；按内容选择导出本地 ZIP，并保存导出配置。
 - 本地模组单个／批量启禁，模组、资源包与光影包导入，以及可撤销的删除。
 - 多游戏目录登记、切换、排序与显示名称管理，使用系统文件夹选择器。
 - Java 自动匹配、全局和单实例内存设置。
 - 版本继承、依赖库与 Linux 原生库解析。
 - 游戏进程管理、退出状态与日志查看。
-- PCL CE 风格导航、账号侧栏、实例修改／导出表单、资源详情及任务管理界面。
+- PCL CE 风格导航、账号侧栏、实例修改／导出、资源详情及任务管理界面。
 
 项目仍在开发中，目前支持游戏与上述加载器安装、已有游戏启动与本地资源管理。OptiFine、LabyMod 自动安装、在线资源下载和模组更新尚未提供；部分早期版本暂不支持自动安装。Microsoft 正版登录暂未开放，服务接入由项目维护者完成。
 
@@ -59,7 +60,7 @@ npm run dev --prefix apps/desktop
 
 ## English
 
-PCL Linux is an experimental native Linux launcher for Minecraft: Java Edition, built with Rust, Tauri 2, React, and TypeScript. It downloads and installs vanilla versions, launches existing game installations, selects Java runtimes, resolves launch dependencies, and displays game logs. Downloads support cancellation, verified file reuse, and SHA-1 validation. Local resource management supports mod toggling, importing mods/resource packs/shader packs, and recoverable removal. Some legacy versions are unsupported. Mod loader installation, online resource downloads, and mod updates are not yet available.
+PCL Linux is an experimental native Linux launcher for Minecraft: Java Edition, built with Rust, Tauri 2, React, and TypeScript. It installs vanilla, Fabric, and modern Forge/NeoForge versions with custom instance names, launches existing game installations, selects Java runtimes, and displays game logs. Tasks support cancellation and incomplete-file cleanup. Local management includes multiple game directories, instance display preferences, mod toggling, resource imports, and recoverable removal. Supported existing instances can reset their loader components with core backups and interruption recovery, or export selected content to a local ZIP. Some legacy layouts, OptiFine/LabyMod installation, online resource downloads, and mod updates are not yet available.
 
 Microsoft sign-in is not yet available. The project maintainers are responsible for completing the service integration.
 

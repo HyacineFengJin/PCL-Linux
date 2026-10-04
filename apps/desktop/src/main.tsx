@@ -131,6 +131,7 @@ type State = {
   roots?: RootSummary[];
   scan_issues?: { id: string; message: string }[];
   scan_error?: string | null;
+  reset_recovery_error?: string | null;
   config_warning?: string | null;
   instances: Instance[];
   status: Status;
@@ -150,6 +151,10 @@ const resourceWrites = new Set([
   "resource_import",
   "resource_recover",
   "instance_metadata_update",
+  "instance_reset_start",
+  "instance_reset_recover",
+  "instance_export_start",
+  "instance_export_config_save",
 ]);
 const rootCommands = new Set([
   "launch_game",
@@ -167,6 +172,13 @@ const rootCommands = new Set([
   "resource_recover",
   "instance_metadata_update",
   "instance_metadata_read",
+  "instance_reset_plan",
+  "instance_reset_start",
+  "instance_reset_recover",
+  "instance_export_plan",
+  "instance_export_start",
+  "instance_export_config_read",
+  "instance_export_config_save",
 ]);
 type PreviewRoot = {
   settings: Settings;
@@ -791,12 +803,19 @@ function App() {
         args?: Record<string, unknown>,
       ): Promise<T> => {
         const target = { id: rootId };
+        const capturedContext = contextKey.current;
         if (resourceWrites.has(command)) setResourceTarget(target);
         try {
-          return await api<T>(
+          const result = await api<T>(
             command,
             rootCommands.has(command) ? { ...args, rootId } : args,
           );
+          if (
+            command === "instance_reset_recover" &&
+            contextKey.current === capturedContext
+          )
+            await load();
+          return result;
         } finally {
           if (resourceWrites.has(command))
             setResourceTarget((current) =>
@@ -827,6 +846,28 @@ function App() {
   function showTasks() {
     if (screen !== "tasks") setTaskOrigin(screen);
     setScreen("tasks");
+  }
+  async function showInstanceTask(id: string) {
+    const capturedRoot = contextKey.current;
+    setDownloadBusy(true);
+    try {
+      const next = await api<DownloadStatus>("download_status");
+      if (next.task_id !== id) return;
+      acceptDownloadStatus(next);
+      if (contextKey.current === capturedRoot) showTasks();
+    } catch (e) {
+      notify(String(e));
+    }
+  }
+  async function recoverInstanceReset() {
+    if (!native || busy || downloadBusy || resourceBusy || !rootAvailable)
+      return;
+    try {
+      await rootApi("instance_reset_recover");
+      notify("已恢复未完成的实例重置");
+    } catch (e) {
+      notify(String(e));
+    }
   }
   const [instancePage, setInstancePage] = useState("overview");
   const [settingsPage, setSettingsPage] = useState("launch");
@@ -1669,6 +1710,25 @@ function App() {
             )}
           </aside>
           <main className="content" ref={contentRef}>
+            {data.reset_recovery_error && screen !== "tasks" && (
+              <section className="error-banner" role="alert">
+                <TriangleAlert size={17} />
+                <span>{data.reset_recovery_error}</span>
+                <button
+                  className="ce-button"
+                  disabled={
+                    !native ||
+                    !!busy ||
+                    downloadBusy ||
+                    resourceBusy ||
+                    !rootAvailable
+                  }
+                  onClick={() => void recoverInstanceReset()}
+                >
+                  恢复实例重置
+                </button>
+              </section>
+            )}
             <div hidden={screen !== "home" || tab !== "download"}>
               <DownloadPanel
                 visible={screen === "home" && tab === "download"}
@@ -1708,12 +1768,24 @@ function App() {
                   onCancelled={(next) => {
                     if (downloadSnapshot.current.task_id !== next.task_id)
                       return;
-                    notify(`${next.version || "游戏"} 安装已取消`);
-                    setTab("download");
-                    setDownloadPage("minecraft");
-                    setTaskOrigin("home");
+                    const instanceTask = [
+                      "instance_reset",
+                      "instance_export",
+                    ].includes(next.kind || "");
+                    notify(
+                      `${next.version || "游戏"} ${next.kind === "instance_reset" ? "重置" : next.kind === "instance_export" ? "导出" : "安装"}已取消`,
+                    );
+                    if (!instanceTask) {
+                      setTab("download");
+                      setDownloadPage("minecraft");
+                      setTaskOrigin("home");
+                    }
                     setScreen((current) =>
-                      current === "tasks" ? "home" : current,
+                      current === "tasks"
+                        ? instanceTask
+                          ? taskOrigin
+                          : "home"
+                        : current,
                     );
                   }}
                 />
@@ -1757,6 +1829,8 @@ function App() {
                   section={instancePage}
                   settings={data.settings}
                   api={rootApi}
+                  native={native}
+                  onTaskStart={showInstanceTask}
                   onSave={save}
                   onOpen={open}
                   onInspect={launch}

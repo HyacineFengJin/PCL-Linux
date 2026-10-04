@@ -24,6 +24,8 @@ pub struct TaskTarget {
 #[serde(rename_all = "snake_case")]
 pub enum TaskKind {
     Install,
+    InstanceReset,
+    InstanceExport,
     ResourceOperation,
 }
 
@@ -232,11 +234,15 @@ impl Tasks {
                 stage: TaskStage::Preparing,
                 phase: match kind {
                     TaskKind::Install => "metadata",
+                    TaskKind::InstanceReset => "reset_prepare",
+                    TaskKind::InstanceExport => "export-scan",
                     TaskKind::ResourceOperation => "resources",
                 }
                 .into(),
                 message: match kind {
                     TaskKind::Install => "正在获取版本信息…",
+                    TaskKind::InstanceReset => "正在检查重置方案…",
+                    TaskKind::InstanceExport => "正在检查导出文件…",
                     TaskKind::ResourceOperation => "正在检查资源文件…",
                 }
                 .into(),
@@ -285,6 +291,8 @@ impl Tasks {
                 record.snapshot.can_cancel = false;
                 record.snapshot.message = match record.snapshot.kind {
                     TaskKind::Install => "正在取消安装…",
+                    TaskKind::InstanceReset => "正在取消重置并恢复原核心文件…",
+                    TaskKind::InstanceExport => "正在取消导出并清理临时文件…",
                     TaskKind::ResourceOperation => "正在取消资源操作…",
                 }
                 .into();
@@ -456,6 +464,8 @@ impl Tasks {
                     snapshot.message = if cancelled {
                         match snapshot.kind {
                             TaskKind::Install => "安装已取消，未完成文件已清理",
+                            TaskKind::InstanceReset => "重置已取消，原实例已保留",
+                            TaskKind::InstanceExport => "导出已取消，未完成 ZIP 已清理",
                             TaskKind::ResourceOperation => "资源操作已取消",
                         }
                         .into()
@@ -597,6 +607,28 @@ mod tests {
             TaskStage::Cancelled
         );
         assert!(tasks.admit(target("root-b"), TaskKind::Install).is_ok());
+    }
+
+    #[test]
+    fn instance_jobs_keep_writer_until_cleanup_and_keep_completed_results() {
+        for kind in [TaskKind::InstanceReset, TaskKind::InstanceExport] {
+            let tasks = Arc::new(Tasks::new());
+            let task = tasks.admit(target("root-a"), kind).unwrap();
+            tasks.cancel(task.id()).unwrap();
+            assert!(tasks.active().is_some());
+            assert!(tasks.admit(target("root-b"), TaskKind::Install).is_err());
+            task.finish(TaskOutcome::Failed("cancelled".into()));
+            assert_eq!(tasks.list()[0].stage, TaskStage::Cancelled);
+            assert!(tasks.active().is_none());
+            let task = tasks.admit(target("root-a"), kind).unwrap();
+            tasks.cancel(task.id()).unwrap();
+            task.finish(TaskOutcome::Complete {
+                result: None,
+                message: "committed".into(),
+                error: None,
+            });
+            assert_eq!(tasks.list()[0].stage, TaskStage::Complete);
+        }
     }
 
     #[test]

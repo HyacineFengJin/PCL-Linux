@@ -235,6 +235,8 @@ export function InstancePanel({
   onMetadataChange,
   disabled,
   mutationDisabled,
+  native,
+  onTaskStart,
 }: {
   instance: Instance;
   section: string;
@@ -248,6 +250,8 @@ export function InstancePanel({
   onMetadataChange?: (id: string, meta: MetaView) => void;
   disabled: boolean;
   mutationDisabled?: boolean;
+  native: boolean;
+  onTaskStart: (id: string) => void;
 }) {
   const rootScope = settings.root_id || settings.root;
   const metadataScope = useRef<MetadataScope>({
@@ -968,7 +972,16 @@ export function InstancePanel({
   if (section === "server") return <ServerPanel id={instance.id} api={api} />;
   if (section === "modify" || section === "export")
     return (
-      <InstanceOperations instance={instance} section={section} api={api} />
+      <InstanceOperations
+        instance={instance}
+        section={section}
+        api={api}
+        scopeKey={rootScope}
+        native={native}
+        busy={disabled || !!mutationDisabled}
+        onTaskStart={onTaskStart}
+        onNotify={onNotify}
+      />
     );
   return (
     <ResourcePanel
