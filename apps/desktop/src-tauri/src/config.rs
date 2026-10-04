@@ -1,9 +1,9 @@
 //! Persisted launcher settings and registered game directories.
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashSet},
-    fs::{self, File, OpenOptions},
-    io::Write,
+    fs,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -18,6 +18,8 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 /// The active root projection used by existing settings and launch commands.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Settings {
+    #[serde(default)]
+    pub revision: String,
     #[serde(default)]
     pub root_id: String,
     pub root: String,
@@ -74,6 +76,8 @@ struct LegacySettings {
 struct Stored {
     config: Persisted,
     blocked: Option<String>,
+    disk: crate::instance_rename_refs::DiskSnapshot,
+    revision: String,
 }
 
 pub struct ConfigStore {
@@ -88,6 +92,13 @@ fn nonce() -> String {
         .as_nanos();
     let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     format!("{time:x}-{:x}-{sequence:x}", std::process::id())
+}
+
+fn transport_revision() -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(format!("pcl-settings-transport-v1:{}", nonce()).as_bytes())
+    )
 }
 
 fn root_name(path: &Path) -> String {
@@ -195,52 +206,6 @@ fn canonical_root(path: &str) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
-fn create_file(path: &Path) -> Result<File, String> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options.open(path).map_err(|e| e.to_string())
-}
-
-fn atomic_save(path: &Path, config: &Persisted) -> Result<(), String> {
-    let parent = path.parent().ok_or("设置文件路径无效")?;
-    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    let temporary = parent.join(format!(".settings-{}.tmp", nonce()));
-    let result = (|| {
-        let mut file = create_file(&temporary)?;
-        serde_json::to_writer_pretty(&mut file, config).map_err(|e| e.to_string())?;
-        file.write_all(b"\n").map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        fs::rename(&temporary, path).map_err(|e| e.to_string())?;
-        // The rename is the commit point. A directory sync failure must not leave
-        // in-memory settings behind the already committed file.
-        if let Ok(directory) = File::open(parent) {
-            let _ = directory.sync_all();
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
-}
-
-fn backup_legacy(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path.parent().ok_or("设置文件路径无效")?;
-    let backup = parent.join(format!("settings.v1-backup-{}.json", nonce()));
-    let mut file = create_file(&backup)?;
-    file.write_all(bytes).map_err(|e| e.to_string())?;
-    file.sync_all().map_err(|e| e.to_string())?;
-    if let Ok(directory) = File::open(parent) {
-        directory.sync_all().map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
 impl ConfigStore {
     /// Never replaces unreadable, malformed, or newer settings with defaults.
     /// Such stores remain readable but every mutation is explicitly blocked.
@@ -248,13 +213,15 @@ impl ConfigStore {
         let file = project.join(".pcl-rust/settings.json");
         let mut config = defaults(project);
         let mut blocked = None;
-        match fs::read(&file) {
-            Err(e)
-                if e.kind() == std::io::ErrorKind::NotFound
-                    && matches!(fs::symlink_metadata(&file), Err(missing) if missing.kind() == std::io::ErrorKind::NotFound) =>
-                {}
+        let mut disk = crate::instance_rename_refs::DiskSnapshot::default();
+        match crate::instance_rename_refs::store_snapshot(project, "settings.json", 2 * 1024 * 1024)
+        {
+            Ok((snapshot, None)) => {
+                disk = snapshot;
+            }
             Err(e) => blocked = Some(format!("设置读取失败，原文件未修改；已禁止保存设置：{e}")),
-            Ok(bytes) => {
+            Ok((snapshot, Some(bytes))) => {
+                disk = snapshot;
                 let loaded = (|| -> Result<Persisted, String> {
                     let value: serde_json::Value =
                         serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
@@ -286,8 +253,21 @@ impl ConfigStore {
                     // Keep the actual legacy values visible if backing up or
                     // committing migration fails, while continuing to block saves.
                     config = migrated.clone();
-                    backup_legacy(&file, &bytes).map_err(|e| format!("旧版设置备份失败：{e}"))?;
-                    atomic_save(&file, &migrated).map_err(|e| format!("设置迁移失败：{e}"))?;
+                    crate::instance_rename_refs::with_settings_lock(project, || {
+                        crate::instance_rename_refs::ensure_project_ready(project)?;
+                        crate::instance_rename_refs::backup_legacy_checked(project, &bytes, &disk)
+                            .map_err(|e| format!("旧版设置备份失败：{e}"))?;
+                        let data = encode(&migrated)?;
+                        disk = crate::instance_rename_refs::write_store_checked(
+                            project,
+                            "settings.json",
+                            &data,
+                            &disk,
+                            2 * 1024 * 1024,
+                        )?;
+                        Ok(())
+                    })
+                    .map_err(|e| format!("设置迁移失败：{e}"))?;
                     Ok(migrated)
                 })();
                 match loaded {
@@ -304,7 +284,12 @@ impl ConfigStore {
         (
             Self {
                 file,
-                inner: Mutex::new(Stored { config, blocked }),
+                inner: Mutex::new(Stored {
+                    config,
+                    blocked,
+                    disk,
+                    revision: transport_revision(),
+                }),
             },
             warning,
         )
@@ -321,8 +306,21 @@ impl ConfigStore {
             return Err(reason.clone());
         }
         validate_config(&next)?;
-        atomic_save(&self.file, &next)?;
+        let project = self.project()?;
+        let data = encode(&next)?;
+        let disk = crate::instance_rename_refs::with_settings_lock(project, || {
+            crate::instance_rename_refs::ensure_project_ready(project)?;
+            crate::instance_rename_refs::write_store_checked(
+                project,
+                "settings.json",
+                &data,
+                &current.disk,
+                2 * 1024 * 1024,
+            )
+        })?;
+        current.disk = disk;
         current.config = next;
+        current.revision = transport_revision();
         Ok(())
     }
 
@@ -341,7 +339,7 @@ impl ConfigStore {
 
     pub fn snapshot(&self) -> Settings {
         let current = self.lock();
-        project_settings(&current.config)
+        project_settings(&current.config, &current.revision)
     }
 
     /// Checks directory metadata only; this does not read any game contents.
@@ -353,8 +351,14 @@ impl ConfigStore {
     /// Captures the active projection and registry from one locked revision;
     /// availability probes run after releasing the lock.
     pub fn view(&self) -> (Settings, Vec<RootSummary>) {
-        let config = self.lock().config.clone();
-        (project_settings(&config), summarize_roots(config.roots))
+        let (config, revision) = {
+            let current = self.lock();
+            (current.config.clone(), current.revision.clone())
+        };
+        (
+            project_settings(&config, &revision),
+            summarize_roots(config.roots),
+        )
     }
 
     #[cfg(test)]
@@ -439,7 +443,7 @@ impl ConfigStore {
         let mut next = current.config.clone();
         next.active_root_id = id.into();
         self.commit(&mut current, next)?;
-        Ok(project_settings(&current.config))
+        Ok(project_settings(&current.config, &current.revision))
     }
 
     pub fn update(
@@ -489,11 +493,14 @@ impl ConfigStore {
             next.active_root_id = next.roots[index.min(next.roots.len() - 1)].id.clone();
         }
         self.commit(&mut current, next)?;
-        Ok(project_settings(&current.config))
+        Ok(project_settings(&current.config, &current.revision))
     }
 
     pub fn save(&self, settings: Settings) -> Result<(), String> {
         let mut current = self.lock();
+        if settings.revision != current.revision {
+            return Err("设置已更新，请刷新后再保存设置".into());
+        }
         if settings.root_id != current.config.active_root_id {
             return Err("当前游戏目录已改变，请刷新后再保存设置".into());
         }
@@ -528,15 +535,120 @@ impl ConfigStore {
         next.roots[index].selected = Some(id.into());
         self.commit(&mut current, next)
     }
+
+    fn project(&self) -> Result<&Path, String> {
+        self.file
+            .parent()
+            .and_then(Path::parent)
+            .ok_or("设置项目目录无效".into())
+    }
+
+    pub fn ensure_rename_snapshot(&self) -> Result<(), String> {
+        let current = self.lock();
+        if let Some(error) = &current.blocked {
+            return Err(error.clone());
+        }
+        let project = self.project()?;
+        crate::instance_rename_refs::with_settings_lock(project, || {
+            let (disk, _) = crate::instance_rename_refs::store_snapshot(
+                project,
+                "settings.json",
+                2 * 1024 * 1024,
+            )?;
+            if !current.disk.compatible(&disk) {
+                return Err("设置文件已由外部修改，请重新打开启动器后再重命名".into());
+            }
+            Ok(())
+        })
+    }
+
+    pub fn refresh_after_rename(&self) -> Result<(), String> {
+        let mut current = self.lock();
+        let project = self.project()?;
+        let result = crate::instance_rename_refs::with_settings_lock(project, || {
+            let (disk, bytes) = crate::instance_rename_refs::store_snapshot(
+                project,
+                "settings.json",
+                2 * 1024 * 1024,
+            )?;
+            if current.disk.file_exists() && !disk.file_exists() {
+                return Err("设置文件已消失，已保留当前设置并禁止写入".into());
+            }
+            let config = match bytes {
+                Some(bytes) => serde_json::from_slice::<Persisted>(&bytes)
+                    .map_err(|_| "设置损坏或格式不受支持，原文件已保留".to_string())?,
+                None => defaults(project),
+            };
+            validate_config(&config)?;
+            current.config = config;
+            current.disk = disk;
+            current.revision = transport_revision();
+            current.blocked = None;
+            Ok(())
+        });
+        if let Err(error) = &result {
+            current.blocked = Some(error.clone());
+        }
+        result
+    }
 }
 
-fn project_settings(config: &Persisted) -> Settings {
+fn encode(config: &Persisted) -> Result<Vec<u8>, String> {
+    let mut data = serde_json::to_vec_pretty(config).map_err(|error| error.to_string())?;
+    data.push(b'\n');
+    if data.len() > 2 * 1024 * 1024 {
+        return Err("设置文件超过 2 MiB 限制".into());
+    }
+    Ok(data)
+}
+
+pub(crate) fn rename_bytes(
+    bytes: &[u8],
+    root_id: &str,
+    root: &Path,
+    old: &str,
+    new: &str,
+) -> Result<Vec<u8>, String> {
+    pcl_core::identifier(old)?;
+    pcl_core::identifier(new)?;
+    let mut config: Persisted = serde_json::from_slice(bytes)
+        .map_err(|_| "设置损坏或格式不受支持，原文件已保留".to_string())?;
+    validate_config(&config)?;
+    let selected = config
+        .roots
+        .iter_mut()
+        .find(|item| item.id == root_id)
+        .ok_or("重命名所属的游戏目录未注册")?;
+    if canonical_root(&selected.path)? != root {
+        return Err("设置中的游戏目录与重命名范围不符".into());
+    }
+    if selected.overrides.contains_key(new) || selected.selected.as_deref() == Some(new) {
+        return Err("目标名称已有选择或内存配置，请选择其他名称".into());
+    }
+    let mut changed = false;
+    if selected.selected.as_deref() == Some(old) {
+        selected.selected = Some(new.into());
+        changed = true;
+    }
+    if let Some(memory) = selected.overrides.remove(old) {
+        selected.overrides.insert(new.into(), memory);
+        changed = true;
+    }
+    if !changed {
+        return Ok(bytes.to_vec());
+    }
+    validate_config(&config)?;
+    encode(&config)
+}
+
+fn project_settings(config: &Persisted, revision: &str) -> Settings {
     let root = config
         .roots
         .iter()
         .find(|root| root.id == config.active_root_id)
         .expect("validated settings have an active root");
     Settings {
+        revision: revision.into(),
         root_id: root.id.clone(),
         root: root.path.clone(),
         player: config.player.clone(),
@@ -568,6 +680,11 @@ fn summarize_roots(roots: Vec<GameRoot>) -> Vec<RootSummary> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn projection(mut settings: Settings) -> Settings {
+        settings.revision.clear();
+        settings
+    }
 
     struct Fixture(PathBuf);
     impl Fixture {
@@ -640,7 +757,7 @@ mod tests {
         assert_eq!(persisted["roots"][0]["path"], exact);
         let (reloaded, warning) = ConfigStore::load(&fixture.0);
         assert!(warning.is_none());
-        assert_eq!(reloaded.snapshot(), settings);
+        assert_eq!(projection(reloaded.snapshot()), projection(settings));
         assert_eq!(backups(), before);
     }
 
@@ -673,7 +790,10 @@ mod tests {
         assert_eq!(store.registered(&second.id).unwrap().overrides["Same"], 4);
         let (reloaded, warning) = ConfigStore::load(&fixture.0);
         assert!(warning.is_none());
-        assert_eq!(reloaded.snapshot(), store.snapshot());
+        assert_eq!(
+            projection(reloaded.snapshot()),
+            projection(store.snapshot())
+        );
         assert_eq!(
             reloaded.registered(&second.id).unwrap(),
             store.registered(&second.id).unwrap()
@@ -688,7 +808,7 @@ mod tests {
         let second = store.register(fixture.root("second"), None).unwrap();
         store.select(&second.id).unwrap();
         let before = fs::read(fixture.file()).unwrap();
-        assert!(store.save(stale).unwrap_err().contains("已改变"));
+        assert!(store.save(stale).unwrap_err().contains("设置已更新"));
         let mut changed = store.snapshot();
         changed.root = fixture.root("replacement");
         assert!(store.save(changed).unwrap_err().contains("目录管理"));
@@ -721,7 +841,7 @@ mod tests {
         assert!(summary.error.is_some());
         let (reloaded, warning) = ConfigStore::load(&fixture.0);
         assert!(warning.is_none());
-        assert_eq!(reloaded.snapshot(), selected);
+        assert_eq!(projection(reloaded.snapshot()), projection(selected));
         fs::rename(moved, &path).unwrap();
         assert!(
             store
@@ -829,6 +949,7 @@ mod tests {
         let (store, _) = ConfigStore::load(&fixture.0);
         let original = store.snapshot();
         store.save(original.clone()).unwrap();
+        let original = store.snapshot();
         fs::remove_file(fixture.file()).unwrap();
         fs::create_dir(fixture.file()).unwrap();
         let mut changed = original.clone();

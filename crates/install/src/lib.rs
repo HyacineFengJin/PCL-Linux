@@ -432,13 +432,15 @@ impl Installer {
         let emit = |mut p: Progress| {
             let mut steps = steps.lock().unwrap();
             components::advance_steps(&mut steps, &p);
-            if p.stage == "complete" {
-                if let Some(previous) = previous.lock().unwrap().as_ref() {
+            if let Some(previous) = previous.lock().unwrap().as_ref() {
+                // Worker snapshots can reach this lock in a different order
+                // from their samples; serialize the delivered network counter.
+                p.network_bytes = p.network_bytes.max(previous.network_bytes);
+                if p.stage == "complete" {
                     p.completed = previous.completed;
                     p.total = previous.total;
                     p.bytes_done = previous.bytes_done;
                     p.bytes_total = previous.bytes_total;
-                    p.network_bytes = previous.network_bytes;
                 }
             }
             p.steps = steps.clone();

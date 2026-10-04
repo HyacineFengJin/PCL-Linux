@@ -354,6 +354,45 @@ fn valid_id(value: &str) -> bool {
         && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+pub(crate) fn valid_operation_id(value: &str) -> bool {
+    valid_id(value)
+}
+
+pub(crate) fn rename_journal_bytes(
+    bytes: &[u8],
+    operation_id: &str,
+    old: &str,
+    new: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    if bytes.len() > MAX_JOURNAL_BYTES {
+        return Err("资源恢复记录过大".into());
+    }
+    let mut journal: Journal = serde_json::from_slice(bytes)
+        .map_err(|_| "资源恢复记录无法读取，已保留原文件".to_string())?;
+    validate_journal(&journal, operation_id)?;
+    if journal.state == JournalState::Prepared
+        || (journal.state == JournalState::Committed && journal.action != Action::Remove)
+    {
+        return Err("存在未完成的资源操作，请先在资源管理中恢复后再重命名".into());
+    }
+    if journal.instance_id == new && journal.resource_relative.starts_with("versions/") {
+        return Err("目标名称已有历史资源记录，请选择其他名称".into());
+    }
+    if journal.instance_id != old {
+        return Ok(None);
+    }
+    journal.instance_id = new.into();
+    if journal.resource_relative != journal.kind {
+        journal.resource_relative = format!("versions/{new}/{}", journal.kind);
+    }
+    validate_journal(&journal, operation_id)?;
+    let result = serde_json::to_vec(&journal).map_err(|error| error.to_string())?;
+    if result.len() > MAX_JOURNAL_BYTES {
+        return Err("资源恢复记录过大".into());
+    }
+    Ok(Some(result))
+}
+
 pub(crate) fn is_stage_entry(name: &str) -> bool {
     name.strip_prefix(STAGE_PREFIX).is_some_and(valid_id)
 }
@@ -433,6 +472,7 @@ fn descend(root: &Dir, relative: &str, create_last: bool) -> Result<Dir, String>
 }
 
 struct Context {
+    _history_lock: Option<crate::instance_rename_refs::ReferenceLock>,
     root_path: PathBuf,
     root: Dir,
     resources: Dir,
@@ -447,6 +487,9 @@ impl Context {
         kind_ok(kind)?;
         safe_name(id)?;
         let root_path = root.canonicalize().map_err(|e| e.to_string())?;
+        let history_lock = write
+            .then(|| crate::instance_rename_refs::root_history_lock(&root_path))
+            .transpose()?;
         let path = crate::ui_data::resource_dir(&root_path, id, kind)?;
         let relative = relative_string(
             path.strip_prefix(&root_path)
@@ -466,6 +509,7 @@ impl Context {
             }
         };
         Ok(Self {
+            _history_lock: history_lock,
             root_path,
             root,
             resources,
@@ -1981,6 +2025,8 @@ mod tests {
         )
         .unwrap();
         assert!(ensure_ready(fixture.root()).is_err());
+        // A restarted process has released the previous root writer lock.
+        drop(context);
         recover_pending(fixture.root(), "shared", "mods").unwrap();
         assert_eq!(
             removed(fixture.root(), "shared", "mods").unwrap()[0].id,

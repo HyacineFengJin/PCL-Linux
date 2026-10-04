@@ -26,6 +26,7 @@ pub enum TaskKind {
     Install,
     InstanceReset,
     InstanceExport,
+    InstanceRename,
     ResourceOperation,
 }
 
@@ -236,6 +237,7 @@ impl Tasks {
                     TaskKind::Install => "metadata",
                     TaskKind::InstanceReset => "reset_prepare",
                     TaskKind::InstanceExport => "export-scan",
+                    TaskKind::InstanceRename => "rename_prepare",
                     TaskKind::ResourceOperation => "resources",
                 }
                 .into(),
@@ -243,6 +245,7 @@ impl Tasks {
                     TaskKind::Install => "正在获取版本信息…",
                     TaskKind::InstanceReset => "正在检查重置方案…",
                     TaskKind::InstanceExport => "正在检查导出文件…",
+                    TaskKind::InstanceRename => "正在检查实例名称与引用…",
                     TaskKind::ResourceOperation => "正在检查资源文件…",
                 }
                 .into(),
@@ -293,6 +296,7 @@ impl Tasks {
                     TaskKind::Install => "正在取消安装…",
                     TaskKind::InstanceReset => "正在取消重置并恢复原核心文件…",
                     TaskKind::InstanceExport => "正在取消导出并清理临时文件…",
+                    TaskKind::InstanceRename => "正在取消改名并清理临时文件…",
                     TaskKind::ResourceOperation => "正在取消资源操作…",
                 }
                 .into();
@@ -466,6 +470,7 @@ impl Tasks {
                             TaskKind::Install => "安装已取消，未完成文件已清理",
                             TaskKind::InstanceReset => "重置已取消，原实例已保留",
                             TaskKind::InstanceExport => "导出已取消，未完成 ZIP 已清理",
+                            TaskKind::InstanceRename => "改名已取消，原实例已保留",
                             TaskKind::ResourceOperation => "资源操作已取消",
                         }
                         .into()
@@ -611,7 +616,11 @@ mod tests {
 
     #[test]
     fn instance_jobs_keep_writer_until_cleanup_and_keep_completed_results() {
-        for kind in [TaskKind::InstanceReset, TaskKind::InstanceExport] {
+        for kind in [
+            TaskKind::InstanceReset,
+            TaskKind::InstanceExport,
+            TaskKind::InstanceRename,
+        ] {
             let tasks = Arc::new(Tasks::new());
             let task = tasks.admit(target("root-a"), kind).unwrap();
             tasks.cancel(task.id()).unwrap();

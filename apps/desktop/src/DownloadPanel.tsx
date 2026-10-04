@@ -30,7 +30,8 @@ export type DownloadStep = {
   progress?: number | null;
 };
 export type DownloadStatus = {
-  kind?: "install" | "instance_reset" | "instance_export" | null;
+  kind?:
+    "install" | "instance_reset" | "instance_export" | "instance_rename" | null;
   stage:
     | "idle"
     | "preparing"
@@ -203,7 +204,8 @@ export function DownloadPanel({
         callbacks.current.onBusyChange(active(next));
         if (active(next)) completed.current = "";
         if (
-          next.stage === "complete" &&
+          (next.stage === "complete" ||
+            (next.stage === "error" && next.kind === "instance_rename")) &&
           next.version &&
           completed.current !==
             (next.task_id ||
@@ -212,7 +214,12 @@ export function DownloadPanel({
           completed.current =
             next.task_id ||
             `${next.root_id || next.root_path || ""}:${next.version}`;
-          if (!next.root_id || next.root_id === context.current.rootId)
+          if (
+            next.kind === "instance_rename" ||
+            next.kind === "install" ||
+            !next.root_id ||
+            next.root_id === context.current.rootId
+          )
             if (next.kind !== "instance_export")
               await callbacks.current.onInstalled();
         }

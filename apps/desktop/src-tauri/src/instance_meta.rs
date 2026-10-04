@@ -459,6 +459,7 @@ struct Stored {
 
 pub struct MetadataStore {
     project: Option<Directory>,
+    project_path: std::path::PathBuf,
     inner: Mutex<Stored>,
 }
 
@@ -602,6 +603,7 @@ impl MetadataStore {
     /// Reads only project/.pcl-rust/instance-metadata.json. Invalid, unreadable,
     /// unknown, or future data is preserved and disables writes for this store.
     pub fn load(project: &Path) -> Self {
+        let project_path = project.to_path_buf();
         let mut data = Persisted::default();
         let mut disk = Snapshot::default();
         let mut blocked = None;
@@ -634,6 +636,7 @@ impl MetadataStore {
         }
         Self {
             project,
+            project_path,
             inner: Mutex::new(Stored {
                 data,
                 disk,
@@ -716,6 +719,7 @@ impl MetadataStore {
             barrier.wait();
         }
         let _lock = directory.write_lock()?;
+        crate::instance_rename_refs::ensure_project_ready(&self.project_path()?)?;
         self.check_disk(current)?;
         let temporary = format!(".instance-metadata-{}.tmp", nonce());
         let result = (|| {
@@ -830,6 +834,136 @@ impl MetadataStore {
         self.commit(&mut current, next)?;
         Ok(current_view(&current.data, root_id, canonical_path, id))
     }
+
+    fn project_path(&self) -> Result<std::path::PathBuf, String> {
+        let directory = self.project.as_ref().ok_or("元数据项目目录不可用")?;
+        if directory.identity()? != Directory::open(&self.project_path)?.identity()? {
+            return Err("元数据项目目录已被外部替换".into());
+        }
+        Ok(self.project_path.clone())
+    }
+
+    pub fn ensure_rename_snapshot(&self) -> Result<(), String> {
+        let mut current = self.lock();
+        if let Some(error) = &current.blocked {
+            return Err(error.clone());
+        }
+        self.project_path()?;
+        let storage = self
+            .project
+            .as_ref()
+            .ok_or("元数据项目目录不可用")?
+            .storage()?;
+        let _guard = storage
+            .as_ref()
+            .map(|directory| directory.write_lock())
+            .transpose()?;
+        self.check_disk(&mut current)
+    }
+
+    /// Explicitly adopts validated disk state after a journalled rename.
+    pub fn refresh_after_rename(&self) -> Result<(), String> {
+        let mut current = self.lock();
+        let project = self.project.as_ref().ok_or("元数据项目目录不可用")?;
+        let directory = project.storage()?;
+        let _guard = directory
+            .as_ref()
+            .map(|directory| directory.write_lock())
+            .transpose()?;
+        let result: Result<(), String> = (|| {
+            self.project_path()?;
+            let (disk, bytes) = disk_snapshot(project)?;
+            if current.disk.file.is_some() && disk.file.is_none() {
+                return Err("实例元数据文件已消失，已保留当前资料并禁止写入".into());
+            }
+            let data = match bytes {
+                Some(bytes) => serde_json::from_slice::<Persisted>(&bytes)
+                    .map_err(|error| format!("实例元数据无法读取：{error}"))?,
+                None => Persisted::default(),
+            };
+            validate_persisted(&data)?;
+            current.disk = disk;
+            current.data = data;
+            current.blocked = None;
+            Ok(())
+        })();
+        if let Err(error) = &result {
+            current.blocked = Some(error.clone());
+        }
+        result
+    }
+}
+
+pub(crate) fn rename_bytes(
+    bytes: &[u8],
+    root_id: &str,
+    root: &Path,
+    old: &str,
+    new: &str,
+) -> Result<Vec<u8>, String> {
+    rename_optional_bytes(Some(bytes), root_id, root, old, new)
+}
+
+pub(crate) fn rename_optional_bytes(
+    bytes: Option<&[u8]>,
+    root_id: &str,
+    root: &Path,
+    old: &str,
+    new: &str,
+) -> Result<Vec<u8>, String> {
+    validate_scope(root_id, root, old)?;
+    validate_scope(root_id, root, new)?;
+    if old == new {
+        return Err("实例名称没有改变".into());
+    }
+    let mut data: Persisted = match bytes {
+        Some(bytes) => {
+            serde_json::from_slice(bytes).map_err(|_| "实例元数据损坏，原文件已保留".to_string())?
+        }
+        None => Persisted::default(),
+    };
+    validate_persisted(&data)?;
+    let source = record_index(&data, root_id, root, old);
+    let target = record_index(&data, root_id, root, new);
+    if target.is_some_and(|index| data.entries[index].metadata != Metadata::default()) {
+        return Err("目标名称已有保存的实例资料，请选择其他名称".into());
+    }
+    let source_generation = source.map_or(0, |index| data.entries[index].revision);
+    let target_generation = target.map_or(0, |index| data.entries[index].revision);
+    let generation = source_generation
+        .max(target_generation)
+        .checked_add(1)
+        .ok_or("实例资料修订号已耗尽")?;
+    let source_revision = source_generation
+        .checked_add(1)
+        .ok_or("实例资料修订号已耗尽")?;
+    let moved = source
+        .map(|index| data.entries[index].metadata.clone())
+        .unwrap_or_default();
+    let record = |instance_id: &str, revision, metadata| Record {
+        root_id: root_id.into(),
+        root_path: root.to_string_lossy().into_owned(),
+        instance_id: instance_id.into(),
+        revision,
+        metadata,
+    };
+    match source {
+        Some(index) => data.entries[index] = record(old, source_revision, Metadata::default()),
+        None => data
+            .entries
+            .push(record(old, source_revision, Metadata::default())),
+    }
+    match target {
+        Some(index) => data.entries[index] = record(new, generation, moved),
+        None => data.entries.push(record(new, generation, moved)),
+    }
+    validate_persisted(&data)?;
+    let mut result = serde_json::to_vec_pretty(&data).map_err(|error| error.to_string())?;
+    result.push(b'\n');
+    if result.len() > MAX_FILE_BYTES {
+        return Err("实例元数据文件超过 8 MiB 上限".into());
+    }
+    Ok(result)
 }
 
 #[cfg(test)]

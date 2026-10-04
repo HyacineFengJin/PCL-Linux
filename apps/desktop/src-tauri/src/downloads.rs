@@ -109,7 +109,10 @@ impl Downloads {
         let snapshot = self.tasks.snapshot(&id).ok_or("找不到此任务")?;
         if !matches!(
             snapshot.kind,
-            TaskKind::Install | TaskKind::InstanceReset | TaskKind::InstanceExport
+            TaskKind::Install
+                | TaskKind::InstanceReset
+                | TaskKind::InstanceExport
+                | TaskKind::InstanceRename
         ) {
             return Err("此任务不在任务管理页面中".into());
         }
@@ -275,7 +278,11 @@ mod tests {
 
     #[test]
     fn instance_job_projection_and_cancel_target_are_scoped() {
-        for kind in [TaskKind::InstanceReset, TaskKind::InstanceExport] {
+        for kind in [
+            TaskKind::InstanceReset,
+            TaskKind::InstanceExport,
+            TaskKind::InstanceRename,
+        ] {
             let tasks = Arc::new(Tasks::new());
             let downloads = Downloads::new(tasks.clone());
             let task = tasks

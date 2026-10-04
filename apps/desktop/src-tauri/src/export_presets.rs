@@ -24,7 +24,7 @@ struct Preset {
     request: ExportRequest,
 }
 
-fn name(root_id: &str, id: &str) -> String {
+pub(crate) fn name(root_id: &str, id: &str) -> String {
     let mut hash = Sha256::new();
     hash.update(root_id.len().to_le_bytes());
     hash.update(root_id);
@@ -149,6 +149,7 @@ pub fn save(
     id: &str,
     request: ExportRequest,
 ) -> Result<(), String> {
+    request.validate()?;
     use std::os::fd::FromRawFd;
     let dir = directory(project, true)?.ok_or("无法创建配置目录")?;
     let filename = c(name(root_id, id))?;
@@ -173,6 +174,7 @@ pub fn save(
     {
         return Err("导出配置正被另一个启动器使用".into());
     }
+    crate::instance_rename_refs::ensure_project_ready(project)?;
     if let Some(old) = read_at(&dir, &filename)? {
         check(&old, root_id, root, id)?;
     }
@@ -231,6 +233,24 @@ pub fn save(
         unsafe { libc::unlinkat(dir.as_raw_fd(), temporary.as_ptr(), 0) };
     }
     result
+}
+
+pub(crate) fn rename_bytes(
+    bytes: &[u8],
+    root_id: &str,
+    root: &Path,
+    old: &str,
+    new: &str,
+) -> Result<Vec<u8>, String> {
+    let mut preset: Preset = serde_json::from_slice(bytes)
+        .map_err(|_| "导出配置损坏或格式不受支持，原文件已保留".to_string())?;
+    check(&preset, root_id, root, old)?;
+    preset.instance_id = new.into();
+    let result = serde_json::to_vec_pretty(&preset).map_err(|error| error.to_string())?;
+    if result.len() as u64 > LIMIT {
+        return Err("导出配置内容过多".into());
+    }
+    Ok(result)
 }
 
 #[cfg(test)]

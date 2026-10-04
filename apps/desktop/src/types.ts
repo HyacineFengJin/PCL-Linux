@@ -16,6 +16,7 @@ export type Instance = {
   metadata_revision?: string;
 };
 export type Settings = {
+  revision?: string;
   root_id?: string | null;
   root: string;
   player: string;

@@ -8,6 +8,27 @@
   --line: #d7e0eb;
   --muted: #9299a3;
 }
+.ce-instance-rename-dialog > p,
+.ce-instance-rename-plan {
+  margin: 10px 7px;
+  font-size: 12px;
+  line-height: 20px;
+  color: #9299a3;
+  overflow-wrap: anywhere;
+}
+.ce-instance-rename-dialog > .rd-name-error {
+  color: #c44b3b;
+}
+.ce-instance-rename-plan > p {
+  margin: 7px 0;
+}
+.ce-instance-rename-plan > p:first-child {
+  color: #38424f;
+}
+.ce-instance-rename-plan ul {
+  margin: 7px 0;
+  padding-left: 20px;
+}
 * {
   box-sizing: border-box;
 }

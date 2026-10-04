@@ -4,6 +4,8 @@ mod downloads;
 mod export_presets;
 mod instance_export;
 mod instance_meta;
+mod instance_rename;
+mod instance_rename_refs;
 mod instance_reset;
 mod platform;
 mod resource_details;
@@ -57,6 +59,8 @@ struct Bootstrap {
     scan_issues: Vec<pcl_core::ScanIssue>,
     scan_error: Option<String>,
     reset_recovery_error: Option<String>,
+    rename_recovery_error: Option<String>,
+    rename_recovery_root_id: Option<String>,
     config_warning: Option<String>,
     status: RunStatus,
     auth: accounts::AuthState,
@@ -119,6 +123,38 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
             .as_ref()
             .and_then(|path| instance_reset::ensure_ready(path).err())
     };
+    let renaming = s
+        .tasks
+        .active()
+        .is_some_and(|task| task.kind == tasks::TaskKind::InstanceRename);
+    let (rename_recovery_error, rename_recovery_root_id) = if renaming {
+        (None, None)
+    } else {
+        match instance_rename_refs::pending_root(&s.project) {
+            Ok(Some(path)) => {
+                let id = roots
+                    .iter()
+                    .find(|root| {
+                        Path::new(&root.path) == path
+                            || Path::new(&root.path)
+                                .canonicalize()
+                                .is_ok_and(|canonical| canonical == path)
+                    })
+                    .map(|root| root.id.clone());
+                (
+                    Some("存在未完成的实例重命名，请先恢复后再操作或启动".into()),
+                    id,
+                )
+            }
+            Ok(None) => (
+                canonical
+                    .as_ref()
+                    .and_then(|path| instance_rename::ensure_ready(path).err()),
+                Some(settings.root_id.clone()),
+            ),
+            Err(error) => (Some(error), None),
+        }
+    };
     Bootstrap {
         settings,
         roots,
@@ -126,6 +162,8 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
         scan_issues,
         scan_error,
         reset_recovery_error,
+        rename_recovery_error,
+        rename_recovery_root_id,
         config_warning: (!warnings.is_empty()).then(|| warnings.join("\n")),
         status: s.status.lock().unwrap().clone(),
         auth: s.accounts.snapshot(),
@@ -140,6 +178,7 @@ fn update_instance_metadata(
     patch: instance_meta::MetadataPatch,
 ) -> Result<instance_meta::MetaView, String> {
     let _operation = s.operations.lock().unwrap();
+    require_reference_write(s)?;
     s.config.ensure_writable()?;
     if s.closing.load(Ordering::SeqCst) {
         return Err("启动器正在关闭，请重新打开后再修改实例信息".into());
@@ -155,6 +194,7 @@ fn update_instance_metadata(
     }
     pcl_core::identifier(id)?;
     let root = s.config.resolve(root_id)?;
+    instance_rename::ensure_ready(Path::new(&root.path))?;
     if !pcl_core::scan_instances_report(Path::new(&root.path))?
         .instances
         .iter()
@@ -216,9 +256,23 @@ async fn bootstrap(state: State<'_, Arc<Shared>>) -> Result<Bootstrap, String> {
         .map_err(|e| e.to_string())?
 }
 #[tauri::command]
-fn save_settings(settings: Settings, state: State<'_, Arc<Shared>>) -> Result<(), String> {
+fn save_settings(settings: Settings, state: State<'_, Arc<Shared>>) -> Result<Settings, String> {
     let _operation = state.operations.lock().unwrap();
-    state.config.save(settings)
+    require_reference_write(&state)?;
+    state.config.save(settings)?;
+    Ok(state.config.snapshot())
+}
+
+/// Rename recovery snapshots include launcher references. Keep all cooperating
+/// writers out until those references and the physical directory agree.
+fn require_reference_write(s: &Shared) -> Result<(), String> {
+    if s.tasks
+        .active()
+        .is_some_and(|task| task.kind == tasks::TaskKind::InstanceRename)
+    {
+        return Err("请等待实例重命名完成后再保存或切换游戏目录".into());
+    }
+    instance_rename_refs::ensure_project_ready(&s.project)
 }
 
 #[tauri::command]
@@ -256,6 +310,7 @@ async fn root_register(
     tauri::async_runtime::spawn_blocking(move || {
         let root = {
             let _operation = s.operations.lock().unwrap();
+            require_reference_write(&s)?;
             s.config.register(path, name)?
         };
         Ok(RootRegistration {
@@ -273,6 +328,7 @@ async fn root_select(id: String, state: State<'_, Arc<Shared>>) -> Result<Bootst
     tauri::async_runtime::spawn_blocking(move || {
         {
             let _operation = s.operations.lock().unwrap();
+            require_reference_write(&s)?;
             s.config.select(&id)?;
         }
         Ok(bootstrap_view(&s))
@@ -292,6 +348,7 @@ async fn root_update(
     tauri::async_runtime::spawn_blocking(move || {
         {
             let _operation = s.operations.lock().unwrap();
+            require_reference_write(&s)?;
             s.config.update(&id, name, position)?;
         }
         Ok(bootstrap_view(&s))
@@ -317,6 +374,7 @@ async fn root_remove(id: String, state: State<'_, Arc<Shared>>) -> Result<Bootst
     tauri::async_runtime::spawn_blocking(move || {
         {
             let _operation = s.operations.lock().unwrap();
+            require_reference_write(&s)?;
             require_root_unused(&s, &id)?;
             s.config.remove(&id)?;
         }
@@ -370,7 +428,9 @@ fn download_start(
         return Err("请在游戏退出后安装新实例".into());
     }
     state.config.ensure_writable()?;
+    instance_rename_refs::ensure_project_ready(&state.project)?;
     let root = state.config.resolve(root_id.as_deref())?;
+    instance_rename::ensure_ready(Path::new(&root.path))?;
     let request = pcl_install::InstallRequest {
         name: name.unwrap_or_else(|| id.clone()),
         minecraft: id,
@@ -426,6 +486,11 @@ fn require_instance_job(s: &Shared) -> Result<(), String> {
     Ok(())
 }
 
+fn ensure_rename_ready(s: &Shared, root: &GameRoot) -> Result<(), String> {
+    instance_rename_refs::ensure_project_ready(&s.project)?;
+    instance_rename::ensure_ready(Path::new(&root.path))
+}
+
 #[derive(Deserialize)]
 struct ResetSubmission {
     revision: String,
@@ -437,6 +502,230 @@ struct ExportSubmission {
     revision: String,
     instance_id: String,
     request: instance_export::ExportRequest,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenameSubmission {
+    revision: String,
+    id: String,
+    new_name: String,
+}
+
+fn checked_rename(
+    s: &Shared,
+    root: &GameRoot,
+    id: &str,
+    new_name: &str,
+) -> Result<
+    (
+        instance_rename::RenamePlan,
+        instance_rename_refs::RenameReferences,
+        String,
+    ),
+    String,
+> {
+    use sha2::{Digest, Sha256};
+    let path = Path::new(&root.path);
+    instance_rename_refs::ensure_project_ready(&s.project)?;
+    resource_ops::ensure_ready(path)?;
+    instance_reset::ensure_ready(path)?;
+    s.config.ensure_rename_snapshot()?;
+    s.instance_metadata.ensure_rename_snapshot()?;
+    let plan = instance_rename::prepare(path, id, new_name)?;
+    let refs = instance_rename_refs::prepare(&s.project, &root.id, path, id, new_name)?;
+    let mut hash = Sha256::new();
+    for value in [&root.id, &plan.revision, &refs.revision()?] {
+        hash.update(value.len().to_le_bytes());
+        hash.update(value.as_bytes());
+    }
+    Ok((plan, refs, format!("rename:{:x}", hash.finalize())))
+}
+
+#[tauri::command]
+async fn instance_rename_prepare(
+    id: String,
+    new_name: String,
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<serde_json::Value, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = s.operations.lock().unwrap();
+        require_instance_job(&s)?;
+        let root = s.config.resolve(root_id.as_deref())?;
+        let (plan, _, revision) = checked_rename(&s, &root, &id, &new_name)?;
+        let mut view = serde_json::to_value(plan).map_err(|e| e.to_string())?;
+        view["revision"] = revision.into();
+        Ok(view)
+    })
+    .await
+    .map_err(|_| "检查改名方案的任务意外退出".to_string())?
+}
+
+fn refresh_rename_references(s: &Shared) -> Result<(), String> {
+    let _operation = s.operations.lock().unwrap();
+    let config = s.config.refresh_after_rename();
+    let metadata = s.instance_metadata.refresh_after_rename();
+    config.and(metadata)
+}
+
+fn rename_progress(s: &Shared, task: &tasks::TaskHandle, p: instance_rename::RenameProgress) {
+    if p.phase == "committing" {
+        task.begin_finishing();
+    }
+    let current = match p.phase.as_str() {
+        "committing" => 1,
+        "references" => 2,
+        "complete" => 3,
+        _ => 0,
+    };
+    let steps = [
+        ("rename_check", "检查实例名称与引用"),
+        ("rename_files", "重命名实例文件"),
+        ("rename_references", "同步实例资料与引用"),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (id, label))| pcl_install::InstallStep {
+        id: id.into(),
+        label: label.into(),
+        state: if index < current {
+            "complete"
+        } else if index == current {
+            "running"
+        } else {
+            "pending"
+        }
+        .into(),
+        progress: None,
+    })
+    .collect();
+    task.update(tasks::TaskProgress {
+        stage: tasks::TaskStage::Processing,
+        phase: p.phase,
+        message: p.message,
+        completed: p.completed,
+        total: p.total,
+        bytes_done: 0,
+        bytes_total: 0,
+        network_bytes: 0,
+        steps,
+    });
+    // The legacy download projection shares this task's listener and snapshot.
+    let _ = s;
+}
+
+#[tauri::command]
+async fn instance_rename_start(
+    plan: RenameSubmission,
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<serde_json::Value, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = s.operations.lock().unwrap();
+        require_instance_job(&s)?;
+        let root = s.config.resolve(root_id.as_deref())?;
+        let (checked, refs, revision) = checked_rename(&s, &root, &plan.id, &plan.new_name)?;
+        if revision != plan.revision {
+            return Err("实例、引用或保存的资料已改变，请重新检查改名方案".into());
+        }
+        let task = s.tasks.admit(
+            tasks::TaskTarget {
+                root_id: root.id.clone(),
+                root_path: root.path.clone(),
+                instance_id: Some(plan.id),
+            },
+            tasks::TaskKind::InstanceRename,
+        )?;
+        let task_id = task.id().to_owned();
+        s.downloads.track(&task);
+        let worker = s.clone();
+        std::thread::Builder::new()
+            .name(format!("pcl-rename-{task_id}"))
+            .spawn(move || {
+                let cancel = task.cancellation_token();
+                let committing = AtomicBool::new(false);
+                let mut result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    instance_rename::execute(
+                        Path::new(&root.path),
+                        &worker.project,
+                        checked,
+                        refs,
+                        &cancel,
+                        |p| {
+                            if p.phase == "committing" {
+                                committing.store(true, Ordering::SeqCst);
+                            }
+                            rename_progress(&worker, &task, p);
+                        },
+                    )
+                }))
+                .unwrap_or_else(|_| {
+                    Err("取消清理失败：改名任务意外退出，请恢复未完成的重命名后重试".into())
+                });
+                if result.is_ok() {
+                    if let Err(error) = refresh_rename_references(&worker) {
+                        result = Err(format!("取消清理失败：实例资料重新读取失败：{error}"));
+                    }
+                }
+                if committing.load(Ordering::SeqCst) {
+                    result = result.map_err(|error| {
+                        if error.starts_with("取消清理失败：") || error == "实例重命名已取消"
+                        {
+                            error
+                        } else {
+                            format!("取消清理失败：实例重命名未完成：{error}")
+                        }
+                    });
+                }
+                finish_instance_task(task, result, "实例重命名完成，游戏内容已保留");
+            })
+            .map_err(|e| format!("无法启动改名任务：{e}"))?;
+        Ok(serde_json::json!({"id": task_id}))
+    })
+    .await
+    .map_err(|_| "启动改名任务失败".to_string())?
+}
+
+#[tauri::command]
+async fn instance_rename_recover(
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<serde_json::Value, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let task;
+        let root;
+        {
+            let _operation = s.operations.lock().unwrap();
+            require_instance_job(&s)?;
+            root = s.config.resolve(root_id.as_deref())?;
+            task = s.tasks.admit(
+                tasks::TaskTarget {
+                    root_id: root.id.clone(),
+                    root_path: root.path.clone(),
+                    instance_id: None,
+                },
+                tasks::TaskKind::ResourceOperation,
+            )?;
+            task.begin_finishing();
+        }
+        let mut result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            instance_rename::recover_pending(Path::new(&root.path), &s.project)
+        }))
+        .unwrap_or_else(|_| Err("恢复改名任务意外退出，原文件和备份已保留".into()));
+        if result.is_ok() {
+            if let Err(error) = refresh_rename_references(&s) {
+                result = Err(format!("恢复后重新读取实例资料失败：{error}"));
+            }
+        }
+        finish_instance_task(task, result.clone(), "已恢复未完成的实例重命名");
+        result
+    })
+    .await
+    .map_err(|_| "恢复实例重命名失败".to_string())?
 }
 
 #[tauri::command]
@@ -452,6 +741,7 @@ async fn instance_reset_plan(
         require_instance_job(&s)?;
         let root = s.config.resolve(root_id.as_deref())?;
         resource_ops::ensure_ready(Path::new(&root.path))?;
+        ensure_rename_ready(&s, &root)?;
         instance_reset::prepare(Path::new(&root.path), &id, components)
     })
     .await
@@ -470,6 +760,7 @@ async fn instance_reset_start(
         require_instance_job(&s)?;
         let root = s.config.resolve(root_id.as_deref())?;
         resource_ops::ensure_ready(Path::new(&root.path))?;
+        ensure_rename_ready(&s, &root)?;
         let checked = instance_reset::prepare(Path::new(&root.path), &plan.id, plan.components)?;
         if checked.revision != plan.revision {
             return Err("实例或重置方案已改变，请重新检查".into());
@@ -546,6 +837,7 @@ async fn instance_reset_recover(
         let _operation = s.operations.lock().unwrap();
         require_instance_job(&s)?;
         let root = s.config.resolve(root_id.as_deref())?;
+        ensure_rename_ready(&s, &root)?;
         let task = s.tasks.admit(
             tasks::TaskTarget {
                 root_id: root.id,
@@ -580,6 +872,7 @@ async fn instance_export_plan(
         let root = s.config.resolve(root_id.as_deref())?;
         resource_ops::ensure_ready(Path::new(&root.path))?;
         instance_reset::ensure_ready(Path::new(&root.path))?;
+        ensure_rename_ready(&s, &root)?;
         instance_export::prepare(Path::new(&root.path), &id, request)
     })
     .await
@@ -600,6 +893,7 @@ async fn instance_export_start(
         let root = s.config.resolve(root_id.as_deref())?;
         resource_ops::ensure_ready(Path::new(&root.path))?;
         instance_reset::ensure_ready(Path::new(&root.path))?;
+        ensure_rename_ready(&s, &root)?;
         let checked =
             instance_export::prepare(Path::new(&root.path), &plan.instance_id, plan.request)?;
         if checked.revision != plan.revision {
@@ -641,6 +935,7 @@ async fn instance_export_start(
         let _operation = s.operations.lock().unwrap();
         require_instance_job(&s)?;
         let current = s.config.resolve(Some(&root.id))?;
+        ensure_rename_ready(&s, &current)?;
         if current.path != root.path {
             return Err("游戏目录位置已改变，请重新导出".into());
         }
@@ -711,6 +1006,7 @@ async fn instance_export_config_save(
         require_instance_job(&s)?;
         let root = s.config.resolve(root_id.as_deref())?;
         // Validate the exact choices before retaining them for this instance.
+        ensure_rename_ready(&s, &root)?;
         instance_export::prepare(Path::new(&root.path), &id, request.clone())?;
         export_presets::save(&s.project, &root.id, Path::new(&root.path), &id, request)
     })
@@ -750,6 +1046,7 @@ fn admit_resource(
     require_resource_write(s)?;
     pcl_core::identifier(id)?;
     let root = s.config.resolve(root_id)?;
+    ensure_rename_ready(s, &root)?;
     if expected_path.is_some_and(|path| path != root.path) {
         return Err("游戏目录位置已改变，请重新选择文件".into());
     }
@@ -1068,6 +1365,7 @@ async fn inspect_instance(
         let (cfg, root) = instance_context(&s.config, root_id.as_deref(), &id)?;
         resource_ops::ensure_ready(Path::new(&root.path))?;
         instance_reset::ensure_ready(Path::new(&root.path))?;
+        ensure_rename_ready(&s, &root)?;
         let plan = pcl_core::build_launch_plan(
             Path::new(&root.path),
             &s.project,
@@ -1135,6 +1433,7 @@ fn launch_game(
     let (cfg, root) = instance_context(&state.config, root_id.as_deref(), &id)?;
     resource_ops::ensure_ready(Path::new(&root.path))?;
     instance_reset::ensure_ready(Path::new(&root.path))?;
+    ensure_rename_ready(&state, &root)?;
     {
         let mut st = state.status.lock().unwrap();
         if state.tasks.active().is_some() {
@@ -1408,6 +1707,9 @@ fn main() {
             instance_reset_plan,
             instance_reset_start,
             instance_reset_recover,
+            instance_rename_prepare,
+            instance_rename_start,
+            instance_rename_recover,
             instance_export_plan,
             instance_export_start,
             instance_export_config_read,
@@ -1437,7 +1739,7 @@ mod integration_tests {
                         .as_nanos()
                 ));
             fs::create_dir_all(path.join("Minecraft/.minecraft")).unwrap();
-            Self(path)
+            Self(path.canonicalize().unwrap())
         }
         fn shared(&self) -> Shared {
             let (config, warning) = ConfigStore::load(&self.0);
@@ -1470,6 +1772,229 @@ mod integration_tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn rename_fixture(state: &Shared) -> (GameRoot, String) {
+        let root = state.config.resolve(None).unwrap();
+        let id = "1.21.1".to_owned();
+        let folder = Path::new(&root.path).join("versions").join(&id);
+        fs::create_dir_all(folder.join("mods")).unwrap();
+        fs::create_dir_all(folder.join("saves/ExampleWorld")).unwrap();
+        fs::write(folder.join("saves/ExampleWorld/keep.txt"), b"world data").unwrap();
+        fs::write(folder.join("1.21.1.jar"), b"fixture core").unwrap();
+        fs::write(
+            folder.join("1.21.1.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "id": id, "mainClass":"net.minecraft.client.main.Main", "libraries": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut settings = state.config.snapshot();
+        settings.selected = Some(id.clone());
+        settings.memory_gib = 14;
+        settings.overrides.insert(id.clone(), 12);
+        state.config.save(settings).unwrap();
+        (root, id)
+    }
+
+    #[test]
+    fn rename_refresh_preserves_browsed_root_memory_metadata_presets_and_resource_undo() {
+        use std::os::unix::fs::MetadataExt;
+        let fixture = Fixture::new();
+        let state = fixture.shared();
+        let (root, old) = rename_fixture(&state);
+        let new = "Example Renamed";
+        let path = Path::new(&root.path);
+        let world = path
+            .join("versions")
+            .join(&old)
+            .join("saves/ExampleWorld/keep.txt");
+        let inode = world.metadata().unwrap().ino();
+        let revision = state.instance_metadata.get(&root.id, path, &old).revision;
+        update_instance_metadata(
+            &state,
+            Some(&root.id),
+            &old,
+            &revision,
+            instance_meta::MetadataPatch {
+                description: Some("Keep my description".into()),
+                favorite: Some(true),
+                icon: None,
+                category: None,
+            },
+        )
+        .unwrap();
+        let preset = instance_export::ExportRequest {
+            name: "Example Pack".into(),
+            version: "1.0".into(),
+            checks: Default::default(),
+            excluded: Default::default(),
+        };
+        export_presets::save(&fixture.0, &root.id, path, &old, preset.clone()).unwrap();
+        let mod_path = path.join("versions").join(&old).join("mods/example.jar");
+        fs::write(&mod_path, b"example resource").unwrap();
+        let removal = resource_ops::remove(
+            path,
+            &old,
+            "mods",
+            &[resource_ops::ResourceFile {
+                file_name: "example.jar".into(),
+                fingerprint: resource_ops::fingerprint(&mod_path).unwrap(),
+            }],
+            &AtomicBool::new(false),
+            &mut || Ok(()),
+            &mut |_, _| {},
+        )
+        .unwrap();
+        let second = fixture.second(&state.config);
+        let mut settings = state.config.select(&second.id).unwrap();
+        settings.selected = Some("Other".into());
+        settings.overrides.insert("Other".into(), 4);
+        state.config.save(settings.clone()).unwrap();
+        let (plan, refs, _) = checked_rename(&state, &root, &old, new).unwrap();
+        let result = instance_rename::execute(
+            path,
+            &fixture.0,
+            plan,
+            refs,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(result["id"], new);
+        refresh_rename_references(&state).unwrap();
+        let mut refreshed = state.config.snapshot();
+        assert_ne!(refreshed.revision, settings.revision);
+        refreshed.revision = settings.revision.clone();
+        assert_eq!(refreshed, settings);
+        let renamed_root = state.config.resolve(Some(&root.id)).unwrap();
+        assert_eq!(renamed_root.selected.as_deref(), Some(new));
+        assert_eq!(renamed_root.overrides.get(new), Some(&12));
+        assert!(!renamed_root.overrides.contains_key(&old));
+        let metadata = state.instance_metadata.get(&root.id, path, new);
+        assert!(metadata.favorite);
+        assert_eq!(metadata.description, "Keep my description");
+        assert_eq!(
+            export_presets::read(&fixture.0, &root.id, path, new).unwrap(),
+            Some(preset)
+        );
+        assert!(export_presets::read(&fixture.0, &root.id, path, &old)
+            .unwrap()
+            .is_none());
+        let new_world = path
+            .join("versions")
+            .join(new)
+            .join("saves/ExampleWorld/keep.txt");
+        assert_eq!(new_world.metadata().unwrap().ino(), inode);
+        assert_eq!(fs::read(new_world).unwrap(), b"world data");
+        let removed = resource_ops::removed(path, new, "mods").unwrap();
+        assert_eq!(removed[0].id, removal.undo_id.unwrap());
+        resource_ops::restore(
+            path,
+            new,
+            "mods",
+            &removed[0].id,
+            &AtomicBool::new(false),
+            &mut || Ok(()),
+            &mut |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(path.join("versions").join(new).join("mods/example.jar")).unwrap(),
+            b"example resource"
+        );
+        state.config.select(&root.id).unwrap();
+        let bootstrap = bootstrap_view(&state);
+        let instance = bootstrap
+            .instances
+            .iter()
+            .find(|instance| instance.instance.id == new)
+            .unwrap();
+        assert_eq!(instance.instance.minecraft_version, old);
+        assert!(instance.metadata.favorite);
+        assert!(bootstrap.rename_recovery_error.is_none());
+    }
+
+    #[test]
+    fn rename_revision_and_global_recovery_guard_include_scoped_launcher_references() {
+        let fixture = Fixture::new();
+        let state = fixture.shared();
+        let (root, old) = rename_fixture(&state);
+        let (_, _, before) = checked_rename(&state, &root, &old, "Example Renamed").unwrap();
+        let mut settings = state.config.snapshot();
+        settings.overrides.insert(old.clone(), 10);
+        state.config.save(settings).unwrap();
+        let (_, _, after) = checked_rename(&state, &root, &old, "Example Renamed").unwrap();
+        assert_ne!(before, after);
+        let second = fixture.second(&state.config);
+        state.config.select(&second.id).unwrap();
+        // Recapture references after the legitimate navigation, then emulate
+        // a durable pending transaction without touching any game contents.
+        let refs = instance_rename_refs::prepare(
+            &fixture.0,
+            &root.id,
+            Path::new(&root.path),
+            &old,
+            "Example Renamed",
+        )
+        .unwrap();
+        refs.mark_pending(&fixture.0, Path::new(&root.path), "n-abcdef-123-1")
+            .unwrap();
+        let bootstrap = bootstrap_view(&state);
+        assert!(bootstrap.rename_recovery_error.is_some());
+        assert_eq!(
+            bootstrap.rename_recovery_root_id.as_deref(),
+            Some(root.id.as_str())
+        );
+        assert_eq!(bootstrap.settings.root_id, second.id);
+        assert!(require_reference_write(&state).is_err());
+        assert!(ensure_rename_ready(&state, &root).is_err());
+        refs.clear_pending(&fixture.0, Path::new(&root.path), "n-abcdef-123-1")
+            .unwrap();
+        assert!(require_reference_write(&state).is_ok());
+    }
+
+    #[test]
+    fn rename_recovery_resolves_registered_directory_alias() {
+        use std::os::unix::fs::symlink;
+        let fixture = Fixture::new();
+        let state = fixture.shared();
+        let physical = fixture.0.join("alias-target");
+        fs::create_dir_all(&physical).unwrap();
+        let alias = fixture.0.join("registered-alias");
+        symlink(&physical, &alias).unwrap();
+        let registered = state
+            .config
+            .register(alias.to_str().unwrap().into(), None)
+            .unwrap();
+        state.config.select(&registered.id).unwrap();
+        let (root, old) = rename_fixture(&state);
+        assert_eq!(Path::new(&root.path), physical);
+        let second = fixture.second(&state.config);
+        state.config.select(&second.id).unwrap();
+        let refs = instance_rename_refs::prepare(
+            &fixture.0,
+            &root.id,
+            Path::new(&root.path),
+            &old,
+            "Example Renamed",
+        )
+        .unwrap();
+        refs.mark_pending(&fixture.0, Path::new(&root.path), "n-abcdef-123-2")
+            .unwrap();
+        let bootstrap = bootstrap_view(&state);
+        assert!(bootstrap.rename_recovery_error.is_some());
+        assert_eq!(
+            bootstrap.rename_recovery_root_id.as_deref(),
+            Some(root.id.as_str())
+        );
+        assert!(bootstrap
+            .roots
+            .iter()
+            .any(|item| item.id == root.id && item.available && Path::new(&item.path) == alias));
+        refs.clear_pending(&fixture.0, Path::new(&root.path), "n-abcdef-123-2")
+            .unwrap();
     }
 
     #[test]
@@ -1517,6 +2042,7 @@ mod integration_tests {
             TaskKind::ResourceOperation,
             TaskKind::InstanceReset,
             TaskKind::InstanceExport,
+            TaskKind::InstanceRename,
         ] {
             let task = state
                 .tasks

@@ -84,6 +84,39 @@ type MetadataScope = {
   section: string;
   root: string;
 };
+type RenamePlan = {
+  revision: string;
+  id: string;
+  new_name: string;
+  dependent_instances: string[];
+};
+type RenameDialog = {
+  scope: MetadataScope;
+  draft: string;
+  plan: RenamePlan | null;
+  error: string;
+};
+export function instanceRenameNameError(
+  name: string,
+  current: string,
+  occupiedNames: string[],
+): string {
+  if (!name.trim()) return "请输入实例名称";
+  if (name !== name.trim()) return "实例名称不能以空白字符开头或结尾";
+  if (
+    name === "." ||
+    name === ".." ||
+    /[\\/:\u0000-\u001f\u007f-\u009f]/.test(name)
+  )
+    return "实例名称不能包含路径分隔符、冒号或控制字符";
+  if (name.startsWith(".install-")) return "实例名称不能使用 .install- 前缀";
+  if (new TextEncoder().encode(name).length > 120)
+    return "实例名称过长，请缩短到 120 字节以内";
+  if (name === current) return "请输入与当前实例不同的名称";
+  if (occupiedNames.includes(name))
+    return "此游戏目录中已存在同名实例，请修改名称";
+  return "";
+}
 export function InstanceIcon({
   loader = "Vanilla",
   icon = "auto",
@@ -237,6 +270,7 @@ export function InstancePanel({
   mutationDisabled,
   native,
   onTaskStart,
+  occupiedNames = [],
 }: {
   instance: Instance;
   section: string;
@@ -252,6 +286,7 @@ export function InstancePanel({
   mutationDisabled?: boolean;
   native: boolean;
   onTaskStart: (id: string) => void;
+  occupiedNames?: string[];
 }) {
   const rootScope = settings.root_id || settings.root;
   const metadataScope = useRef<MetadataScope>({
@@ -293,6 +328,116 @@ export function InstancePanel({
   } | null>(null);
   const descriptionButton = useRef<HTMLButtonElement>(null);
   const restoreDescriptionFocus = useRef<MetadataScope | null>(null);
+  const [renameDialog, setRenameDialogState] = useState<RenameDialog | null>(
+    null,
+  );
+  const renameDialogRef = useRef<RenameDialog | null>(null);
+  const renameButton = useRef<HTMLButtonElement>(null);
+  const renameOperation = useRef<{
+    token: symbol;
+    scope: MetadataScope;
+    kind: "prepare" | "start";
+  } | null>(null);
+  const [renameActivity, setRenameActivity] = useState<{
+    token: symbol;
+    scope: MetadataScope;
+    kind: "prepare" | "start";
+  } | null>(null);
+  const renameOpen = renameDialog?.scope === currentMetadataScope;
+  const renameWorking = renameActivity?.scope === currentMetadataScope;
+  const renameDisabled =
+    !native || disabled || !!mutationDisabled || metadataWorking;
+  const renameAvailability = useRef(renameDisabled);
+  renameAvailability.current = renameDisabled;
+  const renameNameError =
+    renameOpen && renameDialog
+      ? instanceRenameNameError(renameDialog.draft, instance.id, occupiedNames)
+      : "";
+  function setRenameDialog(next: RenameDialog | null) {
+    renameDialogRef.current = next;
+    setRenameDialogState(next);
+  }
+  function closeRename() {
+    if (
+      !metadataLive.current ||
+      metadataScope.current !== currentMetadataScope ||
+      renameDialogRef.current?.scope !== currentMetadataScope
+    )
+      return;
+    if (
+      renameOperation.current?.scope === currentMetadataScope &&
+      renameOperation.current.kind === "start"
+    )
+      return;
+    if (renameOperation.current?.scope === currentMetadataScope) {
+      renameOperation.current = null;
+      setRenameActivity(null);
+    }
+    setRenameDialog(null);
+    if (metadataScope.current === currentMetadataScope)
+      renameButton.current?.focus();
+  }
+  async function submitRename() {
+    const dialog = renameDialogRef.current;
+    if (
+      !dialog ||
+      currentMetadataScope !== metadataScope.current ||
+      dialog.scope !== currentMetadataScope ||
+      dialog.scope !== metadataScope.current ||
+      !metadataLive.current ||
+      renameAvailability.current ||
+      instanceRenameNameError(dialog.draft, dialog.scope.id, occupiedNames) ||
+      renameOperation.current?.scope === dialog.scope
+    )
+      return;
+    const operation = {
+      token: Symbol(),
+      scope: dialog.scope,
+      kind: dialog.plan ? ("start" as const) : ("prepare" as const),
+    };
+    renameOperation.current = operation;
+    setRenameActivity(operation);
+    const isCurrent = () =>
+      metadataLive.current &&
+      metadataScope.current === dialog.scope &&
+      renameDialogRef.current === dialog;
+    try {
+      if (dialog.plan) {
+        const { revision, id, new_name } = dialog.plan;
+        const result = await api<{ id: string }>("instance_rename_start", {
+          plan: { revision, id, new_name },
+        });
+        if (!isCurrent()) return;
+        if (!result.id) throw new Error("未收到重命名任务，请重新检查后重试");
+        setRenameDialog(null);
+        onTaskStart(result.id);
+      } else {
+        const plan = await api<RenamePlan>("instance_rename_prepare", {
+          id: dialog.scope.id,
+          newName: dialog.draft,
+        });
+        if (!isCurrent()) return;
+        if (
+          plan.id !== dialog.scope.id ||
+          plan.new_name !== dialog.draft ||
+          !plan.revision
+        )
+          throw new Error("重命名计划与当前实例不一致，请重新检查");
+        setRenameDialog({ ...dialog, plan, error: "" });
+      }
+    } catch (error) {
+      if (isCurrent())
+        setRenameDialog({ ...dialog, plan: null, error: String(error) });
+    } finally {
+      if (renameOperation.current?.token === operation.token) {
+        renameOperation.current = null;
+        if (metadataLive.current)
+          setRenameActivity((old) =>
+            old?.token === operation.token ? null : old,
+          );
+      }
+    }
+  }
   const hasSavedMetadata =
     savedMetadata?.api === api &&
     savedMetadata.id === instance.id &&
@@ -312,7 +457,12 @@ export function InstancePanel({
   const descriptionOpen = descriptionDialog?.scope === currentMetadataScope;
   const metadataReadOnly = !metadataRevision;
   const metadataWritesDisabled =
-    disabled || !!mutationDisabled || metadataReadOnly || metadataWorking;
+    disabled ||
+    !!mutationDisabled ||
+    metadataReadOnly ||
+    metadataWorking ||
+    renameOpen ||
+    renameWorking;
   const metadataReadOnlyMessage =
     "当前实例个性化信息仅可查看，请重新加载实例列表后再试。";
   useEffect(() => {
@@ -595,7 +745,29 @@ export function InstancePanel({
               </select>
             </label>
             <div className="ce-actions">
-              <button className="ce-button" disabled title={notReady}>
+              <button
+                className="ce-button"
+                ref={renameButton}
+                disabled={renameDisabled || renameOpen || renameWorking}
+                title={
+                  !native ? "请在桌面应用中修改实例名" : "修改实例文件夹的名称"
+                }
+                onClick={() => {
+                  if (
+                    renameAvailability.current ||
+                    renameWorking ||
+                    renameOpen ||
+                    metadataScope.current !== currentMetadataScope
+                  )
+                    return;
+                  setRenameDialog({
+                    scope: currentMetadataScope,
+                    draft: instance.id,
+                    plan: null,
+                    error: "",
+                  });
+                }}
+              >
                 修改实例名
               </button>
               <button
@@ -804,6 +976,149 @@ export function InstancePanel({
                   type="button"
                   disabled={metadataWorking}
                   onClick={closeDescription}
+                >
+                  取消
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+        {renameOpen && renameDialog && (
+          <div
+            className="modal-shade rd-name-shade"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) closeRename();
+            }}
+          >
+            <form
+              className="rd-name-dialog ce-instance-rename-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-busy={renameWorking}
+              aria-labelledby="ce-instance-rename-title"
+              aria-describedby="ce-instance-rename-hint"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submitRename();
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  closeRename();
+                }
+                if (event.key === "Tab") {
+                  event.stopPropagation();
+                  const controls = [
+                    ...event.currentTarget.querySelectorAll<HTMLElement>(
+                      "input:not(:disabled), button:not(:disabled)",
+                    ),
+                  ];
+                  const first = controls[0],
+                    last = controls[controls.length - 1];
+                  if (!first) event.preventDefault();
+                  else if (event.shiftKey && document.activeElement === first) {
+                    event.preventDefault();
+                    last?.focus();
+                  } else if (
+                    !event.shiftKey &&
+                    document.activeElement === last
+                  ) {
+                    event.preventDefault();
+                    first.focus();
+                  }
+                }
+              }}
+            >
+              <h2 id="ce-instance-rename-title">修改实例名</h2>
+              <input
+                autoFocus
+                className="ce-field"
+                aria-label="新的实例名称"
+                value={renameDialog.draft}
+                disabled={
+                  renameActivity?.scope === currentMetadataScope &&
+                  renameActivity.kind === "start"
+                }
+                onChange={(event) => {
+                  const current = renameDialogRef.current;
+                  if (
+                    !current ||
+                    currentMetadataScope !== metadataScope.current ||
+                    current.scope !== currentMetadataScope ||
+                    current.scope !== metadataScope.current ||
+                    (renameOperation.current?.scope === current.scope &&
+                      renameOperation.current.kind === "start")
+                  )
+                    return;
+                  setRenameDialog({
+                    ...current,
+                    draft: event.target.value,
+                    plan: null,
+                    error: "",
+                  });
+                }}
+              />
+              <p id="ce-instance-rename-hint">
+                修改物理实例名和对应的版本文件；模组、配置和存档会保留。
+              </p>
+              {(renameDialog.error ||
+                (renameDialog.draft !== instance.id && renameNameError)) && (
+                <p className="rd-name-error" role="alert">
+                  {renameDialog.error || renameNameError}
+                </p>
+              )}
+              {renameDialog.plan && (
+                <div className="ce-instance-rename-plan">
+                  <p>
+                    {renameDialog.plan.id} → {renameDialog.plan.new_name}
+                  </p>
+                  <p>
+                    将更新 {renameDialog.plan.dependent_instances.length}{" "}
+                    个引用此实例的版本。
+                  </p>
+                  {!!renameDialog.plan.dependent_instances.length && (
+                    <ul>
+                      {renameDialog.plan.dependent_instances
+                        .slice(0, 5)
+                        .map((id) => (
+                          <li key={id}>{id}</li>
+                        ))}
+                      {renameDialog.plan.dependent_instances.length > 5 && (
+                        <li>
+                          另有{" "}
+                          {renameDialog.plan.dependent_instances.length - 5}{" "}
+                          个版本
+                        </li>
+                      )}
+                    </ul>
+                  )}
+                </div>
+              )}
+              <div className="rd-name-actions">
+                <button
+                  type="submit"
+                  className="ce-button primary"
+                  disabled={
+                    renameDisabled || renameWorking || !!renameNameError
+                  }
+                >
+                  {renameWorking
+                    ? renameActivity?.kind === "start"
+                      ? "正在提交…"
+                      : "正在检查…"
+                    : renameDialog.plan
+                      ? "确定改名"
+                      : "检查改名"}
+                </button>
+                <button
+                  type="button"
+                  className="ce-button"
+                  disabled={
+                    renameActivity?.scope === currentMetadataScope &&
+                    renameActivity.kind === "start"
+                  }
+                  onClick={closeRename}
                 >
                   取消
                 </button>

@@ -132,6 +132,8 @@ type State = {
   scan_issues?: { id: string; message: string }[];
   scan_error?: string | null;
   reset_recovery_error?: string | null;
+  rename_recovery_error?: string | null;
+  rename_recovery_root_id?: string | null;
   config_warning?: string | null;
   instances: Instance[];
   status: Status;
@@ -153,6 +155,8 @@ const resourceWrites = new Set([
   "instance_metadata_update",
   "instance_reset_start",
   "instance_reset_recover",
+  "instance_rename_start",
+  "instance_rename_recover",
   "instance_export_start",
   "instance_export_config_save",
 ]);
@@ -175,6 +179,9 @@ const rootCommands = new Set([
   "instance_reset_plan",
   "instance_reset_start",
   "instance_reset_recover",
+  "instance_rename_prepare",
+  "instance_rename_start",
+  "instance_rename_recover",
   "instance_export_plan",
   "instance_export_start",
   "instance_export_config_read",
@@ -685,7 +692,7 @@ async function api<T>(
           : item,
       ),
     };
-    return undefined as T;
+    return { ...preview!.settings } as T;
   }
   throw new Error("界面预览中不可使用此操作，请打开桌面应用。");
 }
@@ -811,7 +818,9 @@ function App() {
             rootCommands.has(command) ? { ...args, rootId } : args,
           );
           if (
-            command === "instance_reset_recover" &&
+            ["instance_reset_recover", "instance_rename_recover"].includes(
+              command,
+            ) &&
             contextKey.current === capturedContext
           )
             await load();
@@ -849,12 +858,22 @@ function App() {
   }
   async function showInstanceTask(id: string) {
     const capturedRoot = contextKey.current;
+    const capturedNavigation = taskNavigation.current.epoch;
     setDownloadBusy(true);
     try {
       const next = await api<DownloadStatus>("download_status");
       if (next.task_id !== id) return;
       acceptDownloadStatus(next);
-      if (contextKey.current === capturedRoot) showTasks();
+      setDownloadBusy(
+        ["preparing", "downloading", "processing"].includes(
+          downloadSnapshot.current.stage,
+        ),
+      );
+      if (
+        contextKey.current === capturedRoot &&
+        taskNavigation.current.epoch === capturedNavigation
+      )
+        showTasks();
     } catch (e) {
       notify(String(e));
     }
@@ -869,9 +888,39 @@ function App() {
       notify(String(e));
     }
   }
+  async function recoverInstanceRename() {
+    const recoveryRoot = data?.rename_recovery_root_id;
+    if (!native || busy || downloadBusy || resourceBusy || !recoveryRoot)
+      return;
+    const target = { id: recoveryRoot };
+    setResourceTarget(target);
+    try {
+      const result = await api<{ message?: string }>(
+        "instance_rename_recover",
+        {
+          rootId: recoveryRoot,
+        },
+      );
+      await load();
+      notify(result.message || "已恢复未完成的实例重命名");
+    } catch (e) {
+      await load();
+      notify(String(e));
+    } finally {
+      setResourceTarget((current) => (current === target ? null : current));
+    }
+  }
   const [instancePage, setInstancePage] = useState("overview");
   const [settingsPage, setSettingsPage] = useState("launch");
   const [downloadPage, setDownloadPage] = useState("minecraft");
+  const taskNavigation = React.useRef({ key: "", epoch: 0 });
+  const navigationKey = `${rootKey}:${screen}:${tab}:${instancePage}:${data?.settings.selected || ""}`;
+  if (taskNavigation.current.key !== navigationKey) {
+    taskNavigation.current = {
+      key: navigationKey,
+      epoch: taskNavigation.current.epoch + 1,
+    };
+  }
   const contentRef = React.useRef<HTMLElement>(null);
   useEffect(() => {
     contentRef.current?.scrollTo({ top: 0 });
@@ -1108,13 +1157,18 @@ function App() {
   async function save(cfg: Settings) {
     const settings = { ...cfg, root_id: cfg.root_id || rootId };
     const targetKey = `${settings.root_id || ""}:${settings.root}`;
-    await api("save_settings", { settings });
+    const saved = await api<Settings>("save_settings", { settings });
+    const currentSubmission = (current: Settings) =>
+      `${current.root_id || ""}:${current.root}` === targetKey &&
+      (current.revision === settings.revision ||
+        current.revision === saved.revision);
     setData((d) =>
-      d && `${d.settings.root_id || ""}:${d.settings.root}` === targetKey
-        ? { ...d, settings }
-        : d,
+      d && currentSubmission(d.settings) ? { ...d, settings: saved } : d,
     );
-    if (contextKey.current === targetKey) setDraft(settings);
+    if (contextKey.current === targetKey)
+      setDraft((current) =>
+        current && currentSubmission(current) ? saved : current,
+      );
   }
   async function pick(id: string) {
     if (!data || rootWorking) return;
@@ -1710,6 +1764,35 @@ function App() {
             )}
           </aside>
           <main className="content" ref={contentRef}>
+            {data.rename_recovery_error && screen !== "tasks" && (
+              <section className="error-banner" role="alert">
+                <TriangleAlert size={17} />
+                <span>{data.rename_recovery_error}</span>
+                <button
+                  className="ce-button"
+                  title={
+                    data.roots?.find(
+                      (root) => root.id === data.rename_recovery_root_id,
+                    )?.path
+                  }
+                  disabled={
+                    !native ||
+                    !!busy ||
+                    downloadBusy ||
+                    resourceBusy ||
+                    !data.rename_recovery_root_id ||
+                    !data.roots?.some(
+                      (root) =>
+                        root.id === data.rename_recovery_root_id &&
+                        root.available,
+                    )
+                  }
+                  onClick={() => void recoverInstanceRename()}
+                >
+                  恢复实例重命名
+                </button>
+              </section>
+            )}
             {data.reset_recovery_error && screen !== "tasks" && (
               <section className="error-banner" role="alert">
                 <TriangleAlert size={17} />
@@ -1771,9 +1854,10 @@ function App() {
                     const instanceTask = [
                       "instance_reset",
                       "instance_export",
+                      "instance_rename",
                     ].includes(next.kind || "");
                     notify(
-                      `${next.version || "游戏"} ${next.kind === "instance_reset" ? "重置" : next.kind === "instance_export" ? "导出" : "安装"}已取消`,
+                      `${next.version || "游戏"} ${next.kind === "instance_reset" ? "重置" : next.kind === "instance_export" ? "导出" : next.kind === "instance_rename" ? "改名" : "安装"}已取消`,
                     );
                     if (!instanceTask) {
                       setTab("download");
@@ -1831,6 +1915,7 @@ function App() {
                   api={rootApi}
                   native={native}
                   onTaskStart={showInstanceTask}
+                  occupiedNames={data.instances.map((instance) => instance.id)}
                   onSave={save}
                   onOpen={open}
                   onInspect={launch}

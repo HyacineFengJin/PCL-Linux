@@ -71,7 +71,8 @@ export function TaskStatistics({
         <strong>
           {terminalCancelled ||
           speed === null ||
-          status.kind === "instance_export"
+          status.kind === "instance_export" ||
+          status.kind === "instance_rename"
             ? "—"
             : `${(speed / 1048576).toFixed(2)} MiB/s`}
         </strong>
@@ -107,8 +108,22 @@ export function TaskManager({
   const [cancelling, setCancelling] = useState(false);
   const cancelPending = useRef(false);
   const mounted = useRef(true);
-  const latest = useRef({ api, status, onNotify, onStatusChange, onCancelled });
-  latest.current = { api, status, onNotify, onStatusChange, onCancelled };
+  const latest = useRef({
+    api,
+    status,
+    native,
+    onNotify,
+    onStatusChange,
+    onCancelled,
+  });
+  latest.current = {
+    api,
+    status,
+    native,
+    onNotify,
+    onStatusChange,
+    onCancelled,
+  };
   const notifiedCancellation = useRef<string | null>(null);
   const requestedCancellation = useRef<string | null>(null);
   const taskKey =
@@ -152,7 +167,9 @@ export function TaskManager({
       ? "重置"
       : status.kind === "instance_export"
         ? "导出"
-        : "安装";
+        : status.kind === "instance_rename"
+          ? "改名"
+          : "安装";
   const phase =
     status.phase ||
     (status.stage === "downloading" ? "downloading" : "metadata");
@@ -183,10 +200,16 @@ export function TaskManager({
   async function cancel() {
     if (
       !native ||
+      !mounted.current ||
+      !latest.current.native ||
       !active ||
+      !["downloading", "preparing", "processing"].includes(
+        latest.current.status.stage,
+      ) ||
       currentTask.current !== taskKey ||
       latest.current.api !== api ||
       status.can_cancel === false ||
+      latest.current.status.can_cancel === false ||
       cancelPending.current
     )
       return;
