@@ -38,6 +38,8 @@ cd PCL-Linux
 
 ## 开发
 
+阅读和维护代码可从[代码结构与排查入口](docs/DEVELOPMENT.md)开始。
+
 - `apps/desktop/`：React 界面和 Tauri 桌面宿主。
 - `crates/core/`：版本、依赖和启动核心。
 - `crates/install/`：官方版本目录、文件下载、校验和安装。
