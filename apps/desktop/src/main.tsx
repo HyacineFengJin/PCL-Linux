@@ -61,6 +61,9 @@ import {
   Users,
   UserPlus,
   Pickaxe,
+  MoreHorizontal,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react";
 import {
   DownloadPanel,
@@ -80,27 +83,16 @@ import { ResourceDetails, type ResourceSummary } from "./ResourceDetails";
 import { TaskManager, TaskStatistics, useDownloadSpeed } from "./TaskManager";
 import "./account-interactions.css";
 import { ExtraSettings } from "./ExtraSettings";
-type Instance = {
-  id: string;
-  minecraft_version: string;
-  loader: string;
-  java_major: number;
-  mod_count: number;
-  isolated: boolean;
-};
-type Settings = {
-  root: string;
-  player: string;
-  memory_gib: number;
-  selected: string | null;
-  overrides: Record<string, number>;
-};
+import type { Api, Instance, RootSummary, Settings } from "./types";
+import "./roots.css";
 type Status = {
   stage: string;
   message: string;
   version: string | null;
   pid: number | null;
   exit_code: number | null;
+  root_id?: string | null;
+  root_path?: string | null;
 };
 type AuthState = {
   client_id: string;
@@ -129,6 +121,10 @@ const emptyAuth: AuthState = {
 };
 type State = {
   settings: Settings;
+  roots?: RootSummary[];
+  scan_issues?: { id: string; message: string }[];
+  scan_error?: string | null;
+  config_warning?: string | null;
   instances: Instance[];
   status: Status;
   auth: AuthState;
@@ -140,6 +136,26 @@ type Inspection = {
   log_path: string;
 };
 const native = isTauri();
+const rootCommands = new Set([
+  "launch_game",
+  "inspect_instance",
+  "open_folder",
+  "instance_resources",
+  "instance_servers",
+  "launcher_logs",
+  "launcher_read_log",
+]);
+type PreviewRoot = {
+  settings: Settings;
+  instances: Instance[];
+  resources: unknown[];
+  servers: unknown;
+  logs: unknown;
+  log_contents?: Record<string, string>;
+  scan_issues: { id: string; message: string }[];
+  scan_error?: string | null;
+};
+const previewRoots = new Map<string, PreviewRoot>();
 let preview:
   | (State & {
       catalog?: unknown[];
@@ -155,8 +171,93 @@ let preview:
       resource_dependencies?: Record<string, unknown>;
       loader_candidates?: Record<string, unknown>;
       download_status?: DownloadStatus;
+      root_data?: Record<string, Partial<PreviewRoot>>;
     })
   | undefined;
+function normalizedState(value: State): State {
+  const roots = value.roots?.length
+    ? value.roots
+    : [
+        {
+          id: value.settings.root_id || "legacy-root",
+          name:
+            value.settings.root.split(/[\\/]/).filter(Boolean).at(-1) ||
+            "Minecraft",
+          path: value.settings.root,
+          selected: value.settings.selected,
+          available: true,
+        },
+      ];
+  const rootId =
+    roots.find((root) => root.id === value.settings.root_id)?.id ||
+    roots.find((root) => root.path === value.settings.root)?.id ||
+    roots[0].id;
+  return {
+    ...value,
+    roots,
+    settings: { ...value.settings, root_id: rootId },
+    scan_issues: value.scan_issues || [],
+    auth: value.auth || emptyAuth,
+  };
+}
+function preparePreviewRoots() {
+  if (!preview || previewRoots.size) return;
+  preview = { ...preview, ...normalizedState(preview) };
+  for (const root of preview.roots!) {
+    const selected = root.id === preview.settings.root_id;
+    const stored = preview.root_data?.[root.id];
+    previewRoots.set(root.id, {
+      settings: {
+        ...preview.settings,
+        selected: selected ? preview.settings.selected : root.selected,
+        overrides: selected
+          ? { ...preview.settings.overrides }
+          : { ...root.overrides },
+        ...stored?.settings,
+        root_id: root.id,
+        root: root.path,
+      },
+      instances: stored?.instances || (selected ? preview.instances : []),
+      resources: stored?.resources || (selected ? preview.resources || [] : []),
+      servers:
+        stored?.servers || (selected ? preview.instance_servers || [] : []),
+      logs: stored?.logs || (selected ? preview.launcher_logs || [] : []),
+      log_contents: stored?.log_contents,
+      scan_issues:
+        stored?.scan_issues || (selected ? preview.scan_issues || [] : []),
+      scan_error: stored?.scan_error || (selected ? preview.scan_error : null),
+    });
+  }
+}
+function selectPreviewRoot(id: string) {
+  const root = preview!.roots!.find((item) => item.id === id);
+  const stored = previewRoots.get(id);
+  if (!root || !stored) throw new Error("游戏目录不存在");
+  const old = previewRoots.get(preview!.settings.root_id!);
+  if (old) old.settings = { ...preview!.settings };
+  preview = {
+    ...preview!,
+    settings: {
+      ...stored.settings,
+      player: preview!.settings.player,
+      memory_gib: preview!.settings.memory_gib,
+    },
+    roots: preview!.roots!.map((item) => ({
+      ...item,
+      selected: previewRoots.has(item.id)
+        ? previewRoots.get(item.id)!.settings.selected
+        : item.selected,
+    })),
+    instances: root.available ? stored.instances : [],
+    resources: root.available ? stored.resources : [],
+    instance_servers: root.available ? stored.servers : [],
+    scan_issues: stored.scan_issues,
+    scan_error: root.available
+      ? stored.scan_error
+      : root.error || "游戏目录暂不可用",
+  };
+  return normalizedState(preview);
+}
 async function api<T>(
   command: string,
   args?: Record<string, unknown>,
@@ -168,14 +269,81 @@ async function api<T>(
         throw new Error("预览数据不存在，请先运行 npm run preview:data");
       return r.json();
     });
-  if (command === "bootstrap")
-    return { ...preview!, auth: preview!.auth || emptyAuth } as T;
+  preparePreviewRoots();
+  if (command === "bootstrap") return normalizedState(preview!) as T;
+  if (command === "roots_list") return preview!.roots as T;
+  if (command === "root_pick")
+    return {
+      status: "unavailable",
+      message: "界面预览中不能选择本机文件夹，请打开桌面应用。",
+    } as T;
+  if (command === "root_select")
+    return selectPreviewRoot(String(args?.id)) as T;
+  if (command === "root_update") {
+    const id = String(args?.id);
+    const roots = [...preview!.roots!];
+    const index = roots.findIndex((root) => root.id === id);
+    if (index < 0) throw new Error("游戏目录不存在");
+    if (args?.name !== undefined) {
+      const name = String(args.name).trim();
+      if (!name) throw new Error("请输入文件夹名称");
+      roots[index] = { ...roots[index], name };
+    }
+    if (typeof args?.position === "number") {
+      const [root] = roots.splice(index, 1);
+      roots.splice(Math.max(0, Math.min(roots.length, args.position)), 0, root);
+    }
+    preview = { ...preview!, roots };
+    return normalizedState(preview) as T;
+  }
+  if (command === "root_remove") {
+    const id = String(args?.id);
+    const roots = preview!.roots!;
+    if (roots.length <= 1) throw new Error("请至少保留一个游戏目录");
+    if (!roots.some((root) => root.id === id))
+      throw new Error("游戏目录不存在");
+    if (
+      (["preparing", "running"].includes(preview!.status.stage) &&
+        preview!.status.root_id === id) ||
+      (["preparing", "downloading", "processing"].includes(
+        preview!.download_status?.stage || "",
+      ) &&
+        preview!.download_status?.root_id === id)
+    )
+      throw new Error("此目录正在使用，请等待任务结束");
+    preview = { ...preview!, roots: roots.filter((root) => root.id !== id) };
+    previewRoots.delete(id);
+    return (
+      preview!.settings.root_id === id
+        ? selectPreviewRoot(preview!.roots![0].id)
+        : normalizedState(preview!)
+    ) as T;
+  }
   if (command === "auth_status") return (preview!.auth || emptyAuth) as T;
   if (command === "process_status") return preview!.status as T;
   if (command === "download_catalog") return (preview!.catalog || []) as T;
-  if (command === "launcher_logs") return (preview!.launcher_logs || []) as T;
-  if (command === "instance_servers")
-    return (preview!.instance_servers || []) as T;
+  if (
+    command === "launcher_logs" ||
+    command === "instance_servers" ||
+    command === "instance_resources"
+  ) {
+    const rootId = String(args?.rootId || preview!.settings.root_id);
+    const root = preview!.roots!.find((item) => item.id === rootId);
+    const stored = previewRoots.get(rootId);
+    if (!root?.available || !stored) return [] as T;
+    return (
+      command === "launcher_logs"
+        ? stored.logs
+        : command === "instance_servers"
+          ? stored.servers
+          : stored.resources
+    ) as T;
+  }
+  if (command === "launcher_read_log") {
+    const rootId = String(args?.rootId || preview!.settings.root_id);
+    const stored = previewRoots.get(rootId)?.log_contents?.[String(args?.name)];
+    if (stored !== undefined) return stored as T;
+  }
   if (command === "loader_catalog") {
     const catalogs = preview!.loader_catalog;
     return (
@@ -214,11 +382,32 @@ async function api<T>(
   }
   if (command === "system_info") return preview!.system as T;
   if (command === "java_list") return (preview!.java || []) as T;
-  if (command === "instance_resources") return (preview!.resources || []) as T;
   if (command === "download_status")
     return (preview!.download_status || idleDownload) as T;
   if (command === "save_settings") {
-    preview!.settings = args!.settings as Settings;
+    const settings = args!.settings as Settings;
+    const rootId = settings.root_id || preview!.settings.root_id!;
+    const root = preview!.roots!.find((item) => item.id === rootId);
+    if (
+      !root ||
+      rootId !== preview!.settings.root_id ||
+      root.path !== settings.root
+    )
+      throw new Error("请在实例选择中管理游戏目录");
+    previewRoots.get(rootId)!.settings = { ...settings, root_id: rootId };
+    preview = {
+      ...preview!,
+      settings: { ...settings, root_id: rootId },
+      roots: preview!.roots!.map((item) =>
+        item.id === rootId
+          ? {
+              ...item,
+              selected: settings.selected,
+              overrides: settings.overrides,
+            }
+          : item,
+      ),
+    };
     return undefined as T;
   }
   throw new Error("界面预览中不可使用此操作，请打开桌面应用。");
@@ -288,6 +477,39 @@ function App() {
   const speed = useDownloadSpeed(downloadStatus);
   const [accountType, setAccountType] = useState("");
   const [profileList, setProfileList] = useState(false);
+  const [rootWorking, setRootWorking] = useState(false);
+  const rootWorkingRef = React.useRef(false);
+  const stateRequest = React.useRef(0);
+  const [rootMenu, setRootMenu] = useState<{
+    id: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [rootDialog, setRootDialog] = useState<{
+    mode: "rename" | "remove";
+    root: RootSummary;
+  } | null>(null);
+  const [rootName, setRootName] = useState("");
+  const [rootError, setRootError] = useState("");
+  const rootId = data?.settings.root_id || null;
+  const rootKey = `${rootId || ""}:${data?.settings.root || ""}`;
+  const contextKey = React.useRef(rootKey);
+  contextKey.current = rootKey;
+  const rootApi = React.useMemo<Api>(
+    () => (command, args) =>
+      api(command, rootCommands.has(command) ? { ...args, rootId } : args),
+    [rootId],
+  );
+  const taskApi = React.useMemo<Api>(
+    () => (command, args) =>
+      api(
+        command,
+        command === "download_cancel"
+          ? { ...args, taskId: downloadStatus.task_id ?? null }
+          : args,
+      ),
+    [downloadStatus.task_id],
+  );
   function showResource(
     next: ResourceSummary,
     origin: "home" | "instance" = "home",
@@ -316,23 +538,77 @@ function App() {
     setToast(text);
     window.setTimeout(() => setToast(""), 4500);
   };
+  function applyState(snapshot: State) {
+    const next = normalizedState(snapshot);
+    if (
+      !next.instances.some((i) => i.id === next.settings.selected) &&
+      next.instances.length
+    )
+      next.settings.selected =
+        next.instances.find((x) => x.mod_count > 0)?.id || next.instances[0].id;
+    setClientId(next.auth.client_id);
+    setData(next);
+    setDraft(next.settings);
+    setError("");
+  }
   async function load() {
+    if (rootWorkingRef.current) return;
+    const request = ++stateRequest.current;
     try {
       const next = await api<State>("bootstrap");
-      if (
-        !next.instances.some((i) => i.id === next.settings.selected) &&
-        next.instances.length
-      )
-        next.settings.selected =
-          next.instances.find((x) => x.mod_count > 0)?.id ||
-          next.instances[0].id;
-      next.auth ||= emptyAuth;
-      setClientId(next.auth.client_id);
-      setData(next);
-      setDraft(next.settings);
-      setError("");
+      if (request === stateRequest.current) applyState(next);
     } catch (e) {
-      setError(String(e));
+      if (request === stateRequest.current) setError(String(e));
+    }
+  }
+  async function rootAction(command: string, args: Record<string, unknown>) {
+    if (rootWorkingRef.current) return;
+    rootWorkingRef.current = true;
+    setRootWorking(true);
+    setRootError("");
+    setRootMenu(null);
+    const request = ++stateRequest.current;
+    try {
+      const next = await api<State>(command, args);
+      if (request === stateRequest.current) applyState(next);
+      setRootDialog(null);
+    } catch (e) {
+      if (rootDialog) setRootError(String(e));
+      else notify(String(e));
+    } finally {
+      rootWorkingRef.current = false;
+      setRootWorking(false);
+    }
+  }
+  async function addRoot() {
+    if (rootWorkingRef.current) return;
+    rootWorkingRef.current = true;
+    setRootWorking(true);
+    setRootMenu(null);
+    const request = ++stateRequest.current;
+    try {
+      const choice = await api<{
+        status: "selected" | "cancelled" | "unavailable";
+        path?: string;
+        message?: string;
+      }>("root_pick");
+      if (choice.status === "cancelled") return;
+      if (choice.status !== "selected" || !choice.path) {
+        notify(choice.message || "暂时无法打开文件夹选择窗口");
+        return;
+      }
+      const registered = await api<{ root: RootSummary; bootstrap: State }>(
+        "root_register",
+        { path: choice.path },
+      );
+      if (request === stateRequest.current) applyState(registered.bootstrap);
+      const next = await api<State>("root_select", { id: registered.root.id });
+      if (request === stateRequest.current) applyState(next);
+    } catch (e) {
+      notify(String(e));
+    } finally {
+      rootWorkingRef.current = false;
+      setRootWorking(false);
     }
   }
   useEffect(() => {
@@ -357,8 +633,36 @@ function App() {
     };
   }, []);
   useEffect(() => {
+    setInspection(null);
+    setChecking(false);
+    setResource(null);
+    setQuery("");
+    setRootMenu(null);
+    setInstancePage("overview");
+    setScreen((current) =>
+      ["instance", "resource"].includes(current) ? "versions" : current,
+    );
+    setTaskOrigin((current) =>
+      ["instance", "resource"].includes(current) ? "versions" : current,
+    );
+  }, [rootKey]);
+  useEffect(() => {
+    if (!rootMenu) return;
+    const close = () => setRootMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("resize", close);
+    };
+  }, [rootMenu]);
+  useEffect(() => {
     const fn = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDialog(null);
+      if (e.key === "Escape") {
+        setDialog(null);
+        setRootMenu(null);
+        if (!rootWorkingRef.current) setRootDialog(null);
+      }
       if (e.key === "Tab") {
         const modal = document.querySelector<HTMLElement>('[role="dialog"]');
         if (!modal) return;
@@ -385,18 +689,22 @@ function App() {
     return () => window.removeEventListener("keydown", fn);
   }, []);
   useEffect(() => {
-    if (!dialog) return;
+    if (!dialog && !rootDialog) return;
     const previous = document.activeElement as HTMLElement | null;
     const t = setTimeout(
       () =>
-        document.querySelector<HTMLElement>('[role="dialog"] button')?.focus(),
+        document
+          .querySelector<HTMLElement>(
+            '[role="dialog"] input, [role="dialog"] button',
+          )
+          ?.focus(),
       0,
     );
     return () => {
       clearTimeout(t);
       previous?.focus();
     };
-  }, [dialog]);
+  }, [dialog, rootDialog]);
   async function authAction(command: string, args?: Record<string, unknown>) {
     setAuthWorking(true);
     setAuthError("");
@@ -428,15 +736,42 @@ function App() {
   const selected = data?.instances.find((i) => i.id === data.settings.selected),
     busy =
       data?.status.stage === "preparing" || data?.status.stage === "running";
+  const processInRoot =
+    !!data &&
+    (data.status.root_id
+      ? data.status.root_id === rootId
+      : data.status.root_path
+        ? data.status.root_path === data.settings.root
+        : true);
+  const boundGame =
+    !!busy && processInRoot && data?.status.version === selected?.id;
+  const installInRoot =
+    downloadBusy &&
+    (downloadStatus.root_id
+      ? downloadStatus.root_id === rootId
+      : downloadStatus.root_path
+        ? downloadStatus.root_path === data?.settings.root
+        : true);
+  const rootOccupied = (!!busy && processInRoot) || installInRoot;
+  const selectedRoot = data?.roots?.find((root) => root.id === rootId);
+  const rootAvailable = selectedRoot?.available !== false;
   async function save(cfg: Settings) {
-    await api("save_settings", { settings: cfg });
-    setData((d) => (d ? { ...d, settings: cfg } : d));
-    setDraft(cfg);
+    const settings = { ...cfg, root_id: cfg.root_id || rootId };
+    const targetKey = `${settings.root_id || ""}:${settings.root}`;
+    await api("save_settings", { settings });
+    setData((d) =>
+      d && `${d.settings.root_id || ""}:${d.settings.root}` === targetKey
+        ? { ...d, settings }
+        : d,
+    );
+    if (contextKey.current === targetKey) setDraft(settings);
   }
   async function pick(id: string) {
-    if (!data) return;
+    if (!data || rootWorking) return;
+    const targetKey = rootKey;
     try {
       await save({ ...data.settings, selected: id });
+      if (contextKey.current !== targetKey) return;
       setDialog(null);
       setScreen("home");
       setInspection(null);
@@ -445,18 +780,30 @@ function App() {
     }
   }
   async function launch() {
-    if (!data || !selected || downloadBusy) return;
+    if (
+      !data ||
+      !selected ||
+      busy ||
+      downloadBusy ||
+      rootWorking ||
+      !rootAvailable
+    )
+      return;
+    const targetKey = rootKey;
     try {
       await save(data.settings);
-      await api("launch_game", { id: selected.id });
+      await rootApi("launch_game", { id: selected.id });
       setData((d) =>
-        d
+        d && contextKey.current === targetKey
           ? {
               ...d,
               status: {
                 ...d.status,
                 stage: "preparing",
                 message: "正在检查启动环境…",
+                version: selected.id,
+                root_id: rootId,
+                root_path: data.settings.root,
               },
             }
           : d,
@@ -467,23 +814,25 @@ function App() {
   }
   async function open(kind: string) {
     try {
-      await api("open_folder", { kind, id: selected?.id || null });
+      await rootApi("open_folder", { kind, id: selected?.id || null });
     } catch (e) {
       notify(String(e));
     }
   }
   async function inspect() {
     if (!selected) return;
+    const targetKey = rootKey;
     setChecking(true);
     setInspection(null);
     try {
-      setInspection(
-        await api<Inspection>("inspect_instance", { id: selected.id }),
-      );
+      const result = await rootApi<Inspection>("inspect_instance", {
+        id: selected.id,
+      });
+      if (contextKey.current === targetKey) setInspection(result);
     } catch (e) {
       notify(String(e));
     } finally {
-      setChecking(false);
+      if (contextKey.current === targetKey) setChecking(false);
     }
   }
   function instanceSettings() {
@@ -498,6 +847,37 @@ function App() {
   function setPlayer(player: string) {
     setData((d) => (d ? { ...d, settings: { ...d.settings, player } } : d));
   }
+  function rootOptions(id: string, x: number, y: number) {
+    if (rootWorking) return;
+    setRootMenu({
+      id,
+      x: Math.max(8, Math.min(x, window.innerWidth - 210)),
+      y: Math.max(56, Math.min(y, window.innerHeight - 184)),
+    });
+  }
+  function editRoot(root: RootSummary, mode: "rename" | "remove") {
+    setRootMenu(null);
+    setRootName(root.name);
+    setRootError("");
+    setRootDialog({ root, mode });
+  }
+  const menuRoot = data?.roots?.find((root) => root.id === rootMenu?.id);
+  const menuRootIndex =
+    data?.roots?.findIndex((root) => root.id === rootMenu?.id) ?? -1;
+  const menuRootOccupied =
+    !!menuRoot &&
+    ((!!busy &&
+      (data?.status.root_id === menuRoot.id ||
+        data?.status.root_path === menuRoot.path ||
+        (!data?.status.root_id &&
+          !data?.status.root_path &&
+          menuRoot.id === rootId))) ||
+      (downloadBusy &&
+        (downloadStatus.root_id === menuRoot.id ||
+          downloadStatus.root_path === menuRoot.path ||
+          (!downloadStatus.root_id &&
+            !downloadStatus.root_path &&
+            menuRoot.id === rootId))));
   const downloadItems = [
     { id: "minecraft", label: "Minecraft", icon: Blocks },
     { id: "mods", label: "模组", group: "社区资源", icon: Puzzle },
@@ -704,20 +1084,51 @@ function App() {
             ) : screen === "resource" ? null : screen === "versions" ? (
               <>
                 <div className="section-label">文件夹列表</div>
-                <button
-                  className="folder-entry selected"
-                  title={data.settings.root}
-                >
-                  <strong>
-                    {data.settings.root.split("/").filter(Boolean).at(-1)}
-                  </strong>
-                  <small>{data.settings.root}</small>
-                </button>
+                {data.roots?.map((root) => (
+                  <div
+                    className="ce-root-entry"
+                    key={root.id}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      rootOptions(root.id, event.clientX, event.clientY);
+                    }}
+                  >
+                    <button
+                      className={`folder-entry ${root.id === rootId ? "selected" : ""} ${root.available ? "" : "unavailable"}`}
+                      title={
+                        root.error ? `${root.path}\n${root.error}` : root.path
+                      }
+                      aria-pressed={root.id === rootId}
+                      disabled={rootWorking}
+                      onClick={() =>
+                        void rootAction("root_select", { id: root.id })
+                      }
+                    >
+                      <strong>{root.name}</strong>
+                      <small>{root.path}</small>
+                      {!root.available && <small>暂不可用</small>}
+                    </button>
+                    <button
+                      className="icon-button ce-root-options"
+                      aria-label={`管理文件夹 ${root.name}`}
+                      title="管理文件夹"
+                      disabled={rootWorking}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        const rect =
+                          event.currentTarget.getBoundingClientRect();
+                        rootOptions(root.id, rect.right, rect.top);
+                      }}
+                    >
+                      <MoreHorizontal size={17} />
+                    </button>
+                  </div>
+                ))}
                 <div className="section-label folder-label">添加或导入</div>
                 <button
                   className="side-item"
-                  disabled
-                  title="多目录管理尚未开放"
+                  disabled={rootWorking}
+                  onClick={() => void addRoot()}
                 >
                   <FolderInput size={19} />
                   添加已有文件夹
@@ -807,7 +1218,7 @@ function App() {
                       <UserPlus size={16} />
                     </button>
                   </div>
-                ) : data.status.stage !== "preparing" ? (
+                ) : data.status.stage !== "preparing" || !boundGame ? (
                   <div className="ce-profile-current">
                     <button
                       className="account-panel"
@@ -856,7 +1267,7 @@ function App() {
                     </div>
                   </div>
                 ) : null}
-                {data.status.stage === "preparing" && (
+                {data.status.stage === "preparing" && boundGame && (
                   <div className="ce-launch-preparing">
                     <Pickaxe size={30} />
                     <h2>正在启动</h2>
@@ -872,30 +1283,41 @@ function App() {
                 <div className="launch-controls">
                   <button
                     className="launch-button"
-                    disabled={!native || !selected || downloadBusy || checking}
+                    disabled={
+                      !native ||
+                      (!boundGame &&
+                        (!selected ||
+                          downloadBusy ||
+                          checking ||
+                          rootWorking ||
+                          !rootAvailable ||
+                          !!busy))
+                    }
                     onClick={() =>
-                      busy
+                      boundGame
                         ? api("stop_game").catch((e) => notify(String(e)))
                         : launch()
                     }
                   >
                     <span>
-                      {busy
+                      {boundGame
                         ? data.status.stage === "preparing"
                           ? "取消"
                           : "结束游戏"
                         : "启动游戏"}
                     </span>
                     <small>
-                      {busy
+                      {boundGame
                         ? data.status.message
-                        : selected?.id || "请选择游戏实例"}
+                        : busy
+                          ? "其他实例正在准备或运行"
+                          : selected?.id || "请选择游戏实例"}
                     </small>
                   </button>
                   <div className="launch-secondary">
                     <button
                       className="ce-button"
-                      disabled={!!busy || downloadBusy}
+                      disabled={rootWorking}
                       onClick={() => {
                         setQuery("");
                         setScreen("versions");
@@ -905,7 +1327,7 @@ function App() {
                     </button>
                     <button
                       className="ce-button"
-                      disabled={!selected || !!busy || downloadBusy}
+                      disabled={!selected || rootWorking}
                       onClick={instanceSettings}
                     >
                       实例设置
@@ -939,6 +1361,8 @@ function App() {
               <DownloadPanel
                 section={downloadPage}
                 api={api}
+                rootId={rootId}
+                rootAvailable={rootAvailable && !rootWorking}
                 native={native}
                 installed={data.instances}
                 gameBusy={!!busy}
@@ -950,37 +1374,64 @@ function App() {
               />
             </div>
             <div
-              key={`${screen}:${tab}:${instancePage}:${settingsPage}`}
+              key={`${rootKey}:${screen}:${tab}:${instancePage}:${settingsPage}`}
               className="ce-page-enter ce-main-page"
             >
               {screen === "resource" && resource ? (
                 <ResourceDetails
-                  key={`${resource.source}:${resource.project_id || resource.local_path}`}
-                  api={api}
+                  key={`${rootKey}:${resource.source}:${resource.project_id || resource.local_path}`}
+                  api={rootApi}
                   resource={resource}
                   onNotify={notify}
                 />
               ) : screen === "tasks" ? (
                 <TaskManager
-                  api={api}
+                  key={downloadStatus.task_id || "legacy-task"}
+                  api={taskApi}
                   status={downloadStatus}
                   native={native}
                   onNotify={notify}
                 />
               ) : screen === "versions" ? (
-                <InstanceSelection
-                  instances={data.instances}
-                  query={query}
-                  setQuery={setQuery}
-                  disabled={!!busy || downloadBusy}
-                  onPick={pick}
-                />
+                <>
+                  {data.config_warning && (
+                    <div className="error-banner" role="alert">
+                      <TriangleAlert size={17} />
+                      <span>{data.config_warning}</span>
+                    </div>
+                  )}
+                  {(data.scan_error || selectedRoot?.error) && (
+                    <div className="error-banner" role="alert">
+                      <TriangleAlert size={17} />
+                      <span>{data.scan_error || selectedRoot?.error}</span>
+                    </div>
+                  )}
+                  {!!data.scan_issues?.length && (
+                    <div className="auth-notice" role="status">
+                      <p>部分实例无法读取：</p>
+                      {data.scan_issues.map((issue, index) => (
+                        <p key={`${issue.id}:${index}`}>
+                          {issue.id}：{issue.message}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                  <InstanceSelection
+                    key={rootKey}
+                    instances={data.instances}
+                    query={query}
+                    setQuery={setQuery}
+                    disabled={rootWorking}
+                    onPick={pick}
+                  />
+                </>
               ) : screen === "instance" && selected ? (
                 <InstancePanel
+                  key={`${rootKey}:${selected.id}`}
                   instance={selected}
                   section={instancePage}
                   settings={data.settings}
-                  api={api}
+                  api={rootApi}
                   onSave={save}
                   onOpen={open}
                   onInspect={launch}
@@ -1007,29 +1458,32 @@ function App() {
                       "instance",
                     )
                   }
-                  disabled={!!busy || downloadBusy}
+                  disabled={rootOccupied || rootWorking}
                 />
               ) : screen === "home" ? (
                 <>
-                  {tab === "launch" && data.status.stage === "error" && (
-                    <button
-                      className="error-banner"
-                      onClick={() => {
-                        setTab("settings");
-                        setSettingsPage("logs");
-                      }}
-                    >
-                      <TriangleAlert size={18} />
-                      <span>{data.status.message}</span>
-                      <ChevronRight size={18} />
-                    </button>
-                  )}
+                  {tab === "launch" &&
+                    processInRoot &&
+                    data.status.stage === "error" && (
+                      <button
+                        className="error-banner"
+                        onClick={() => {
+                          setTab("settings");
+                          setSettingsPage("logs");
+                        }}
+                      >
+                        <TriangleAlert size={18} />
+                        <span>{data.status.message}</span>
+                        <ChevronRight size={18} />
+                      </button>
+                    )}
                   {tab === "settings" &&
                     (["launch", "java"].includes(settingsPage) ? (
                       <SettingsPanel
                         section={settingsPage}
                         settings={data.settings}
-                        api={api}
+                        key={rootKey}
+                        api={rootApi}
                         native={native}
                         onSave={save}
                         disabled={!!busy || downloadBusy}
@@ -1038,10 +1492,10 @@ function App() {
                       />
                     ) : (
                       <ExtraSettings
-                        key={settingsPage}
+                        key={`${rootKey}:${settingsPage}`}
                         section={settingsPage}
                         settings={data.settings}
-                        api={api}
+                        api={rootApi}
                         onOpen={open}
                         onNotify={notify}
                       />
@@ -1064,6 +1518,132 @@ function App() {
         >
           <Download size={23} />
         </button>
+      )}
+      {rootMenu && menuRoot && (
+        <div
+          className="ce-root-menu"
+          role="menu"
+          aria-label={`管理文件夹 ${menuRoot.name}`}
+          style={{ left: rootMenu.x, top: rootMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button role="menuitem" onClick={() => editRoot(menuRoot, "rename")}>
+            <Pencil size={16} />
+            重命名
+          </button>
+          <button
+            role="menuitem"
+            disabled={rootWorking || menuRootIndex <= 0}
+            onClick={() =>
+              void rootAction("root_update", {
+                id: menuRoot.id,
+                position: menuRootIndex - 1,
+              })
+            }
+          >
+            <ArrowUp size={16} />
+            上移
+          </button>
+          <button
+            role="menuitem"
+            disabled={
+              rootWorking || menuRootIndex >= (data?.roots?.length || 0) - 1
+            }
+            onClick={() =>
+              void rootAction("root_update", {
+                id: menuRoot.id,
+                position: menuRootIndex + 1,
+              })
+            }
+          >
+            <ArrowDown size={16} />
+            下移
+          </button>
+          <button
+            role="menuitem"
+            disabled={
+              rootWorking || (data?.roots?.length || 0) <= 1 || menuRootOccupied
+            }
+            title={
+              menuRootOccupied ? "此目录正在使用，请等待任务结束" : undefined
+            }
+            onClick={() => editRoot(menuRoot, "remove")}
+          >
+            <X size={16} />
+            移除文件夹
+          </button>
+        </div>
+      )}
+      {rootDialog && (
+        <div
+          className="modal-shade rd-name-shade"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !rootWorking)
+              setRootDialog(null);
+          }}
+        >
+          <form
+            className="rd-name-dialog ce-root-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ce-root-dialog-title"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (rootDialog.mode === "rename" && !rootName.trim()) {
+                setRootError("请输入文件夹名称");
+                return;
+              }
+              void rootAction(
+                rootDialog.mode === "rename" ? "root_update" : "root_remove",
+                rootDialog.mode === "rename"
+                  ? { id: rootDialog.root.id, name: rootName.trim() }
+                  : { id: rootDialog.root.id },
+              );
+            }}
+          >
+            <h2 id="ce-root-dialog-title">
+              {rootDialog.mode === "rename" ? "重命名文件夹" : "移除文件夹"}
+            </h2>
+            {rootDialog.mode === "rename" ? (
+              <input
+                className="ce-field"
+                aria-label="文件夹名称"
+                value={rootName}
+                maxLength={128}
+                disabled={rootWorking}
+                onChange={(event) => setRootName(event.target.value)}
+              />
+            ) : (
+              <p>从文件夹列表移除“{rootDialog.root.name}”，游戏文件会保留。</p>
+            )}
+            {rootError && (
+              <p className="rd-name-error" role="alert">
+                {rootError}
+              </p>
+            )}
+            <div className="rd-name-actions">
+              <button
+                className="ce-button"
+                type="submit"
+                disabled={rootWorking}
+              >
+                {rootWorking
+                  ? "正在保存…"
+                  : rootDialog.mode === "rename"
+                    ? "确定"
+                    : "移除"}
+              </button>
+              <button
+                className="ce-button"
+                type="button"
+                disabled={rootWorking}
+                onClick={() => setRootDialog(null)}
+              >
+                取消
+              </button>
+            </div>
+          </form>
+        </div>
       )}
       {dialog === "account-type" && (
         <div

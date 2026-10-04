@@ -21,6 +21,16 @@ pub struct Instance {
     pub mod_count: usize,
     pub isolated: bool,
 }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScanIssue {
+    pub id: String,
+    pub message: String,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScanReport {
+    pub instances: Vec<Instance>,
+    pub issues: Vec<ScanIssue>,
+}
 pub struct LaunchPlan {
     pub java: PathBuf,
     pub args: Vec<String>,
@@ -263,61 +273,105 @@ fn java_compatible(major: u32, required: u32, exact: bool) -> bool {
     }
 }
 pub fn scan_instances(root: &Path) -> Result<Vec<Instance>> {
+    Ok(scan_instances_report(root)?.instances)
+}
+/// Keeps readable instances when another entry has damaged metadata. Failures
+/// at the root or versions boundary still fail the complete scan.
+pub fn scan_instances_report(root: &Path) -> Result<ScanReport> {
     let root = fs::canonicalize(root).map_err(err)?;
+    if !root.is_dir() {
+        return Err(format!("Game root is not a directory: {}", root.display()));
+    }
     let versions = safe_join(&root, "versions")?;
     if !versions.exists() {
-        return Ok(vec![]);
+        return Ok(ScanReport::default());
     }
-    let mut result = vec![];
+    let mut report = ScanReport::default();
     for entry in fs::read_dir(versions).map_err(err)? {
-        let entry = entry.map_err(err)?;
-        let id = entry.file_name().to_string_lossy().into_owned();
-        identifier(&id)?;
-        if !safe_join(&root, format!("versions/{id}/{id}.json"))?.is_file() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                report.issues.push(ScanIssue {
+                    id: String::new(),
+                    message: err(error),
+                });
+                continue;
+            }
+        };
+        let name = entry.file_name();
+        let Some(id) = name.to_str() else {
+            report.issues.push(ScanIssue {
+                id: name.to_string_lossy().into_owned(),
+                message: "Version directory name is not valid UTF-8".into(),
+            });
             continue;
+        };
+        match scan_instance(&root, id) {
+            Ok(Some(instance)) => report.instances.push(instance),
+            Ok(None) => {}
+            Err(message) => report.issues.push(ScanIssue {
+                id: id.into(),
+                message,
+            }),
         }
-        let data = metadata(&root, &id, &mut HashSet::new())?;
-        let loader = loader_description(&data);
-        let isolated = isolated(&root, &id)?;
-        let folder = if isolated {
-            safe_join(&root, format!("versions/{id}"))?
-        } else {
-            root.clone()
-        };
-        let mods = safe_join(&folder, "mods")?;
-        let mod_count = if mods.is_dir() {
-            fs::read_dir(mods)
-                .map_err(err)?
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path().is_file() && e.path().extension().is_some_and(|ext| ext == "jar")
-                })
-                .count()
-        } else {
-            0
-        };
-        let minecraft_version = data["arguments"]["game"]
-            .as_array()
-            .and_then(|args| {
-                args.windows(2)
-                    .find(|w| w[0].as_str() == Some("--fml.mcVersion"))
-                    .and_then(|w| w[1].as_str())
-            })
-            .or_else(|| data["clientVersion"].as_str())
-            .or_else(|| data["inheritsFrom"].as_str())
-            .unwrap_or_else(|| text(&data, "id"))
-            .to_string();
-        result.push(Instance {
-            id,
-            minecraft_version,
-            loader: loader.into(),
-            java_major: required_java(&data),
-            mod_count,
-            isolated,
-        });
     }
-    result.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok(result)
+    report.instances.sort_by(|a, b| a.id.cmp(&b.id));
+    report
+        .issues
+        .sort_by(|a, b| a.id.cmp(&b.id).then(a.message.cmp(&b.message)));
+    Ok(report)
+}
+fn scan_instance(root: &Path, id: &str) -> Result<Option<Instance>> {
+    identifier(id)?;
+    let version_folder = safe_join(root, format!("versions/{id}"))?;
+    if !version_folder.is_dir() {
+        return Ok(None);
+    }
+    if !safe_join(root, format!("versions/{id}/{id}.json"))?.is_file() {
+        return Ok(None);
+    }
+    let data = metadata(root, id, &mut HashSet::new())?;
+    let loader = loader_description(&data);
+    let isolated = isolated(root, id)?;
+    let folder = if isolated {
+        version_folder
+    } else {
+        root.to_path_buf()
+    };
+    let mods = safe_join(&folder, "mods")?;
+    let mut mod_count = 0;
+    if mods.is_dir() {
+        for entry in fs::read_dir(&mods).map_err(err)? {
+            let entry = entry.map_err(err)?;
+            let entry_path = entry.path();
+            let relative = entry_path
+                .strip_prefix(root)
+                .map_err(|_| "Mod entry is outside the game root")?;
+            let path = safe_join(root, relative)?;
+            if path.is_file() && path.extension().is_some_and(|ext| ext == "jar") {
+                mod_count += 1;
+            }
+        }
+    }
+    let minecraft_version = data["arguments"]["game"]
+        .as_array()
+        .and_then(|args| {
+            args.windows(2)
+                .find(|w| w[0].as_str() == Some("--fml.mcVersion"))
+                .and_then(|w| w[1].as_str())
+        })
+        .or_else(|| data["clientVersion"].as_str())
+        .or_else(|| data["inheritsFrom"].as_str())
+        .unwrap_or_else(|| text(&data, "id"))
+        .to_string();
+    Ok(Some(Instance {
+        id: id.into(),
+        minecraft_version,
+        loader,
+        java_major: required_java(&data),
+        mod_count,
+        isolated,
+    }))
 }
 struct RuleContext {
     arch: &'static str,
@@ -860,6 +914,99 @@ fn build_launch_plan_inner(
 mod tests {
     use super::*;
     use serde_json::json;
+    fn fixture_dir() -> tempfile::TempDir {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../work/core-tests");
+        fs::create_dir_all(&base).unwrap();
+        tempfile::Builder::new()
+            .prefix("fixture-")
+            .tempdir_in(base)
+            .unwrap()
+    }
+    #[test]
+    fn partial_scan_retains_valid_entries_and_reports_damaged_or_escaping_entries() {
+        let root = fixture_dir();
+        for (id, data) in [
+            ("Good", r#"{"id":"Good","javaVersion":{"majorVersion":17}}"#),
+            ("Broken", "{broken"),
+            ("Array", "[]"),
+            ("Child", r#"{"id":"Child","inheritsFrom":"Missing"}"#),
+            ("bad:identifier", r#"{"id":"bad:identifier"}"#),
+        ] {
+            let folder = root.path().join("versions").join(id);
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(folder.join(format!("{id}.json")), data).unwrap();
+        }
+        let outside = fixture_dir();
+        fs::write(outside.path().join("Escape.json"), r#"{"id":"Escape"}"#).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("versions/Escape")).unwrap();
+        let report = scan_instances_report(root.path()).unwrap();
+        assert_eq!(
+            report
+                .instances
+                .iter()
+                .map(|instance| instance.id.as_str())
+                .collect::<Vec<_>>(),
+            ["Good"]
+        );
+        assert_eq!(report.instances[0].java_major, 17);
+        assert_eq!(
+            report
+                .issues
+                .iter()
+                .map(|issue| issue.id.as_str())
+                .collect::<Vec<_>>(),
+            ["Array", "Broken", "Child", "Escape", "bad:identifier"]
+        );
+        assert!(report.issues.iter().all(|issue| !issue.message.is_empty()));
+        assert!(report
+            .issues
+            .iter()
+            .find(|issue| issue.id == "Escape")
+            .unwrap()
+            .message
+            .contains("escapes"));
+        assert_eq!(scan_instances(root.path()).unwrap()[0].id, "Good");
+    }
+    #[test]
+    fn scan_rejects_versions_boundary_escape_and_excludes_escaping_mods() {
+        let root = fixture_dir();
+        let outside = fixture_dir();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("versions")).unwrap();
+        assert!(scan_instances_report(root.path())
+            .unwrap_err()
+            .contains("escapes"));
+        fs::remove_file(root.path().join("versions")).unwrap();
+        for id in ["Good", "UnsafeMods"] {
+            let folder = root.path().join("versions").join(id);
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(
+                folder.join(format!("{id}.json")),
+                json!({"id":id}).to_string(),
+            )
+            .unwrap();
+        }
+        let mods = root.path().join("versions/UnsafeMods/mods");
+        fs::create_dir_all(&mods).unwrap();
+        let external_jar = outside.path().join("external.jar");
+        fs::write(&external_jar, "fixture").unwrap();
+        std::os::unix::fs::symlink(&external_jar, mods.join("external.jar")).unwrap();
+        let internal_jar = root.path().join("shared/internal.jar");
+        fs::create_dir_all(internal_jar.parent().unwrap()).unwrap();
+        fs::write(&internal_jar, "fixture").unwrap();
+        let good_mods = root.path().join("versions/Good/mods");
+        fs::create_dir_all(&good_mods).unwrap();
+        std::os::unix::fs::symlink(&internal_jar, good_mods.join("internal.jar")).unwrap();
+        let report = scan_instances_report(root.path()).unwrap();
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances[0].id, "Good");
+        assert_eq!(report.instances[0].mod_count, 1);
+        assert_eq!(report.issues.len(), 1);
+        assert_eq!(report.issues[0].id, "UnsafeMods");
+        assert!(report.issues[0].message.contains("escapes"));
+        fs::remove_dir_all(root.path().join("versions")).unwrap();
+        fs::write(root.path().join("versions"), "not a directory").unwrap();
+        assert!(scan_instances_report(root.path()).is_err());
+    }
     #[test]
     fn repeated_gson_and_native_paths_keep_first_order_and_distinct_versions() {
         let gson = PathBuf::from("libraries/com/google/code/gson/gson/2.10.1/gson-2.10.1.jar");
@@ -972,21 +1119,21 @@ mod tests {
     }
     #[test]
     fn traversal_and_symlink_escape_rejected() {
-        let root = tempfile::tempdir().unwrap();
+        let root = fixture_dir();
         for relative in ["../outside", "/absolute", "x/../../outside", "x\\y"] {
             assert!(safe_join(root.path(), relative).is_err());
         }
         for id in ["../x", "..", "/tmp/a", "a\\b"] {
             assert!(identifier(id).is_err());
         }
-        let outside = tempfile::tempdir().unwrap();
+        let outside = fixture_dir();
         std::os::unix::fs::symlink(outside.path(), root.path().join("escape")).unwrap();
         assert!(safe_join(root.path(), "escape/file").is_err());
         assert!(safe_join(root.path(), "new/nested/file").is_ok());
     }
     #[test]
     fn inheritance_cycle_is_reported() {
-        let root = tempfile::tempdir().unwrap();
+        let root = fixture_dir();
         for (id, parent) in [("a", "b"), ("b", "a")] {
             let folder = root.path().join("versions").join(id);
             fs::create_dir_all(&folder).unwrap();
@@ -1002,7 +1149,7 @@ mod tests {
     }
     #[test]
     fn inherited_client_jar_is_selected() {
-        let root = tempfile::tempdir().unwrap();
+        let root = fixture_dir();
         for (id, data) in [
             ("base", json!({"id":"base","mainClass":"Main"})),
             ("child", json!({"id":"child","inheritsFrom":"base"})),
@@ -1020,7 +1167,7 @@ mod tests {
     #[test]
     fn modern_nested_natives_are_flattened() {
         use std::io::Write;
-        let root = tempfile::tempdir().unwrap();
+        let root = fixture_dir();
         let archive = root.path().join("native.jar");
         let mut zip = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
         zip.start_file(
@@ -1060,7 +1207,7 @@ mod tests {
     #[test]
     fn authenticated_fixture_has_real_process_arguments_but_safe_output() {
         use std::os::unix::fs::PermissionsExt;
-        let fixture = tempfile::tempdir().unwrap();
+        let fixture = fixture_dir();
         let root = fixture.path().join("minecraft");
         let version = root.join("versions/fixture");
         fs::create_dir_all(&version).unwrap();

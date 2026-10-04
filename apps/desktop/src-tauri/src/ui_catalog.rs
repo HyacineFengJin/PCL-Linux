@@ -364,8 +364,11 @@ pub struct LogRow {
     current: bool,
 }
 #[tauri::command]
-pub async fn launcher_logs(state: State<'_, Arc<Shared>>) -> Result<Vec<LogRow>, String> {
-    let root = PathBuf::from(state.settings.lock().unwrap().root.clone());
+pub async fn launcher_logs(
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<Vec<LogRow>, String> {
+    let root = PathBuf::from(state.config.resolve(root_id.as_deref())?.path);
     let current = state.log.lock().unwrap().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let folder = root.join(".pcl-linux/logs");
@@ -414,16 +417,15 @@ pub async fn launcher_logs(state: State<'_, Arc<Shared>>) -> Result<Vec<LogRow>,
 #[tauri::command]
 pub async fn launcher_read_log(
     name: String,
+    root_id: Option<String>,
     state: State<'_, Arc<Shared>>,
 ) -> Result<String, String> {
     if name.contains('/') || name.contains('\\') || !name.ends_with(".log") {
         return Err("无效日志名".into());
     }
+    let root = PathBuf::from(state.config.resolve(root_id.as_deref())?.path);
     let s = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let root = PathBuf::from(s.settings.lock().unwrap().root.clone())
-            .canonicalize()
-            .map_err(|e| e.to_string())?;
         let folder = root
             .join(".pcl-linux/logs")
             .canonicalize()
@@ -492,9 +494,10 @@ fn decode_servers(data: &[u8]) -> Result<Vec<Server>, String> {
 #[tauri::command]
 pub async fn instance_servers(
     id: String,
+    root_id: Option<String>,
     state: State<'_, Arc<Shared>>,
 ) -> Result<Vec<Server>, String> {
-    let root = PathBuf::from(state.settings.lock().unwrap().root.clone());
+    let root = PathBuf::from(state.config.resolve(root_id.as_deref())?.path);
     tauri::async_runtime::spawn_blocking(move || {
         let base = ui_data::resource_dir(&root, &id, "server")?;
         let path = base.join("servers.dat");

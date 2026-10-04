@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
   Box,
   Pickaxe,
@@ -23,7 +24,13 @@ import commandIcon from "./assets/game-icons/command.png";
 
 export type DownloadStatus = {
   stage:
-    "idle" | "preparing" | "downloading" | "complete" | "error" | "cancelled";
+    | "idle"
+    | "preparing"
+    | "downloading"
+    | "processing"
+    | "complete"
+    | "error"
+    | "cancelled";
   phase?: string;
   message: string;
   version: string | null;
@@ -32,6 +39,12 @@ export type DownloadStatus = {
   bytes_done: number;
   bytes_total: number;
   network_bytes?: number;
+  task_id?: string | null;
+  root_id?: string | null;
+  root_path?: string | null;
+  progress?: number;
+  error?: string | null;
+  can_cancel?: boolean;
   result?: {
     id: string;
     java_major: number;
@@ -50,13 +63,15 @@ export const idleDownload: DownloadStatus = {
   bytes_total: 0,
 };
 const active = (status: DownloadStatus) =>
-  ["preparing", "downloading"].includes(status.stage);
+  ["preparing", "downloading", "processing"].includes(status.stage);
 const kindName = (kind: string) =>
   kind === "release" ? "正式版" : kind === "snapshot" ? "快照版" : "旧版";
 
 export function DownloadPanel({
   api,
   native,
+  rootId,
+  rootAvailable = true,
   installed,
   gameBusy,
   onInstalled,
@@ -68,6 +83,8 @@ export function DownloadPanel({
 }: {
   api: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
   native: boolean;
+  rootId: string | null;
+  rootAvailable?: boolean;
   section?: string;
   installed: { id: string }[];
   gameBusy: boolean;
@@ -101,7 +118,8 @@ export function DownloadPanel({
   };
   useEffect(() => {
     setChoice(null);
-  }, [section]);
+    setError("");
+  }, [section, rootId]);
   async function loadCatalog(refresh = false) {
     setLoading(true);
     setError("");
@@ -132,9 +150,13 @@ export function DownloadPanel({
         if (
           next.stage === "complete" &&
           next.version &&
-          completed.current !== next.version
+          completed.current !==
+            (next.task_id ||
+              `${next.root_id || next.root_path || ""}:${next.version}`)
         ) {
-          completed.current = next.version;
+          completed.current =
+            next.task_id ||
+            `${next.root_id || next.root_path || ""}:${next.version}`;
           await callbacks.current.onInstalled();
         }
       } catch (e) {
@@ -145,11 +167,21 @@ export function DownloadPanel({
     }
     void poll();
     const timer = window.setInterval(poll, 1000);
+    let unlisten: (() => void) | undefined;
+    if (native) {
+      void listen("task_changed", () => void poll())
+        .then((stop) => {
+          if (disposed) stop();
+          else unlisten = stop;
+        })
+        .catch(() => {});
+    }
     return () => {
       disposed = true;
       clearInterval(timer);
+      unlisten?.();
     };
-  }, []);
+  }, [api, native]);
   const busy = active(status) || working;
   const ids = new Set(installed.map((item) => item.id));
   const aprilVersions = new Set([
@@ -212,7 +244,7 @@ export function DownloadPanel({
       <button
         key={entry.id}
         className={`resource-row ce-version-row ${choice?.id === entry.id ? "chosen" : ""}`}
-        disabled={busy || gameBusy || ids.has(entry.id)}
+        disabled={busy || gameBusy || !rootAvailable || ids.has(entry.id)}
         onClick={() => setChoice(entry)}
       >
         <span
@@ -247,13 +279,15 @@ export function DownloadPanel({
     );
   }
   async function start() {
-    if (!choice || gameBusy || busy || !native) return;
+    if (!choice || gameBusy || busy || !native || !rootAvailable || !rootId)
+      return;
+    const targetRootId = rootId;
     starting.current = true;
     setWorking(true);
     setError("");
     callbacks.current.onBusyChange(true);
     try {
-      await api("download_start", { id: choice.id });
+      await api("download_start", { id: choice.id, rootId: targetRootId });
       completed.current = "";
       const next = await api<DownloadStatus>("download_status");
       setStatus(next);
@@ -291,11 +325,12 @@ export function DownloadPanel({
       )}
       {choice && section === "minecraft" ? (
         <InstallSelection
-          key={choice.id}
+          key={`${rootId}:${choice.id}`}
           api={api}
+          rootId={rootId}
           version={choice.id}
           native={native}
-          disabled={busy || gameBusy || ids.has(choice.id)}
+          disabled={busy || gameBusy || !rootAvailable || ids.has(choice.id)}
           onBack={() => setChoice(null)}
           onStart={start}
         />

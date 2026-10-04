@@ -27,6 +27,7 @@ function ComponentIcon({ name }: { name: string }) {
 }
 export function InstallSelection({
   api,
+  rootId,
   version,
   native,
   disabled,
@@ -34,6 +35,7 @@ export function InstallSelection({
   onStart,
 }: {
   api: Api;
+  rootId: string | null;
   version: string;
   native: boolean;
   disabled: boolean;
@@ -48,6 +50,11 @@ export function InstallSelection({
   const [loading, setLoading] = useState<string[]>([]);
   useEffect(() => {
     let disposed = false;
+    setName(version);
+    setOpen([]);
+    setChoices({});
+    setCatalogs({});
+    setErrors({});
     setLoading(providers);
     for (const provider of providers) {
       const request = loaderCandidates(api, provider, version);
@@ -66,7 +73,7 @@ export function InstallSelection({
     return () => {
       disposed = true;
     };
-  }, [api, version]);
+  }, [api, version, rootId]);
   function conflict(provider: string) {
     const selected = Object.keys(choices);
     if (provider === "OptiFine")

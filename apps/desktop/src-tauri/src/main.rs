@@ -1,11 +1,14 @@
 mod accounts;
+mod config;
 mod downloads;
+mod platform;
 mod resource_details;
+mod tasks;
 mod ui_catalog;
 mod ui_data;
-use serde::{Deserialize, Serialize};
+use config::{ConfigStore, GameRoot, RootSummary, Settings};
+use serde::Serialize;
 use std::{
-    collections::BTreeMap,
     fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -16,17 +19,7 @@ use std::{
     },
     time::Duration,
 };
-use tauri::{Manager, State};
-
-#[derive(Clone, Serialize, Deserialize)]
-struct Settings {
-    root: String,
-    player: String,
-    memory_gib: u32,
-    selected: Option<String>,
-    #[serde(default)]
-    overrides: BTreeMap<String, u32>,
-}
+use tauri::{Emitter, Manager, State};
 #[derive(Clone, Serialize, Default)]
 struct RunStatus {
     stage: String,
@@ -34,12 +27,17 @@ struct RunStatus {
     version: Option<String>,
     pid: Option<u32>,
     exit_code: Option<i32>,
+    root_id: Option<String>,
+    root_path: Option<String>,
 }
 struct Shared {
     project: PathBuf,
     accounts: Arc<accounts::Accounts>,
     downloads: Arc<downloads::Downloads>,
-    settings: Mutex<Settings>,
+    tasks: Arc<tasks::Tasks>,
+    config: ConfigStore,
+    desktop: Arc<platform::Desktop>,
+    operations: Mutex<()>,
     status: Mutex<RunStatus>,
     stop: AtomicBool,
     closing: AtomicBool,
@@ -49,6 +47,10 @@ struct Shared {
 struct Bootstrap {
     settings: Settings,
     instances: Vec<pcl_core::Instance>,
+    roots: Vec<RootSummary>,
+    scan_issues: Vec<pcl_core::ScanIssue>,
+    scan_error: Option<String>,
+    config_warning: Option<String>,
     status: RunStatus,
     auth: accounts::AuthState,
 }
@@ -66,73 +68,140 @@ fn project() -> PathBuf {
         .canonicalize()
         .expect("项目路径不存在")
 }
-fn settings_file(p: &Path) -> PathBuf {
-    p.join(".pcl-rust/settings.json")
-}
-fn persist(p: &Path, s: &Settings) -> Result<(), String> {
-    let f = settings_file(p);
-    fs::create_dir_all(f.parent().unwrap()).map_err(|e| e.to_string())?;
-    let tmp = f.with_extension("tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(s).unwrap()).map_err(|e| e.to_string())?;
-    fs::rename(tmp, f).map_err(|e| e.to_string())
-}
-fn validate(s: &Settings) -> Result<(), String> {
-    if !Path::new(&s.root).is_absolute() || !Path::new(&s.root).is_dir() {
-        return Err("请选择已存在的绝对游戏目录；新安装可使用空文件夹".into());
+fn bootstrap_view(s: &Shared) -> Bootstrap {
+    let (settings, roots) = s.config.view();
+    let (instances, scan_issues, scan_error) =
+        match pcl_core::scan_instances_report(Path::new(&settings.root)) {
+            Ok(report) => (report.instances, report.issues, None),
+            Err(error) => (Vec::new(), Vec::new(), Some(error)),
+        };
+    Bootstrap {
+        settings,
+        roots,
+        instances,
+        scan_issues,
+        scan_error,
+        config_warning: s.config.warning(),
+        status: s.status.lock().unwrap().clone(),
+        auth: s.accounts.snapshot(),
     }
-    if !(3..=16).contains(&s.player.len())
-        || !s
-            .player
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
-    {
-        return Err("玩家名需要 3–16 位英文字母、数字或下划线".into());
-    }
-    if !(2..=64).contains(&s.memory_gib) || s.overrides.values().any(|v| !(2..=64).contains(v)) {
-        return Err("内存应为 2–64 GiB".into());
-    }
-    Ok(())
 }
 #[tauri::command]
 async fn bootstrap(state: State<'_, Arc<Shared>>) -> Result<Bootstrap, String> {
     let s = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let settings = s.settings.lock().unwrap().clone();
-        let (instances, scan_error) = match pcl_core::scan_instances(Path::new(&settings.root)) {
-            Ok(v) => (v, None),
-            Err(e) => (Vec::new(), Some(e)),
-        };
-        let mut status = s.status.lock().unwrap();
-        if let Some(e) = scan_error {
-            status.stage = "error".into();
-            status.message = format!("游戏目录读取失败，请在设置中修改目录：{e}");
-        } else if status.message.starts_with("游戏目录读取失败") {
-            status.stage = "idle".into();
-            status.message = "准备就绪".into();
-        }
-        Ok(Bootstrap {
-            settings,
-            instances,
-            status: status.clone(),
-            auth: s.accounts.snapshot(),
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || Ok(bootstrap_view(&s)))
+        .await
+        .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 fn save_settings(settings: Settings, state: State<'_, Arc<Shared>>) -> Result<(), String> {
-    validate(&settings)?;
-    let run = state.status.lock().unwrap();
-    let mut current = state.settings.lock().unwrap();
-    if settings.root != current.root
-        && (matches!(run.stage.as_str(), "preparing" | "running") || state.downloads.active())
+    let _operation = state.operations.lock().unwrap();
+    state.config.save(settings)
+}
+
+#[tauri::command]
+async fn roots_list(state: State<'_, Arc<Shared>>) -> Result<Vec<RootSummary>, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || s.config.roots())
+        .await
+        .map_err(|_| "读取游戏目录失败".into())
+}
+
+#[tauri::command]
+async fn root_pick(
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<Shared>>,
+) -> Result<platform::DirectoryChoice, String> {
+    state
+        .desktop
+        .pick_root(window, PathBuf::from(state.config.snapshot().root))
+        .await
+}
+
+#[derive(Serialize)]
+struct RootRegistration {
+    root: GameRoot,
+    bootstrap: Bootstrap,
+}
+
+#[tauri::command]
+async fn root_register(
+    path: String,
+    name: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<RootRegistration, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = {
+            let _operation = s.operations.lock().unwrap();
+            s.config.register(path, name)?
+        };
+        Ok(RootRegistration {
+            root,
+            bootstrap: bootstrap_view(&s),
+        })
+    })
+    .await
+    .map_err(|_| "登记游戏目录失败")?
+}
+
+#[tauri::command]
+async fn root_select(id: String, state: State<'_, Arc<Shared>>) -> Result<Bootstrap, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        {
+            let _operation = s.operations.lock().unwrap();
+            s.config.select(&id)?;
+        }
+        Ok(bootstrap_view(&s))
+    })
+    .await
+    .map_err(|_| "切换游戏目录失败")?
+}
+
+#[tauri::command]
+async fn root_update(
+    id: String,
+    name: Option<String>,
+    position: Option<usize>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<Bootstrap, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        {
+            let _operation = s.operations.lock().unwrap();
+            s.config.update(&id, name, position)?;
+        }
+        Ok(bootstrap_view(&s))
+    })
+    .await
+    .map_err(|_| "更新游戏目录失败")?
+}
+
+fn require_root_unused(s: &Shared, id: &str) -> Result<(), String> {
+    let run = s.status.lock().unwrap();
+    if s.tasks.uses_root(id)
+        || (run.root_id.as_deref() == Some(id)
+            && matches!(run.stage.as_str(), "preparing" | "running"))
     {
-        return Err("请在游戏或安装任务结束后更换游戏目录".into());
+        return Err("该目录正在被游戏或安装任务使用，请等待结束后移除".into());
     }
-    persist(&state.project, &settings)?;
-    *current = settings;
     Ok(())
+}
+
+#[tauri::command]
+async fn root_remove(id: String, state: State<'_, Arc<Shared>>) -> Result<Bootstrap, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        {
+            let _operation = s.operations.lock().unwrap();
+            require_root_unused(&s, &id)?;
+            s.config.remove(&id)?;
+        }
+        Ok(bootstrap_view(&s))
+    })
+    .await
+    .map_err(|_| "移除游戏目录失败")?
 }
 #[tauri::command]
 fn process_status(state: State<'_, Arc<Shared>>) -> RunStatus {
@@ -153,29 +222,48 @@ fn download_status(state: State<'_, Arc<Shared>>) -> downloads::DownloadStatus {
     state.downloads.snapshot()
 }
 #[tauri::command]
-fn download_cancel(state: State<'_, Arc<Shared>>) {
-    state.downloads.cancel();
+fn download_cancel(task_id: Option<String>, state: State<'_, Arc<Shared>>) -> Result<(), String> {
+    if let Some(id) = task_id {
+        state.tasks.cancel(&id)?;
+    } else {
+        state.downloads.cancel();
+    }
+    Ok(())
 }
 #[tauri::command]
-fn download_start(id: String, state: State<'_, Arc<Shared>>) -> Result<(), String> {
+fn download_start(
+    id: String,
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<String, String> {
+    let _operation = state.operations.lock().unwrap();
     let run = state.status.lock().unwrap();
     require_account_edit(&run)?;
-    let cfg = state.settings.lock().unwrap().clone();
+    state.config.ensure_writable()?;
+    let root = state.config.resolve(root_id.as_deref())?;
+    pcl_core::identifier(&id)?;
     let shared = state.inner().clone();
-    let root = PathBuf::from(&cfg.root);
-    if !root.is_absolute() {
-        return Err("游戏目录需要使用绝对路径，请先在设置中修改".into());
-    }
-    state.downloads.start(root, id, move |result| {
-        let mut settings = shared.settings.lock().unwrap();
-        if settings.root == cfg.root {
-            let mut next = settings.clone();
-            next.selected = Some(result.id.clone());
-            persist(&shared.project, &next)?;
-            *settings = next;
-        }
-        Ok(())
-    })
+    let target = root.id.clone();
+    state
+        .downloads
+        .start(PathBuf::from(root.path), root.id, id, move |result| {
+            shared.config.select_installed(&target, &result.id)
+        })
+}
+
+#[tauri::command]
+fn task_list(state: State<'_, Arc<Shared>>) -> Vec<tasks::TaskSnapshot> {
+    state.tasks.list()
+}
+
+#[tauri::command]
+fn task_snapshot(id: String, state: State<'_, Arc<Shared>>) -> Option<tasks::TaskSnapshot> {
+    state.tasks.snapshot(&id)
+}
+
+#[tauri::command]
+fn task_cancel(id: String, state: State<'_, Arc<Shared>>) -> Result<tasks::TaskSnapshot, String> {
+    state.tasks.cancel(&id)
 }
 fn require_account_edit(st: &RunStatus) -> Result<(), String> {
     if st.stage == "preparing" || st.stage == "running" {
@@ -246,16 +334,28 @@ fn auth_open_help(kind: String) -> Result<(), String> {
     })
 }
 #[tauri::command]
-async fn inspect_instance(id: String, state: State<'_, Arc<Shared>>) -> Result<Inspection, String> {
+async fn inspect_instance(
+    id: String,
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<Inspection, String> {
     let s = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let cfg = s.settings.lock().unwrap().clone();
+        // Building the current launch plan extracts natives. Coordinate this
+        // short write with game startup, installs and root removal.
+        let _operation = s.operations.lock().unwrap();
+        s.config.ensure_writable()?;
+        require_account_edit(&s.status.lock().unwrap())?;
+        if s.tasks.active().is_some() {
+            return Err("请在安装任务结束后检查启动环境".into());
+        }
+        let (cfg, root) = instance_context(&s.config, root_id.as_deref(), &id)?;
         let plan = pcl_core::build_launch_plan(
-            Path::new(&cfg.root),
+            Path::new(&root.path),
             &s.project,
             &id,
             &cfg.player,
-            *cfg.overrides.get(&id).unwrap_or(&cfg.memory_gib),
+            *root.overrides.get(&id).unwrap_or(&cfg.memory_gib),
         )?;
         Ok(Inspection {
             java: plan.java.display().to_string(),
@@ -266,6 +366,16 @@ async fn inspect_instance(id: String, state: State<'_, Arc<Shared>>) -> Result<I
     })
     .await
     .map_err(|e| e.to_string())?
+}
+fn instance_context(
+    config: &ConfigStore,
+    root_id: Option<&str>,
+    id: &str,
+) -> Result<(Settings, GameRoot), String> {
+    pcl_core::identifier(id)?;
+    let settings = config.snapshot();
+    let root = config.resolve(Some(root_id.unwrap_or(&settings.root_id)))?;
+    Ok((settings, root))
 }
 fn update(s: &Shared, stage: &str, message: String, pid: Option<u32>, exit_code: Option<i32>) {
     let mut st = s.status.lock().unwrap();
@@ -297,10 +407,17 @@ fn capture_output(
     })
 }
 #[tauri::command]
-fn launch_game(id: String, state: State<'_, Arc<Shared>>) -> Result<(), String> {
+fn launch_game(
+    id: String,
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<(), String> {
+    let _operation = state.operations.lock().unwrap();
+    state.config.ensure_writable()?;
+    let (cfg, root) = instance_context(&state.config, root_id.as_deref(), &id)?;
     {
         let mut st = state.status.lock().unwrap();
-        if state.downloads.active() {
+        if state.tasks.active().is_some() {
             return Err("请在安装任务结束后启动游戏".into());
         }
         if st.stage == "preparing" || st.stage == "running" {
@@ -317,18 +434,18 @@ fn launch_game(id: String, state: State<'_, Arc<Shared>>) -> Result<(), String> 
             stage: "preparing".into(),
             message: "正在解析版本和检查 Linux 依赖…".into(),
             version: Some(id.clone()),
+            root_id: Some(root.id.clone()),
+            root_path: Some(root.path.clone()),
             ..Default::default()
         };
     }
     let s = state.inner().clone();
     std::thread::spawn(move || {
         let task = || -> Result<(), String> {
-            let cfg = s.settings.lock().unwrap().clone();
-            validate(&cfg)?;
-            let memory = *cfg.overrides.get(&id).unwrap_or(&cfg.memory_gib);
+            let memory = *root.overrides.get(&id).unwrap_or(&cfg.memory_gib);
             let plan = match s.accounts.identity()? {
                 Some(identity) => pcl_core::build_launch_plan_authenticated(
-                    Path::new(&cfg.root),
+                    Path::new(&root.path),
                     &s.project,
                     &id,
                     &pcl_core::OnlineIdentity {
@@ -341,7 +458,7 @@ fn launch_game(id: String, state: State<'_, Arc<Shared>>) -> Result<(), String> 
                     memory,
                 )?,
                 None => pcl_core::build_launch_plan(
-                    Path::new(&cfg.root),
+                    Path::new(&root.path),
                     &s.project,
                     &id,
                     &cfg.player,
@@ -437,17 +554,15 @@ fn read_log(state: State<'_, Arc<Shared>>) -> Result<String, String> {
 fn open_folder(
     kind: String,
     id: Option<String>,
+    root_id: Option<String>,
     state: State<'_, Arc<Shared>>,
 ) -> Result<(), String> {
-    let cfg = state.settings.lock().unwrap().clone();
-    let root = PathBuf::from(cfg.root);
+    let root = PathBuf::from(state.config.resolve(root_id.as_deref())?.path);
     let path = match kind.as_str() {
         "game" => root.clone(),
         "instance" => {
             let name = id.ok_or("未选择版本")?;
-            if name.contains('/') || name.contains('\\') || name == ".." || name == "." {
-                return Err("无效版本名".into());
-            }
+            pcl_core::identifier(&name)?;
             root.join("versions").join(name)
         }
         "logs" => root.join(".pcl-linux/logs"),
@@ -467,46 +582,16 @@ fn open_folder(
 }
 fn main() {
     let project = project();
-    let f = settings_file(&project);
-    let defaults = Settings {
-        root: project.join("Minecraft/.minecraft").display().to_string(),
-        player: "Player".into(),
-        memory_gib: 6,
-        selected: None,
-        overrides: BTreeMap::new(),
-    };
-    let mut warning = None;
-    let cfg = if f.exists() {
-        match fs::read(&f)
-            .map_err(|e| e.to_string())
-            .and_then(|b| serde_json::from_slice::<Settings>(&b).map_err(|e| e.to_string()))
-        {
-            Ok(c) => c,
-            Err(e) => {
-                let backup = f.with_extension(format!(
-                    "invalid-{}.json",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs()
-                ));
-                match fs::copy(&f, &backup) {
-                    Ok(_) => {
-                        warning = Some(format!("设置读取失败，已保留原文件副本并恢复默认值：{e}"))
-                    }
-                    Err(b) => panic!("无法读取或备份设置，原文件未修改：{e}；{b}"),
-                };
-                defaults
-            }
-        }
-    } else {
-        defaults
-    };
+    let (config, warning) = ConfigStore::load(&project);
+    let tasks = Arc::new(tasks::Tasks::new());
     let state = Arc::new(Shared {
         accounts: Arc::new(accounts::Accounts::new(&project)),
-        downloads: Arc::new(downloads::Downloads::new()),
+        downloads: Arc::new(downloads::Downloads::new(tasks.clone())),
+        tasks,
+        config,
+        desktop: Arc::new(platform::Desktop::default()),
+        operations: Mutex::new(()),
         project,
-        settings: Mutex::new(cfg),
         status: Mutex::new(RunStatus {
             stage: if warning.is_some() { "error" } else { "idle" }.into(),
             message: warning.unwrap_or_else(|| "准备就绪".into()),
@@ -517,7 +602,17 @@ fn main() {
         log: Mutex::new(None),
     });
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(state)
+        .setup(|app| {
+            let handle = app.handle().clone();
+            app.state::<Arc<Shared>>()
+                .tasks
+                .set_listener(move |snapshot| {
+                    let _ = handle.emit("task_changed", snapshot);
+                });
+            Ok(())
+        })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<Arc<Shared>>();
@@ -539,6 +634,15 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            roots_list,
+            root_pick,
+            root_register,
+            root_select,
+            root_update,
+            root_remove,
+            task_list,
+            task_snapshot,
+            task_cancel,
             ui_catalog::ui_open_link,
             ui_catalog::loader_catalog,
             ui_catalog::loader_candidates,
@@ -576,4 +680,123 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("桌面应用运行失败");
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use tasks::{TaskKind, TaskOutcome, TaskTarget};
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../work/desktop-integration-tests")
+                .join(format!(
+                    "{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos()
+                ));
+            fs::create_dir_all(path.join("Minecraft/.minecraft")).unwrap();
+            Self(path)
+        }
+        fn shared(&self) -> Shared {
+            let (config, warning) = ConfigStore::load(&self.0);
+            assert!(warning.is_none());
+            let tasks = Arc::new(tasks::Tasks::new());
+            Shared {
+                project: self.0.clone(),
+                accounts: Arc::new(accounts::Accounts::new(&self.0)),
+                downloads: Arc::new(downloads::Downloads::new(tasks.clone())),
+                tasks,
+                config,
+                desktop: Arc::new(platform::Desktop::default()),
+                operations: Mutex::new(()),
+                status: Mutex::new(RunStatus::default()),
+                stop: AtomicBool::new(false),
+                closing: AtomicBool::new(false),
+                log: Mutex::new(None),
+            }
+        }
+        fn second(&self, config: &ConfigStore) -> GameRoot {
+            let path = self.0.join("second");
+            fs::create_dir_all(&path).unwrap();
+            config
+                .register(path.to_str().unwrap().into(), Some("Second".into()))
+                .unwrap()
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn captured_instance_context_survives_browsing_another_root() {
+        let fixture = Fixture::new();
+        let state = fixture.shared();
+        let first = state.config.snapshot().root_id;
+        let second = fixture.second(&state.config);
+        let mut settings = state.config.snapshot();
+        settings.memory_gib = 14;
+        settings.overrides.insert("Same".into(), 12);
+        state.config.save(settings).unwrap();
+        let (captured_settings, captured_root) =
+            instance_context(&state.config, None, "Same").unwrap();
+        let mut settings = state.config.select(&second.id).unwrap();
+        settings.overrides.insert("Same".into(), 4);
+        state.config.save(settings).unwrap();
+        assert_eq!(captured_root.id, first);
+        assert_eq!(captured_settings.memory_gib, 14);
+        assert_eq!(captured_root.overrides["Same"], 12);
+        let (_, bound) = instance_context(&state.config, Some(&first), "Same").unwrap();
+        assert_eq!(bound, captured_root);
+        assert_eq!(
+            instance_context(&state.config, None, "Same")
+                .unwrap()
+                .1
+                .overrides["Same"],
+            4
+        );
+    }
+
+    #[test]
+    fn root_removal_guard_tracks_bound_task_and_process_after_switching() {
+        let fixture = Fixture::new();
+        let state = fixture.shared();
+        let first = state.config.resolve(None).unwrap();
+        let second = fixture.second(&state.config);
+        let task = state
+            .tasks
+            .admit(
+                TaskTarget {
+                    root_id: first.id.clone(),
+                    root_path: first.path.clone(),
+                    instance_id: Some("Same".into()),
+                },
+                TaskKind::Install,
+            )
+            .unwrap();
+        state.config.select(&second.id).unwrap();
+        assert!(require_root_unused(&state, &first.id).is_err());
+        assert!(require_root_unused(&state, &second.id).is_ok());
+        state.tasks.cancel(task.id()).unwrap();
+        assert!(require_root_unused(&state, &first.id).is_err());
+        task.finish(TaskOutcome::Failed("cancelled".into()));
+        assert!(require_root_unused(&state, &first.id).is_ok());
+        *state.status.lock().unwrap() = RunStatus {
+            stage: "running".into(),
+            root_id: Some(first.id.clone()),
+            root_path: Some(first.path),
+            ..Default::default()
+        };
+        assert!(require_root_unused(&state, &first.id).is_err());
+        assert!(require_root_unused(&state, &second.id).is_ok());
+        update(&state, "exited", "finished".into(), None, Some(0));
+        assert!(require_root_unused(&state, &first.id).is_ok());
+    }
 }

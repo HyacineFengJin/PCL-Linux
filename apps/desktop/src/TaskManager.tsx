@@ -13,25 +13,29 @@ export function useDownloadSpeed(status: DownloadStatus) {
   const sample = useRef<{
     bytes: number;
     time: number;
-    version: string | null;
+    task: string | null;
   } | null>(null);
   const [speed, setSpeed] = useState<number | null>(null);
   useEffect(() => {
     const now = performance.now();
     const old = sample.current;
     const bytes = status.network_bytes;
-    const running = ["downloading", "preparing"].includes(status.stage);
+    const running = ["downloading", "preparing", "processing"].includes(
+      status.stage,
+    );
+    const task =
+      status.task_id || `${status.root_id || ""}:${status.version || ""}`;
     if (
       bytes === undefined ||
       !running ||
       !old ||
-      old.version !== status.version ||
+      old.task !== task ||
       bytes < old.bytes
     )
       setSpeed(null);
     else if (bytes !== undefined && now - old.time >= 250)
       setSpeed(((bytes! - old.bytes) * 1000) / (now - old.time));
-    sample.current = { bytes: bytes || 0, time: now, version: status.version };
+    sample.current = { bytes: bytes || 0, time: now, task };
   }, [status]);
   return speed;
 }
@@ -85,7 +89,9 @@ export function TaskManager({
   onNotify: (s: string) => void;
 }) {
   const [cancelling, setCancelling] = useState(false);
-  const active = ["downloading", "preparing"].includes(status.stage);
+  const active = ["downloading", "preparing", "processing"].includes(
+    status.stage,
+  );
   const phase =
     status.phase ||
     (status.stage === "downloading" ? "downloading" : "metadata");
@@ -125,12 +131,18 @@ export function TaskManager({
   return (
     <section className={`ce-card ce-task-card ${status.stage}`}>
       <div className="ce-task-heading">
-        <strong>{status.version} 安装</strong>
+        <strong
+          title={status.root_path ? `安装目录：${status.root_path}` : undefined}
+        >
+          {status.version} 安装
+        </strong>
         <button
           className="icon-button"
           aria-label="取消安装任务"
           title="取消安装任务"
-          disabled={!native || !active || cancelling}
+          disabled={
+            !native || !active || status.can_cancel === false || cancelling
+          }
           onClick={cancel}
         >
           <X size={17} />

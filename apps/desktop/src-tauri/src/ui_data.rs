@@ -328,9 +328,10 @@ pub fn resource_dir(root: &Path, id: &str, kind: &str) -> Result<PathBuf, String
 pub async fn instance_resources(
     id: String,
     kind: String,
+    root_id: Option<String>,
     state: State<'_, Arc<Shared>>,
 ) -> Result<Vec<ResourceInfo>, String> {
-    let root = PathBuf::from(state.settings.lock().unwrap().root.clone());
+    let root = PathBuf::from(state.config.resolve(root_id.as_deref())?.path);
     tauri::async_runtime::spawn_blocking(move || {
         let folder = resource_dir(&root, &id, &kind)?;
         if !folder.exists() {
