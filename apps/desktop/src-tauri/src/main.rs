@@ -1,6 +1,7 @@
 mod accounts;
 mod config;
 mod downloads;
+mod instance_meta;
 mod platform;
 mod resource_details;
 mod resource_ops;
@@ -37,6 +38,7 @@ struct Shared {
     downloads: Arc<downloads::Downloads>,
     tasks: Arc<tasks::Tasks>,
     config: ConfigStore,
+    instance_metadata: instance_meta::MetadataStore,
     desktop: Arc<platform::Desktop>,
     operations: Mutex<()>,
     status: Mutex<RunStatus>,
@@ -47,13 +49,20 @@ struct Shared {
 #[derive(Serialize)]
 struct Bootstrap {
     settings: Settings,
-    instances: Vec<pcl_core::Instance>,
+    instances: Vec<InstanceView>,
     roots: Vec<RootSummary>,
     scan_issues: Vec<pcl_core::ScanIssue>,
     scan_error: Option<String>,
     config_warning: Option<String>,
     status: RunStatus,
     auth: accounts::AuthState,
+}
+#[derive(Serialize)]
+struct InstanceView {
+    #[serde(flatten)]
+    instance: pcl_core::Instance,
+    metadata: instance_meta::Metadata,
+    metadata_revision: String,
 }
 #[derive(Serialize)]
 struct Inspection {
@@ -71,21 +80,118 @@ fn project() -> PathBuf {
 }
 fn bootstrap_view(s: &Shared) -> Bootstrap {
     let (settings, roots) = s.config.view();
-    let (instances, scan_issues, scan_error) =
-        match pcl_core::scan_instances_report(Path::new(&settings.root)) {
-            Ok(report) => (report.instances, report.issues, None),
-            Err(error) => (Vec::new(), Vec::new(), Some(error)),
-        };
+    // Bind scanning and metadata to the same directory even if a registered
+    // alias is retargeted while this read is running.
+    let canonical = Path::new(&settings.root).canonicalize().ok();
+    let scan_path = canonical.as_deref().unwrap_or(Path::new(&settings.root));
+    let (instances, scan_issues, scan_error) = match pcl_core::scan_instances_report(scan_path) {
+        Ok(report) => (report.instances, report.issues, None),
+        Err(error) => (Vec::new(), Vec::new(), Some(error)),
+    };
+    let instances = instances
+        .into_iter()
+        .map(|instance| {
+            let view = s
+                .instance_metadata
+                .get(&settings.root_id, scan_path, &instance.id);
+            InstanceView {
+                metadata: view.metadata(),
+                metadata_revision: view.revision,
+                instance,
+            }
+        })
+        .collect();
+    let warnings: Vec<_> = [s.config.warning(), s.instance_metadata.warning()]
+        .into_iter()
+        .flatten()
+        .collect();
     Bootstrap {
         settings,
         roots,
         instances,
         scan_issues,
         scan_error,
-        config_warning: s.config.warning(),
+        config_warning: (!warnings.is_empty()).then(|| warnings.join("\n")),
         status: s.status.lock().unwrap().clone(),
         auth: s.accounts.snapshot(),
     }
+}
+
+fn update_instance_metadata(
+    s: &Shared,
+    root_id: Option<&str>,
+    id: &str,
+    revision: &str,
+    patch: instance_meta::MetadataPatch,
+) -> Result<instance_meta::MetaView, String> {
+    let _operation = s.operations.lock().unwrap();
+    s.config.ensure_writable()?;
+    if s.closing.load(Ordering::SeqCst) {
+        return Err("启动器正在关闭，请重新打开后再修改实例信息".into());
+    }
+    if s.tasks.active().is_some() {
+        return Err("请在文件操作结束后修改实例信息".into());
+    }
+    if matches!(
+        s.status.lock().unwrap().stage.as_str(),
+        "preparing" | "running"
+    ) {
+        return Err("请在游戏退出后修改实例信息".into());
+    }
+    pcl_core::identifier(id)?;
+    let root = s.config.resolve(root_id)?;
+    if !pcl_core::scan_instances_report(Path::new(&root.path))?
+        .instances
+        .iter()
+        .any(|instance| instance.id == id)
+    {
+        return Err("未找到可读取的所选实例，请重新读取列表".into());
+    }
+    s.instance_metadata
+        .patch(&root.id, Path::new(&root.path), id, revision, patch)
+}
+
+#[tauri::command]
+async fn instance_metadata_update(
+    root_id: Option<String>,
+    id: String,
+    revision: String,
+    patch: instance_meta::MetadataPatch,
+    state: State<'_, Arc<Shared>>,
+) -> Result<instance_meta::MetaView, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        update_instance_metadata(&s, root_id.as_deref(), &id, &revision, patch)
+    })
+    .await
+    .map_err(|_| "保存实例信息的任务未能完成")?
+}
+
+#[tauri::command]
+async fn instance_metadata_read(
+    root_id: Option<String>,
+    id: String,
+    state: State<'_, Arc<Shared>>,
+) -> Result<instance_meta::MetaView, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        pcl_core::identifier(&id)?;
+        let root = s.config.resolve(root_id.as_deref())?;
+        if !pcl_core::scan_instances_report(Path::new(&root.path))?
+            .instances
+            .iter()
+            .any(|instance| instance.id == id)
+        {
+            return Err("未找到可读取的所选实例".into());
+        }
+        if let Some(warning) = s.instance_metadata.warning() {
+            return Err(warning);
+        }
+        Ok(s.instance_metadata
+            .get(&root.id, Path::new(&root.path), &id))
+    })
+    .await
+    .map_err(|_| "读取实例信息的任务未能完成")?
 }
 #[tauri::command]
 async fn bootstrap(state: State<'_, Arc<Shared>>) -> Result<Bootstrap, String> {
@@ -855,6 +961,7 @@ fn main() {
         downloads: Arc::new(downloads::Downloads::new(tasks.clone())),
         tasks,
         config,
+        instance_metadata: instance_meta::MetadataStore::load(&project),
         desktop: Arc::new(platform::Desktop::default()),
         operations: Mutex::new(()),
         project,
@@ -900,6 +1007,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            instance_metadata_update,
+            instance_metadata_read,
             roots_list,
             root_pick,
             root_register,
@@ -985,6 +1094,7 @@ mod integration_tests {
                 downloads: Arc::new(downloads::Downloads::new(tasks.clone())),
                 tasks,
                 config,
+                instance_metadata: instance_meta::MetadataStore::load(&self.0),
                 desktop: Arc::new(platform::Desktop::default()),
                 operations: Mutex::new(()),
                 status: Mutex::new(RunStatus::default()),
@@ -1127,5 +1237,149 @@ mod integration_tests {
         state.config.remove(&registered.id).unwrap();
         assert!(admit_resource(&state, "Same", Some(&initial.id), Some(&initial.path)).is_err());
         assert!(state.tasks.active().is_none());
+    }
+
+    fn metadata_fixture_version(root: &GameRoot) {
+        let folder = Path::new(&root.path).join("versions/Same");
+        fs::create_dir_all(folder.join("mods")).unwrap();
+        fs::write(
+            folder.join("Same.json"),
+            r#"{"id":"Same","clientVersion":"1.21.1","libraries":[]}"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn instance_metadata_keeps_root_scope_and_bootstrap_physical_identity() {
+        let fixture = Fixture::new();
+        let state = fixture.shared();
+        let first = state.config.resolve(None).unwrap();
+        let second = fixture.second(&state.config);
+        metadata_fixture_version(&first);
+        metadata_fixture_version(&second);
+        let view = state
+            .instance_metadata
+            .get(&first.id, Path::new(&first.path), "Same");
+        state.config.select(&second.id).unwrap();
+        let config_before = fs::read(fixture.0.join(".pcl-rust/settings.json")).unwrap();
+        let saved = update_instance_metadata(
+            &state,
+            Some(&first.id),
+            "Same",
+            &view.revision,
+            instance_meta::MetadataPatch {
+                description: Some("Local description".into()),
+                favorite: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(saved.metadata().favorite);
+        assert_eq!(
+            fs::read(fixture.0.join(".pcl-rust/settings.json")).unwrap(),
+            config_before
+        );
+        let second_view = bootstrap_view(&state);
+        assert_eq!(second_view.instances.len(), 1);
+        assert!(!second_view.instances[0].metadata.favorite);
+        assert!(second_view.instances[0].metadata.description.is_empty());
+        state.config.select(&first.id).unwrap();
+        let first_view = bootstrap_view(&state);
+        assert_eq!(first_view.instances[0].instance.id, "Same");
+        assert_eq!(
+            first_view.instances[0].metadata.description,
+            "Local description"
+        );
+        let projection = serde_json::to_value(&first_view.instances[0]).unwrap();
+        assert_eq!(projection["id"], "Same");
+        assert_eq!(projection["metadata_revision"], saved.revision);
+        assert!(Path::new(&first.path)
+            .join("versions/Same/Same.json")
+            .is_file());
+    }
+
+    #[test]
+    fn instance_metadata_rejects_wrong_scope_busy_missing_and_removed_targets() {
+        let fixture = Fixture::new();
+        let state = fixture.shared();
+        let first = state.config.resolve(None).unwrap();
+        let second = fixture.second(&state.config);
+        metadata_fixture_version(&first);
+        metadata_fixture_version(&second);
+        let first_view = state
+            .instance_metadata
+            .get(&first.id, Path::new(&first.path), "Same");
+        let patch = || instance_meta::MetadataPatch {
+            favorite: Some(true),
+            ..Default::default()
+        };
+        assert!(update_instance_metadata(
+            &state,
+            Some(&second.id),
+            "Same",
+            &first_view.revision,
+            patch()
+        )
+        .is_err());
+        assert!(update_instance_metadata(
+            &state,
+            Some(&first.id),
+            "Missing",
+            &first_view.revision,
+            patch()
+        )
+        .is_err());
+        let task = state
+            .tasks
+            .admit(
+                TaskTarget {
+                    root_id: first.id.clone(),
+                    root_path: first.path.clone(),
+                    instance_id: Some("Same".into()),
+                },
+                TaskKind::ResourceOperation,
+            )
+            .unwrap();
+        assert!(update_instance_metadata(
+            &state,
+            Some(&first.id),
+            "Same",
+            &first_view.revision,
+            patch()
+        )
+        .is_err());
+        task.finish(TaskOutcome::Failed("stopped".into()));
+        for stage in ["preparing", "running"] {
+            state.status.lock().unwrap().stage = stage.into();
+            assert!(update_instance_metadata(
+                &state,
+                Some(&first.id),
+                "Same",
+                &first_view.revision,
+                patch()
+            )
+            .is_err());
+        }
+        state.status.lock().unwrap().stage = "idle".into();
+        let second_view = state
+            .instance_metadata
+            .get(&second.id, Path::new(&second.path), "Same");
+        state.config.remove(&second.id).unwrap();
+        assert!(update_instance_metadata(
+            &state,
+            Some(&second.id),
+            "Same",
+            &second_view.revision,
+            patch()
+        )
+        .is_err());
+        assert!(!fixture.0.join(".pcl-rust/instance-metadata.json").exists());
+        assert!(
+            !state
+                .instance_metadata
+                .get(&first.id, Path::new(&first.path), "Same")
+                .metadata()
+                .favorite
+        );
     }
 }

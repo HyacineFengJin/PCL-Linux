@@ -32,7 +32,14 @@ import lampTexture from "./assets/game-icons/redstone-lamp.png";
 import grassIcon from "./assets/game-icons/grass.png";
 import neoForgeIcon from "./assets/game-icons/neoforge.png";
 import forgeIcon from "./assets/game-icons/forge.png";
-import type { Api, Instance, Settings } from "./types";
+import steveIcon from "./assets/game-icons/steve.png";
+import type {
+  Api,
+  Instance,
+  InstanceMetadata,
+  MetaView,
+  Settings,
+} from "./types";
 
 export const instancePages = [
   { id: "overview", label: "概览", group: "游戏本体", icon: Blocks },
@@ -48,8 +55,43 @@ export const instancePages = [
   { id: "server", label: "服务器", icon: Server, unavailable: true },
 ];
 const notReady = "此功能尚未开放";
-export function InstanceIcon({ loader = "Vanilla" }: { loader?: string }) {
-  const icon =
+const defaultMetadata: InstanceMetadata = {
+  description: "",
+  favorite: false,
+  icon: "auto",
+  category: "auto",
+};
+const categoryGroups: Record<
+  Exclude<InstanceMetadata["category"], "auto">,
+  string
+> = {
+  vanilla: "Vanilla",
+  forge: "Forge",
+  neoforge: "NeoForge",
+  fabric: "Fabric",
+  quilt: "Quilt",
+};
+const builtInIcons = {
+  grass: grassIcon,
+  forge: forgeIcon,
+  neoforge: neoForgeIcon,
+  command: commandIcon,
+  steve: steveIcon,
+};
+type MetadataScope = {
+  api: Api;
+  id: string;
+  section: string;
+  root: string;
+};
+export function InstanceIcon({
+  loader = "Vanilla",
+  icon = "auto",
+}: {
+  loader?: string;
+  icon?: InstanceMetadata["icon"];
+}) {
+  const automaticIcon =
     loader === "Vanilla"
       ? grassIcon
       : loader.startsWith("NeoForge")
@@ -57,9 +99,10 @@ export function InstanceIcon({ loader = "Vanilla" }: { loader?: string }) {
         : loader.startsWith("Forge")
           ? forgeIcon
           : null;
+  const image = icon === "auto" ? automaticIcon : builtInIcons[icon];
   return (
     <span className="instance-icon" aria-hidden="true">
-      {icon ? <img src={icon} alt="" /> : <Box size={29} strokeWidth={1.4} />}
+      {image ? <img src={image} alt="" /> : <Box size={29} strokeWidth={1.4} />}
     </span>
   );
 }
@@ -84,7 +127,21 @@ export function InstanceSelection({
   onPick: (id: string) => void;
   disabled: boolean;
 }) {
-  const groups = [...new Set(instances.map((v) => v.loader.split(" ")[0]))];
+  const groupFor = (instance: Instance) => {
+    const category = instance.metadata?.category || "auto";
+    return category === "auto"
+      ? instance.loader.split(" ")[0]
+      : categoryGroups[category];
+  };
+  const search = query.toLowerCase();
+  const matches = (instance: Instance) =>
+    instance.id.toLowerCase().includes(search) ||
+    (instance.metadata?.description || "").toLowerCase().includes(search);
+  const visible = instances.filter(matches);
+  const groups = [
+    ...(visible.some((v) => v.metadata?.favorite) ? ["favorites"] : []),
+    ...new Set(visible.filter((v) => !v.metadata?.favorite).map(groupFor)),
+  ];
   const [collapsed, setCollapsed] = useState<string[]>([]);
   return (
     <>
@@ -99,10 +156,10 @@ export function InstanceSelection({
         />
       </label>
       {groups.map((group) => {
-        const entries = instances.filter(
-          (v) =>
-            v.loader.split(" ")[0] === group &&
-            v.id.toLowerCase().includes(query.toLowerCase()),
+        const entries = visible.filter((v) =>
+          group === "favorites"
+            ? v.metadata?.favorite
+            : !v.metadata?.favorite && groupFor(v) === group,
         );
         if (!entries.length) return null;
         const isOpen = !collapsed.includes(group);
@@ -118,7 +175,10 @@ export function InstanceSelection({
               aria-expanded={isOpen}
             >
               <strong>
-                {group === "Vanilla" ? "原版" : group} 实例 ({entries.length})
+                {group === "favorites"
+                  ? "收藏夹"
+                  : `${group === "Vanilla" ? "原版" : group} 实例`}{" "}
+                ({entries.length})
               </strong>
               <ChevronDown
                 size={17}
@@ -134,9 +194,19 @@ export function InstanceSelection({
                     disabled={disabled}
                     onClick={() => onPick(v.id)}
                   >
-                    <InstanceIcon loader={v.loader} />
+                    <InstanceIcon loader={v.loader} icon={v.metadata?.icon} />
                     <div className="ce-resource-text">
-                      <strong>{v.id}</strong>
+                      <strong className="ce-instance-title">
+                        <span>{v.id}</span>
+                        {v.metadata?.description && (
+                          <small
+                            className="ce-instance-description"
+                            title={v.metadata.description}
+                          >
+                            {v.metadata.description}
+                          </small>
+                        )}
+                      </strong>
                       <Tags instance={v} />
                     </div>
                   </button>
@@ -146,9 +216,9 @@ export function InstanceSelection({
           </section>
         );
       })}
-      {!instances.some((v) =>
-        v.id.toLowerCase().includes(query.toLowerCase()),
-      ) && <section className="ce-card ce-empty">没有找到游戏实例</section>}
+      {!visible.length && (
+        <section className="ce-card ce-empty">没有找到游戏实例</section>
+      )}
     </>
   );
 }
@@ -162,6 +232,7 @@ export function InstancePanel({
   onInspect,
   onNotify,
   onResourceDetails,
+  onMetadataChange,
   disabled,
   mutationDisabled,
 }: {
@@ -174,9 +245,186 @@ export function InstancePanel({
   onInspect: () => void;
   onNotify: (s: string) => void;
   onResourceDetails?: (resource: LocalResourceDetails) => void;
+  onMetadataChange?: (id: string, meta: MetaView) => void;
   disabled: boolean;
   mutationDisabled?: boolean;
 }) {
+  const rootScope = settings.root_id || settings.root;
+  const metadataScope = useRef<MetadataScope>({
+    api,
+    id: instance.id,
+    section,
+    root: rootScope,
+  });
+  if (
+    metadataScope.current.api !== api ||
+    metadataScope.current.id !== instance.id ||
+    metadataScope.current.section !== section ||
+    metadataScope.current.root !== rootScope
+  ) {
+    metadataScope.current = { api, id: instance.id, section, root: rootScope };
+  }
+  const currentMetadataScope = metadataScope.current;
+  const metadataLive = useRef(true);
+  const metadataWorkingRef = useRef<symbol | null>(null);
+  const [metadataActivity, setMetadataActivity] = useState<
+    "save" | "read" | null
+  >(null);
+  const metadataWorking = metadataActivity !== null;
+  const [savedMetadata, setSavedMetadata] = useState<{
+    api: Api;
+    id: string;
+    root: string;
+    sourceRevision?: string;
+    meta: MetaView;
+  } | null>(null);
+  const [metadataFailure, setMetadataFailure] = useState<{
+    scope: MetadataScope;
+    message: string;
+  } | null>(null);
+  const [descriptionDialog, setDescriptionDialog] = useState<{
+    scope: MetadataScope;
+    draft: string;
+    revision: string;
+  } | null>(null);
+  const descriptionButton = useRef<HTMLButtonElement>(null);
+  const restoreDescriptionFocus = useRef<MetadataScope | null>(null);
+  const hasSavedMetadata =
+    savedMetadata?.api === api &&
+    savedMetadata.id === instance.id &&
+    savedMetadata.root === rootScope &&
+    (savedMetadata.sourceRevision === instance.metadata_revision ||
+      savedMetadata.meta.revision === instance.metadata_revision);
+  const metadata = hasSavedMetadata
+    ? savedMetadata.meta
+    : instance.metadata || defaultMetadata;
+  const metadataRevision = hasSavedMetadata
+    ? savedMetadata.meta.revision
+    : instance.metadata_revision;
+  const metadataError =
+    metadataFailure?.scope === currentMetadataScope
+      ? metadataFailure.message
+      : "";
+  const descriptionOpen = descriptionDialog?.scope === currentMetadataScope;
+  const metadataReadOnly = !metadataRevision;
+  const metadataWritesDisabled =
+    disabled || !!mutationDisabled || metadataReadOnly || metadataWorking;
+  const metadataReadOnlyMessage =
+    "当前实例个性化信息仅可查看，请重新加载实例列表后再试。";
+  useEffect(() => {
+    metadataLive.current = true;
+    return () => {
+      metadataLive.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (
+      !descriptionOpen &&
+      !metadataWorking &&
+      restoreDescriptionFocus.current
+    ) {
+      if (restoreDescriptionFocus.current === currentMetadataScope) {
+        descriptionButton.current?.focus();
+      }
+      restoreDescriptionFocus.current = null;
+    }
+  }, [descriptionOpen, metadataWorking, currentMetadataScope]);
+  function closeDescription() {
+    if (metadataWorkingRef.current) return;
+    setDescriptionDialog(null);
+    descriptionButton.current?.focus();
+  }
+  function acceptMetadata(meta: MetaView) {
+    setSavedMetadata({
+      api,
+      id: instance.id,
+      root: rootScope,
+      sourceRevision: instance.metadata_revision,
+      meta,
+    });
+    onMetadataChange?.(instance.id, meta);
+  }
+  async function reloadMetadata() {
+    if (
+      metadataWorkingRef.current ||
+      currentMetadataScope !== metadataScope.current
+    )
+      return;
+    const operation = Symbol();
+    metadataWorkingRef.current = operation;
+    setMetadataActivity("read");
+    const isCurrent = () =>
+      metadataLive.current && metadataScope.current === currentMetadataScope;
+    try {
+      const meta = await api<MetaView>("instance_metadata_read", {
+        id: instance.id,
+      });
+      if (!isCurrent()) return;
+      acceptMetadata(meta);
+      setMetadataFailure(null);
+      if (descriptionOpen)
+        restoreDescriptionFocus.current = currentMetadataScope;
+      setDescriptionDialog(null);
+      onNotify("已重新读取实例个性化信息");
+    } catch (error) {
+      if (isCurrent()) {
+        setMetadataFailure({
+          scope: currentMetadataScope,
+          message: String(error),
+        });
+      }
+    } finally {
+      if (metadataWorkingRef.current === operation) {
+        metadataWorkingRef.current = null;
+        if (metadataLive.current) setMetadataActivity(null);
+      }
+    }
+  }
+  async function updateMetadata(
+    patch: Partial<InstanceMetadata>,
+    successMessage: string,
+    expectedRevision = metadataRevision,
+  ) {
+    if (
+      metadataWritesDisabled ||
+      metadataWorkingRef.current ||
+      currentMetadataScope !== metadataScope.current ||
+      !expectedRevision
+    )
+      return;
+    const operation = Symbol();
+    metadataWorkingRef.current = operation;
+    setMetadataActivity("save");
+    setMetadataFailure(null);
+    const isCurrent = () =>
+      metadataLive.current && metadataScope.current === currentMetadataScope;
+    try {
+      const meta = await api<MetaView>("instance_metadata_update", {
+        id: instance.id,
+        revision: expectedRevision,
+        patch,
+      });
+      if (!isCurrent()) return;
+      acceptMetadata(meta);
+      if (patch.description !== undefined) {
+        restoreDescriptionFocus.current = currentMetadataScope;
+        setDescriptionDialog(null);
+      }
+      onNotify(successMessage);
+    } catch (error) {
+      if (isCurrent()) {
+        setMetadataFailure({
+          scope: currentMetadataScope,
+          message: String(error),
+        });
+      }
+    } finally {
+      if (metadataWorkingRef.current === operation) {
+        metadataWorkingRef.current = null;
+        if (metadataLive.current) setMetadataActivity(null);
+      }
+    }
+  }
   const [memory, setMemory] = useState(
     settings.overrides[instance.id] || settings.memory_gib,
   );
@@ -218,9 +466,19 @@ export function InstancePanel({
     return (
       <>
         <section className="ce-card instance-summary">
-          <InstanceIcon loader={instance.loader} />
-          <div>
-            <div>{instance.id}</div>
+          <InstanceIcon loader={instance.loader} icon={metadata.icon} />
+          <div className="ce-instance-summary-text">
+            <div className="ce-instance-title">
+              <span>{instance.id}</span>
+              {metadata.description && (
+                <small
+                  className="ce-instance-description"
+                  title={metadata.description}
+                >
+                  {metadata.description}
+                </small>
+              )}
+            </div>
             <Tags instance={instance} />
           </div>
         </section>
@@ -285,27 +543,110 @@ export function InstancePanel({
           <div className="instance-personalization">
             <label className="ce-row">
               <span>图标</span>
-              <select className="ce-field" disabled title={notReady}>
-                <option>自动</option>
+              <select
+                className="ce-field"
+                aria-label="实例图标"
+                value={metadata.icon}
+                disabled={metadataWritesDisabled}
+                title={metadataReadOnly ? metadataReadOnlyMessage : undefined}
+                onChange={(event) =>
+                  void updateMetadata(
+                    { icon: event.target.value as InstanceMetadata["icon"] },
+                    "已保存实例图标",
+                  )
+                }
+              >
+                <option value="auto">自动</option>
+                <option value="grass">草方块</option>
+                <option value="forge">Forge</option>
+                <option value="neoforge">NeoForge</option>
+                <option value="command">命令方块</option>
+                <option value="steve">Steve</option>
               </select>
             </label>
             <label className="ce-row">
               <span>分类</span>
-              <select className="ce-field" disabled title={notReady}>
-                <option>自动</option>
+              <select
+                className="ce-field"
+                aria-label="实例分类"
+                value={metadata.category}
+                disabled={metadataWritesDisabled}
+                title={metadataReadOnly ? metadataReadOnlyMessage : undefined}
+                onChange={(event) =>
+                  void updateMetadata(
+                    {
+                      category: event.target
+                        .value as InstanceMetadata["category"],
+                    },
+                    "已保存实例分类",
+                  )
+                }
+              >
+                <option value="auto">自动</option>
+                <option value="vanilla">原版</option>
+                <option value="forge">Forge</option>
+                <option value="neoforge">NeoForge</option>
+                <option value="fabric">Fabric</option>
+                <option value="quilt">Quilt</option>
               </select>
             </label>
             <div className="ce-actions">
               <button className="ce-button" disabled title={notReady}>
                 修改实例名
               </button>
-              <button className="ce-button" disabled title={notReady}>
+              <button
+                className="ce-button"
+                ref={descriptionButton}
+                disabled={metadataWritesDisabled}
+                title={metadataReadOnly ? metadataReadOnlyMessage : undefined}
+                onClick={() => {
+                  if (
+                    metadataWritesDisabled ||
+                    metadataWorkingRef.current ||
+                    currentMetadataScope !== metadataScope.current ||
+                    !metadataRevision
+                  )
+                    return;
+                  setMetadataFailure(null);
+                  setDescriptionDialog({
+                    scope: currentMetadataScope,
+                    draft: metadata.description,
+                    revision: metadataRevision,
+                  });
+                }}
+              >
                 修改实例描述
               </button>
-              <button className="ce-button" disabled title={notReady}>
-                加入收藏夹
+              <button
+                className="ce-button"
+                disabled={metadataWritesDisabled}
+                title={metadataReadOnly ? metadataReadOnlyMessage : undefined}
+                onClick={() =>
+                  void updateMetadata(
+                    { favorite: !metadata.favorite },
+                    metadata.favorite ? "已从收藏夹移除实例" : "已加入收藏夹",
+                  )
+                }
+              >
+                {metadata.favorite ? "移出收藏夹" : "加入收藏夹"}
               </button>
             </div>
+            {(metadataReadOnly || metadataError) && !descriptionOpen && (
+              <div
+                className={`ce-instance-metadata-status ${metadataError ? "is-error" : ""}`}
+              >
+                <span role={metadataError ? "alert" : undefined}>
+                  {metadataError || metadataReadOnlyMessage}
+                </span>
+                <button
+                  className="ce-button"
+                  disabled={metadataWorking}
+                  onClick={() => void reloadMetadata()}
+                >
+                  {metadataActivity === "read" ? "正在读取…" : "重新读取"}
+                </button>
+              </div>
+            )}
           </div>
         </section>
         <section className="ce-card">
@@ -350,6 +691,122 @@ export function InstancePanel({
             </button>
           </div>
         </section>
+        {descriptionOpen && descriptionDialog && (
+          <div
+            className="modal-shade rd-name-shade"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) closeDescription();
+            }}
+          >
+            <form
+              className="rd-name-dialog ce-instance-description-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-busy={metadataWorking}
+              aria-labelledby="ce-instance-description-title"
+              aria-describedby="ce-instance-description-hint"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (descriptionDialog.scope !== metadataScope.current) return;
+                void updateMetadata(
+                  { description: descriptionDialog.draft },
+                  descriptionDialog.draft ? "已保存实例描述" : "已清除实例描述",
+                  descriptionDialog.revision,
+                );
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  closeDescription();
+                }
+                if (event.key === "Tab") {
+                  event.stopPropagation();
+                  const controls = [
+                    ...event.currentTarget.querySelectorAll<HTMLElement>(
+                      "textarea:not(:disabled), button:not(:disabled)",
+                    ),
+                  ];
+                  const first = controls[0],
+                    last = controls[controls.length - 1];
+                  if (!first) event.preventDefault();
+                  else if (event.shiftKey && document.activeElement === first) {
+                    event.preventDefault();
+                    last?.focus();
+                  } else if (
+                    !event.shiftKey &&
+                    document.activeElement === last
+                  ) {
+                    event.preventDefault();
+                    first.focus();
+                  }
+                }
+              }}
+            >
+              <h2 id="ce-instance-description-title">修改实例描述</h2>
+              <textarea
+                autoFocus
+                className="ce-field"
+                aria-label="实例描述"
+                maxLength={4096}
+                rows={4}
+                value={descriptionDialog.draft}
+                disabled={metadataWritesDisabled}
+                onChange={(event) => {
+                  const draft = event.target.value;
+                  setDescriptionDialog((old) =>
+                    old?.scope === currentMetadataScope
+                      ? { ...old, draft }
+                      : old,
+                  );
+                  setMetadataFailure(null);
+                }}
+              />
+              <p id="ce-instance-description-hint">
+                最多 4096 个字符，留空可清除描述。
+              </p>
+              {metadataError && (
+                <>
+                  <p className="rd-name-error" role="alert">
+                    {metadataError}
+                  </p>
+                  <p>重新读取会关闭编辑窗口并载入已保存的描述。</p>
+                </>
+              )}
+              <div className="rd-name-actions">
+                <button
+                  className="ce-button"
+                  type="submit"
+                  disabled={metadataWritesDisabled}
+                >
+                  {metadataActivity === "read"
+                    ? "正在读取…"
+                    : metadataWorking
+                      ? "正在保存…"
+                      : "确定"}
+                </button>
+                {metadataError && (
+                  <button
+                    className="ce-button"
+                    type="button"
+                    disabled={metadataWorking}
+                    onClick={() => void reloadMetadata()}
+                  >
+                    {metadataActivity === "read" ? "正在读取…" : "重新读取"}
+                  </button>
+                )}
+                <button
+                  className="ce-button"
+                  type="button"
+                  disabled={metadataWorking}
+                  onClick={closeDescription}
+                >
+                  取消
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
       </>
     );
   if (section === "settings") {

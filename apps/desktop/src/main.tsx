@@ -83,7 +83,14 @@ import { ResourceDetails, type ResourceSummary } from "./ResourceDetails";
 import { TaskManager, TaskStatistics, useDownloadSpeed } from "./TaskManager";
 import "./account-interactions.css";
 import { ExtraSettings } from "./ExtraSettings";
-import type { Api, Instance, RootSummary, Settings } from "./types";
+import type {
+  Api,
+  Instance,
+  InstanceMetadata,
+  MetaView,
+  RootSummary,
+  Settings,
+} from "./types";
 import "./roots.css";
 type Status = {
   stage: string;
@@ -142,6 +149,7 @@ const resourceWrites = new Set([
   "resource_restore",
   "resource_import",
   "resource_recover",
+  "instance_metadata_update",
 ]);
 const rootCommands = new Set([
   "launch_game",
@@ -157,6 +165,8 @@ const rootCommands = new Set([
   "resource_import",
   "resource_removed",
   "resource_recover",
+  "instance_metadata_update",
+  "instance_metadata_read",
 ]);
 type PreviewRoot = {
   settings: Settings;
@@ -184,6 +194,25 @@ type PreviewRemoval = {
 };
 const previewRemovals = new Map<string, PreviewRemoval[]>();
 let previewResourceSequence = 0;
+let previewMetadataSequence = 0;
+const defaultInstanceMetadata: InstanceMetadata = {
+  description: "",
+  favorite: false,
+  icon: "auto",
+  category: "auto",
+};
+function previewInstances(
+  instances: Instance[],
+  root: RootSummary,
+): Instance[] {
+  return instances.map((instance) => ({
+    ...instance,
+    metadata: { ...defaultInstanceMetadata, ...instance.metadata },
+    metadata_revision:
+      instance.metadata_revision ||
+      `preview-meta:${JSON.stringify([root.id, root.path, instance.id])}:0`,
+  }));
+}
 let preview:
   | (State & {
       catalog?: unknown[];
@@ -245,7 +274,10 @@ function preparePreviewRoots() {
         root_id: root.id,
         root: root.path,
       },
-      instances: stored?.instances || (selected ? preview.instances : []),
+      instances: previewInstances(
+        stored?.instances || (selected ? preview.instances : []),
+        root,
+      ),
       resources: stored?.resources || (selected ? preview.resources || [] : []),
       servers:
         stored?.servers || (selected ? preview.instance_servers || [] : []),
@@ -256,6 +288,7 @@ function preparePreviewRoots() {
       scan_error: stored?.scan_error || (selected ? preview.scan_error : null),
       recovery_error: stored?.recovery_error,
     });
+    if (selected) preview.instances = previewRoots.get(root.id)!.instances;
   }
 }
 function selectPreviewRoot(id: string) {
@@ -299,6 +332,77 @@ async function api<T>(
       return r.json();
     });
   preparePreviewRoots();
+  if (
+    command === "instance_metadata_update" ||
+    command === "instance_metadata_read"
+  ) {
+    const rootId = String(args?.rootId || preview!.settings.root_id);
+    const root = preview!.roots!.find((item) => item.id === rootId);
+    const stored = previewRoots.get(rootId);
+    if (!root?.available || !stored) throw new Error("游戏目录暂不可用");
+    if (
+      command === "instance_metadata_update" &&
+      (["preparing", "running"].includes(preview!.status.stage) ||
+        ["preparing", "downloading", "processing"].includes(
+          preview!.download_status?.stage || "",
+        ))
+    )
+      throw new Error("请在游戏和文件操作结束后修改实例信息");
+    const instance = stored.instances.find((item) => item.id === args?.id);
+    if (!instance) throw new Error("未找到所选实例");
+    if (command === "instance_metadata_read")
+      return {
+        ...defaultInstanceMetadata,
+        ...instance.metadata,
+        revision: instance.metadata_revision,
+      } as T;
+    if (instance.metadata_revision !== args?.revision)
+      throw new Error("实例信息已变化，请重新读取后再保存");
+    const patch = args?.patch as Partial<InstanceMetadata>;
+    if (
+      !patch ||
+      typeof patch !== "object" ||
+      Object.keys(patch).some(
+        (key) => !["description", "favorite", "icon", "category"].includes(key),
+      ) ||
+      !Object.values(patch).some((value) => value !== undefined)
+    )
+      throw new Error("实例信息修改参数无效");
+    if (patch.description !== undefined) {
+      if (typeof patch.description !== "string")
+        throw new Error("实例描述无效");
+      const description = patch.description.replace(/\r\n/g, "\n");
+      if (
+        Array.from(description).length > 4096 ||
+        /[\x00-\x09\x0b-\x1f\x7f-\x9f]/.test(description)
+      )
+        throw new Error("实例描述过长或包含无效字符");
+      patch.description = description.trim();
+    }
+    if (patch.favorite !== undefined && typeof patch.favorite !== "boolean")
+      throw new Error("收藏设置无效");
+    if (
+      patch.icon !== undefined &&
+      !["auto", "grass", "forge", "neoforge", "command", "steve"].includes(
+        patch.icon,
+      )
+    )
+      throw new Error("实例图标无效");
+    if (
+      patch.category !== undefined &&
+      !["auto", "vanilla", "forge", "neoforge", "fabric", "quilt"].includes(
+        patch.category,
+      )
+    )
+      throw new Error("实例分类无效");
+    instance.metadata = {
+      ...defaultInstanceMetadata,
+      ...instance.metadata,
+      ...patch,
+    };
+    instance.metadata_revision = `preview-meta:${JSON.stringify([root.id, root.path, instance.id])}:${++previewMetadataSequence}`;
+    return { ...instance.metadata, revision: instance.metadata_revision } as T;
+  }
   if (command === "bootstrap") return normalizedState(preview!) as T;
   if (command === "roots_list") return preview!.roots as T;
   if (command === "root_pick")
@@ -850,7 +954,7 @@ function App() {
         if (!modal) return;
         const items = [
           ...modal.querySelectorAll<HTMLElement>(
-            'button:not(:disabled),input:not(:disabled),summary,[tabindex="0"]',
+            'button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),summary,[tabindex="0"]',
           ),
         ];
         const visible = items.filter(
@@ -1624,6 +1728,30 @@ function App() {
                   onOpen={open}
                   onInspect={launch}
                   onNotify={notify}
+                  onMetadataChange={(id: string, meta: MetaView) => {
+                    if (contextKey.current !== rootKey) return;
+                    setData((current) => {
+                      if (
+                        !current ||
+                        `${current.settings.root_id || ""}:${current.settings.root}` !==
+                          rootKey
+                      )
+                        return current;
+                      const { revision, ...metadata } = meta;
+                      return {
+                        ...current,
+                        instances: current.instances.map((instance) =>
+                          instance.id === id
+                            ? {
+                                ...instance,
+                                metadata,
+                                metadata_revision: revision,
+                              }
+                            : instance,
+                        ),
+                      };
+                    });
+                  }}
                   onResourceDetails={(r) =>
                     showResource(
                       {

@@ -1,3 +1,10 @@
+export type InstanceMetadata = {
+  description: string;
+  favorite: boolean;
+  icon: "auto" | "grass" | "forge" | "neoforge" | "command" | "steve";
+  category: "auto" | "vanilla" | "forge" | "neoforge" | "fabric" | "quilt";
+};
+export type MetaView = InstanceMetadata & { revision: string };
 export type Instance = {
   id: string;
   minecraft_version: string;
@@ -5,6 +12,8 @@ export type Instance = {
   java_major: number;
   mod_count: number;
   isolated: boolean;
+  metadata?: InstanceMetadata;
+  metadata_revision?: string;
 };
 export type Settings = {
   root_id?: string | null;
