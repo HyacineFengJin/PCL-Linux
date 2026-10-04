@@ -3,6 +3,7 @@ mod config;
 mod downloads;
 mod platform;
 mod resource_details;
+mod resource_ops;
 mod tasks;
 mod ui_catalog;
 mod ui_data;
@@ -184,7 +185,7 @@ fn require_root_unused(s: &Shared, id: &str) -> Result<(), String> {
         || (run.root_id.as_deref() == Some(id)
             && matches!(run.stage.as_str(), "preparing" | "running"))
     {
-        return Err("该目录正在被游戏或安装任务使用，请等待结束后移除".into());
+        return Err("该目录正在被游戏或文件操作使用，请等待结束后移除".into());
     }
     Ok(())
 }
@@ -264,6 +265,269 @@ fn task_snapshot(id: String, state: State<'_, Arc<Shared>>) -> Option<tasks::Tas
 #[tauri::command]
 fn task_cancel(id: String, state: State<'_, Arc<Shared>>) -> Result<tasks::TaskSnapshot, String> {
     state.tasks.cancel(&id)
+}
+
+enum ResourceRequest {
+    SetEnabled {
+        files: Vec<resource_ops::ResourceFile>,
+        enabled: bool,
+    },
+    Remove(Vec<resource_ops::ResourceFile>),
+    Import(Vec<PathBuf>),
+    Restore(String),
+    Recover,
+}
+
+fn require_resource_write(s: &Shared) -> Result<(), String> {
+    s.config.ensure_writable()?;
+    if matches!(
+        s.status.lock().unwrap().stage.as_str(),
+        "preparing" | "running"
+    ) {
+        return Err("请在游戏退出后修改资源文件".into());
+    }
+    Ok(())
+}
+
+fn admit_resource(
+    s: &Arc<Shared>,
+    id: &str,
+    root_id: Option<&str>,
+    expected_path: Option<&str>,
+) -> Result<(GameRoot, tasks::TaskHandle), String> {
+    let _operation = s.operations.lock().unwrap();
+    require_resource_write(s)?;
+    pcl_core::identifier(id)?;
+    let root = s.config.resolve(root_id)?;
+    if expected_path.is_some_and(|path| path != root.path) {
+        return Err("游戏目录位置已改变，请重新选择文件".into());
+    }
+    let task = s.tasks.admit(
+        tasks::TaskTarget {
+            root_id: root.id.clone(),
+            root_path: root.path.clone(),
+            instance_id: Some(id.into()),
+        },
+        tasks::TaskKind::ResourceOperation,
+    )?;
+    Ok((root, task))
+}
+
+async fn run_resource_request(
+    root: GameRoot,
+    id: String,
+    kind: String,
+    request: ResourceRequest,
+    task: tasks::TaskHandle,
+) -> Result<resource_ops::MutationResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let cancel = task.cancellation_token();
+        let mut commit = || {
+            task.begin_finishing();
+            if cancel.load(Ordering::SeqCst) {
+                Err("资源操作已取消".into())
+            } else {
+                Ok(())
+            }
+        };
+        let mut progress = |completed, total| {
+            task.update(tasks::TaskProgress {
+                stage: tasks::TaskStage::Processing,
+                phase: "resources".into(),
+                message: "正在处理资源文件…".into(),
+                completed,
+                total,
+                bytes_done: 0,
+                bytes_total: 0,
+                network_bytes: 0,
+            });
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let root = Path::new(&root.path);
+            match request {
+                ResourceRequest::SetEnabled { files, enabled } => resource_ops::set_enabled(
+                    root,
+                    &id,
+                    &kind,
+                    &files,
+                    enabled,
+                    &cancel,
+                    &mut commit,
+                    &mut progress,
+                ),
+                ResourceRequest::Remove(files) => resource_ops::remove(
+                    root,
+                    &id,
+                    &kind,
+                    &files,
+                    &cancel,
+                    &mut commit,
+                    &mut progress,
+                ),
+                ResourceRequest::Import(sources) => resource_ops::import_files(
+                    root,
+                    &id,
+                    &kind,
+                    &sources,
+                    &cancel,
+                    &mut commit,
+                    &mut progress,
+                ),
+                ResourceRequest::Restore(operation) => resource_ops::restore(
+                    root,
+                    &id,
+                    &kind,
+                    &operation,
+                    &cancel,
+                    &mut commit,
+                    &mut progress,
+                ),
+                ResourceRequest::Recover => {
+                    commit()?;
+                    resource_ops::recover_pending(root, &id, &kind)?;
+                    Ok(resource_ops::MutationResult {
+                        changed: 0,
+                        undo_id: None,
+                        message: "已恢复未完成的资源操作，请检查资源列表".into(),
+                    })
+                }
+            }
+        }))
+        .unwrap_or_else(|_| Err("资源操作意外中断，请刷新资源列表后重试".into()));
+        match &result {
+            Ok(report) => {
+                task.finish(tasks::TaskOutcome::Complete {
+                    result: serde_json::to_value(report).ok(),
+                    message: report.message.clone(),
+                    error: None,
+                });
+            }
+            Err(error) => {
+                task.finish(tasks::TaskOutcome::Failed(error.clone()));
+            }
+        }
+        result
+    })
+    .await
+    .map_err(|_| "资源操作任务未能完成".to_owned())?
+}
+
+#[tauri::command]
+async fn resource_set_enabled(
+    id: String,
+    kind: String,
+    files: Vec<resource_ops::ResourceFile>,
+    enabled: bool,
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<resource_ops::MutationResult, String> {
+    let (root, task) = admit_resource(state.inner(), &id, root_id.as_deref(), None)?;
+    run_resource_request(
+        root,
+        id,
+        kind,
+        ResourceRequest::SetEnabled { files, enabled },
+        task,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn resource_remove(
+    id: String,
+    kind: String,
+    files: Vec<resource_ops::ResourceFile>,
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<resource_ops::MutationResult, String> {
+    let (root, task) = admit_resource(state.inner(), &id, root_id.as_deref(), None)?;
+    run_resource_request(root, id, kind, ResourceRequest::Remove(files), task).await
+}
+
+#[tauri::command]
+async fn resource_restore(
+    id: String,
+    kind: String,
+    operation_id: String,
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<resource_ops::MutationResult, String> {
+    let (root, task) = admit_resource(state.inner(), &id, root_id.as_deref(), None)?;
+    run_resource_request(root, id, kind, ResourceRequest::Restore(operation_id), task).await
+}
+
+#[tauri::command]
+async fn resource_recover(
+    id: String,
+    kind: String,
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<resource_ops::MutationResult, String> {
+    let (root, task) = admit_resource(state.inner(), &id, root_id.as_deref(), None)?;
+    run_resource_request(root, id, kind, ResourceRequest::Recover, task).await
+}
+
+#[tauri::command]
+async fn resource_removed(
+    id: String,
+    kind: String,
+    root_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<Vec<resource_ops::RemovedOperation>, String> {
+    let root = state.config.resolve(root_id.as_deref())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        resource_ops::removed(Path::new(&root.path), &id, &kind)
+    })
+    .await
+    .map_err(|_| "读取可恢复资源失败".to_owned())?
+}
+
+#[derive(Serialize)]
+struct ResourceImportResult {
+    status: &'static str,
+    changed: usize,
+    undo_id: Option<String>,
+    message: Option<String>,
+}
+
+#[tauri::command]
+async fn resource_import(
+    id: String,
+    kind: String,
+    root_id: Option<String>,
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<Shared>>,
+) -> Result<ResourceImportResult, String> {
+    let initial = {
+        let _operation = state.operations.lock().unwrap();
+        require_resource_write(state.inner())?;
+        pcl_core::identifier(&id)?;
+        if state.tasks.active().is_some() {
+            return Err("请在当前文件操作结束后安装资源".into());
+        }
+        state.config.resolve(root_id.as_deref())?
+    };
+    let choice = state
+        .desktop
+        .pick_resource_files(window, PathBuf::from(&initial.path), &kind)
+        .await?;
+    if choice.status != "selected" {
+        return Ok(ResourceImportResult {
+            status: choice.status,
+            changed: 0,
+            undo_id: None,
+            message: choice.message,
+        });
+    }
+    let (root, task) = admit_resource(state.inner(), &id, Some(&initial.id), Some(&initial.path))?;
+    let result =
+        run_resource_request(root, id, kind, ResourceRequest::Import(choice.paths), task).await?;
+    Ok(ResourceImportResult {
+        status: "complete",
+        changed: result.changed,
+        undo_id: result.undo_id,
+        message: Some(result.message),
+    })
 }
 fn require_account_edit(st: &RunStatus) -> Result<(), String> {
     if st.stage == "preparing" || st.stage == "running" {
@@ -347,9 +611,10 @@ async fn inspect_instance(
         s.config.ensure_writable()?;
         require_account_edit(&s.status.lock().unwrap())?;
         if s.tasks.active().is_some() {
-            return Err("请在安装任务结束后检查启动环境".into());
+            return Err("请在文件操作结束后检查启动环境".into());
         }
         let (cfg, root) = instance_context(&s.config, root_id.as_deref(), &id)?;
+        resource_ops::ensure_ready(Path::new(&root.path))?;
         let plan = pcl_core::build_launch_plan(
             Path::new(&root.path),
             &s.project,
@@ -415,10 +680,11 @@ fn launch_game(
     let _operation = state.operations.lock().unwrap();
     state.config.ensure_writable()?;
     let (cfg, root) = instance_context(&state.config, root_id.as_deref(), &id)?;
+    resource_ops::ensure_ready(Path::new(&root.path))?;
     {
         let mut st = state.status.lock().unwrap();
         if state.tasks.active().is_some() {
-            return Err("请在安装任务结束后启动游戏".into());
+            return Err("请在文件操作结束后启动游戏".into());
         }
         if st.stage == "preparing" || st.stage == "running" {
             return Err("已有启动任务或游戏正在运行".into());
@@ -616,14 +882,14 @@ fn main() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<Arc<Shared>>();
-                if state.downloads.active() {
+                if let Some(task) = state.tasks.active() {
                     api.prevent_close();
-                    state.downloads.cancel();
+                    let _ = state.tasks.cancel(&task.id);
                     if !state.closing.swap(true, Ordering::SeqCst) {
-                        let downloads = state.downloads.clone();
+                        let tasks = state.tasks.clone();
                         let window = window.clone();
                         std::thread::spawn(move || {
-                            while downloads.active() {
+                            while tasks.active().is_some() {
                                 std::thread::sleep(Duration::from_millis(100));
                             }
                             let _ = window.close();
@@ -643,6 +909,12 @@ fn main() {
             task_list,
             task_snapshot,
             task_cancel,
+            resource_set_enabled,
+            resource_remove,
+            resource_restore,
+            resource_recover,
+            resource_removed,
+            resource_import,
             ui_catalog::ui_open_link,
             ui_catalog::loader_catalog,
             ui_catalog::loader_candidates,
@@ -798,5 +1070,62 @@ mod integration_tests {
         assert!(require_root_unused(&state, &second.id).is_ok());
         update(&state, "exited", "finished".into(), None, Some(0));
         assert!(require_root_unused(&state, &first.id).is_ok());
+    }
+
+    #[test]
+    fn resource_admission_keeps_captured_root_and_excludes_all_other_writers() {
+        let fixture = Fixture::new();
+        let state = Arc::new(fixture.shared());
+        let first = state.config.resolve(None).unwrap();
+        let second = fixture.second(&state.config);
+        let (bound, task) = admit_resource(&state, "Same", Some(&first.id), None).unwrap();
+        assert_eq!(bound.id, first.id);
+        state.config.select(&second.id).unwrap();
+        assert!(admit_resource(&state, "Same", Some(&second.id), None).is_err());
+        assert!(require_root_unused(&state, &first.id).is_err());
+        assert!(require_root_unused(&state, &second.id).is_ok());
+        state.tasks.cancel(task.id()).unwrap();
+        assert!(state.tasks.active().is_some());
+        assert!(admit_resource(&state, "Same", Some(&second.id), None).is_err());
+        task.finish(TaskOutcome::Failed("cancelled".into()));
+        assert!(state.tasks.active().is_none());
+        let (_, task) = admit_resource(&state, "Same", Some(&second.id), None).unwrap();
+        task.finish(TaskOutcome::Complete {
+            result: None,
+            message: "done".into(),
+            error: None,
+        });
+        *state.status.lock().unwrap() = RunStatus {
+            stage: "running".into(),
+            root_id: Some(first.id),
+            ..Default::default()
+        };
+        assert!(admit_resource(&state, "Same", Some(&second.id), None).is_err());
+        assert!(state.tasks.active().is_none());
+    }
+
+    #[test]
+    fn import_admission_rejects_directory_retargeted_after_file_selection() {
+        use std::os::unix::fs::symlink;
+        let fixture = Fixture::new();
+        let state = Arc::new(fixture.shared());
+        let first = fixture.0.join("source-a");
+        let second = fixture.0.join("source-b");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let alias = fixture.0.join("chosen-folder");
+        symlink(&first, &alias).unwrap();
+        let registered = state
+            .config
+            .register(alias.to_str().unwrap().into(), None)
+            .unwrap();
+        let initial = state.config.resolve(Some(&registered.id)).unwrap();
+        fs::remove_file(&alias).unwrap();
+        symlink(&second, &alias).unwrap();
+        assert!(admit_resource(&state, "Same", Some(&initial.id), Some(&initial.path)).is_err());
+        assert!(state.tasks.active().is_none());
+        state.config.remove(&registered.id).unwrap();
+        assert!(admit_resource(&state, "Same", Some(&initial.id), Some(&initial.path)).is_err());
+        assert!(state.tasks.active().is_none());
     }
 }

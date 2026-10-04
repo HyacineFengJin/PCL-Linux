@@ -91,6 +91,7 @@ impl Downloads {
         }
     }
 
+    #[cfg(test)]
     pub fn active(&self) -> bool {
         self.tasks.active().is_some()
     }

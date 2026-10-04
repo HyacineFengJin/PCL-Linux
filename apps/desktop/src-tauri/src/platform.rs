@@ -20,6 +20,22 @@ pub struct DirectoryChoice {
     message: Option<String>,
 }
 
+pub struct ResourceChoice {
+    pub status: &'static str,
+    pub paths: Vec<PathBuf>,
+    pub message: Option<String>,
+}
+
+impl ResourceChoice {
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            status: "unavailable",
+            paths: Vec::new(),
+            message: Some(message.into()),
+        }
+    }
+}
+
 impl DirectoryChoice {
     fn unavailable(message: impl Into<String>) -> Self {
         Self {
@@ -38,13 +54,88 @@ impl Drop for ChoosingGuard {
 }
 
 impl Desktop {
+    pub async fn pick_resource_files(
+        self: &Arc<Self>,
+        window: tauri::WebviewWindow,
+        initial: PathBuf,
+        kind: &str,
+    ) -> Result<ResourceChoice, String> {
+        let (title, extensions) = match kind {
+            "mods" => ("选择模组文件", vec!["jar", "disabled"]),
+            "resourcepacks" => ("选择资源包文件", vec!["zip"]),
+            "shaderpacks" => ("选择光影包文件", vec!["zip"]),
+            _ => return Err("此资源类型暂不支持从文件安装".into()),
+        };
+        if self.choosing.swap(true, Ordering::SeqCst) {
+            return Err("已有文件选择窗口，请先完成或取消选择".into());
+        }
+        let guard = ChoosingGuard(self.clone());
+        #[cfg(target_os = "linux")]
+        if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
+            return Ok(ResourceChoice::unavailable(
+                "无法连接桌面文件选择服务，请在桌面会话中运行启动器",
+            ));
+        }
+        let picker = window
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .set_title(title)
+            .add_filter("Minecraft 资源", &extensions);
+        let picker = if initial.is_dir() {
+            picker.set_directory(initial)
+        } else {
+            picker
+        };
+        Ok(tauri::async_runtime::spawn_blocking(move || {
+            let _guard = guard;
+            match picker.blocking_pick_files() {
+                None => ResourceChoice {
+                    status: "cancelled",
+                    paths: Vec::new(),
+                    message: None,
+                },
+                Some(files) => {
+                    let mut paths = Vec::new();
+                    for file in files {
+                        match file.into_path() {
+                            Ok(path)
+                                if path.is_absolute()
+                                    && path.is_file()
+                                    && path.to_str().is_some() =>
+                            {
+                                paths.push(path);
+                            }
+                            _ => {
+                                return ResourceChoice::unavailable(
+                                    "所选位置包含不可访问的本地文件或无效路径",
+                                )
+                            }
+                        }
+                    }
+                    ResourceChoice {
+                        status: if paths.is_empty() {
+                            "cancelled"
+                        } else {
+                            "selected"
+                        },
+                        paths,
+                        message: None,
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| ResourceChoice::unavailable("桌面文件选择服务未能完成请求")))
+    }
+
     pub async fn pick_root(
         self: &Arc<Self>,
         window: tauri::WebviewWindow,
         initial: PathBuf,
     ) -> Result<DirectoryChoice, String> {
         if self.choosing.swap(true, Ordering::SeqCst) {
-            return Err("已有文件夹选择窗口，请先完成或取消选择".into());
+            return Err("已有文件选择窗口，请先完成或取消选择".into());
         }
         let guard = ChoosingGuard(self.clone());
         #[cfg(target_os = "linux")]

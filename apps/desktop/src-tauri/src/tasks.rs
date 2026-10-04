@@ -24,6 +24,7 @@ pub struct TaskTarget {
 #[serde(rename_all = "snake_case")]
 pub enum TaskKind {
     Install,
+    ResourceOperation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -210,7 +211,7 @@ impl Tasks {
         let (snapshot, cancel, listener) = {
             let mut inner = self.inner.lock().unwrap();
             if inner.active_id.is_some() {
-                return Err("已有安装任务，请等待完成或取消".into());
+                return Err("已有文件写入任务，请等待完成或取消".into());
             }
             let created_at = now_ms();
             let id = format!(
@@ -224,8 +225,16 @@ impl Tasks {
                 instance_id: target.instance_id,
                 kind,
                 stage: TaskStage::Preparing,
-                phase: "metadata".into(),
-                message: "正在获取版本信息…".into(),
+                phase: match kind {
+                    TaskKind::Install => "metadata",
+                    TaskKind::ResourceOperation => "resources",
+                }
+                .into(),
+                message: match kind {
+                    TaskKind::Install => "正在获取版本信息…",
+                    TaskKind::ResourceOperation => "正在检查资源文件…",
+                }
+                .into(),
                 progress: 0.0,
                 completed: 0,
                 total: 0,
@@ -268,7 +277,11 @@ impl Tasks {
             if changed {
                 record.cancel.store(true, Ordering::SeqCst);
                 record.snapshot.can_cancel = false;
-                record.snapshot.message = "正在取消安装…".into();
+                record.snapshot.message = match record.snapshot.kind {
+                    TaskKind::Install => "正在取消安装…",
+                    TaskKind::ResourceOperation => "正在取消资源操作…",
+                }
+                .into();
             }
             (record.snapshot.clone(), inner.listener.clone(), changed)
         };
@@ -384,7 +397,11 @@ impl Tasks {
                     };
                     snapshot.phase = snapshot.stage.as_str().into();
                     snapshot.message = if cancelled {
-                        "安装已取消，已下载的完整文件可继续复用".into()
+                        match snapshot.kind {
+                            TaskKind::Install => "安装已取消，已下载的完整文件可继续复用",
+                            TaskKind::ResourceOperation => "资源操作已取消",
+                        }
+                        .into()
                     } else {
                         error.clone()
                     };

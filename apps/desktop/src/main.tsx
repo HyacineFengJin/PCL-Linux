@@ -136,6 +136,13 @@ type Inspection = {
   log_path: string;
 };
 const native = isTauri();
+const resourceWrites = new Set([
+  "resource_set_enabled",
+  "resource_remove",
+  "resource_restore",
+  "resource_import",
+  "resource_recover",
+]);
 const rootCommands = new Set([
   "launch_game",
   "inspect_instance",
@@ -144,6 +151,12 @@ const rootCommands = new Set([
   "instance_servers",
   "launcher_logs",
   "launcher_read_log",
+  "resource_set_enabled",
+  "resource_remove",
+  "resource_restore",
+  "resource_import",
+  "resource_removed",
+  "resource_recover",
 ]);
 type PreviewRoot = {
   settings: Settings;
@@ -154,8 +167,23 @@ type PreviewRoot = {
   log_contents?: Record<string, string>;
   scan_issues: { id: string; message: string }[];
   scan_error?: string | null;
+  recovery_error?: string | null;
 };
 const previewRoots = new Map<string, PreviewRoot>();
+type PreviewResource = {
+  name: string;
+  file_name: string;
+  path: string;
+  enabled: boolean;
+  fingerprint?: string | null;
+};
+type PreviewRemoval = {
+  id: string;
+  files: PreviewResource[];
+  created_at: number;
+};
+const previewRemovals = new Map<string, PreviewRemoval[]>();
+let previewResourceSequence = 0;
 let preview:
   | (State & {
       catalog?: unknown[];
@@ -226,6 +254,7 @@ function preparePreviewRoots() {
       scan_issues:
         stored?.scan_issues || (selected ? preview.scan_issues || [] : []),
       scan_error: stored?.scan_error || (selected ? preview.scan_error : null),
+      recovery_error: stored?.recovery_error,
     });
   }
 }
@@ -384,6 +413,138 @@ async function api<T>(
   if (command === "java_list") return (preview!.java || []) as T;
   if (command === "download_status")
     return (preview!.download_status || idleDownload) as T;
+  if (command === "resource_import")
+    return {
+      status: "unavailable",
+      changed: 0,
+      message: "界面预览中不能选择本机文件，请打开桌面应用。",
+    } as T;
+  if (
+    [
+      "resource_removed",
+      "resource_set_enabled",
+      "resource_remove",
+      "resource_restore",
+      "resource_recover",
+    ].includes(command)
+  ) {
+    const rootId = String(args?.rootId || preview!.settings.root_id);
+    const root = preview!.roots!.find((item) => item.id === rootId);
+    const stored = previewRoots.get(rootId);
+    if (!root?.available || !stored) throw new Error("游戏目录暂不可用");
+    const kind = String(args?.kind);
+    const key = `${rootId}:${args?.id}:${kind}`;
+    const removed = previewRemovals.get(key) || [];
+    if (command === "resource_removed") {
+      if (stored.recovery_error) throw new Error(stored.recovery_error);
+      return removed.map((operation) => ({
+        ...operation,
+        files: operation.files.map((file) => file.file_name),
+      })) as T;
+    }
+    if (["preparing", "running"].includes(preview!.status.stage))
+      throw new Error("请在游戏退出后修改资源文件");
+    if (
+      ["preparing", "downloading", "processing"].includes(
+        preview!.download_status?.stage || "",
+      )
+    )
+      throw new Error("已有文件写入任务，请等待完成或取消");
+    if (!["mods", "resourcepacks", "shaderpacks"].includes(kind))
+      throw new Error("此资源类型暂不支持修改");
+    if (command === "resource_recover") {
+      stored.recovery_error = null;
+      return {
+        changed: 0,
+        undo_id: null,
+        message: "已恢复未完成的资源操作，请检查资源列表",
+      } as T;
+    }
+    const entries = stored.resources as PreviewResource[];
+    if (command === "resource_restore") {
+      const operation = removed.find((item) => item.id === args?.operationId);
+      if (!operation) throw new Error("未找到可恢复的删除记录");
+      if (
+        operation.files.some((file) =>
+          entries.some((existing) => existing.file_name === file.file_name),
+        )
+      )
+        throw new Error("恢复位置已有同名文件，请先处理冲突");
+      stored.resources = [...entries, ...operation.files];
+      previewRemovals.set(
+        key,
+        removed.filter((item) => item.id !== operation.id),
+      );
+      return {
+        changed: operation.files.length,
+        undo_id: null,
+        message: "已恢复所选资源",
+      } as T;
+    }
+    const files = args?.files as { file_name: string; fingerprint: string }[];
+    if (
+      !files?.length ||
+      new Set(files.map((file) => file.file_name)).size !== files.length
+    )
+      throw new Error("所选文件列表无效，请刷新后重试");
+    const selected = files.map((file) => {
+      const current = entries.find(
+        (entry) => entry.file_name === file.file_name,
+      );
+      if (
+        !current ||
+        !current.fingerprint ||
+        current.fingerprint !== file.fingerprint
+      )
+        throw new Error("资源文件已变化，请刷新列表后重试");
+      return current;
+    });
+    if (command === "resource_remove") {
+      const operation = {
+        id: `preview-resource-${++previewResourceSequence}`,
+        files: selected.map((file) => ({ ...file })),
+        created_at: Date.now(),
+      };
+      previewRemovals.set(key, [operation, ...removed]);
+      stored.resources = entries.filter((file) => !selected.includes(file));
+      return {
+        changed: selected.length,
+        undo_id: operation.id,
+        message: "已移除所选资源，可撤销删除",
+      } as T;
+    }
+    if (kind !== "mods") throw new Error("仅模组支持启用或禁用");
+    const enabled = args?.enabled === true;
+    const plan = selected
+      .filter((file) => file.enabled !== enabled)
+      .map((file) => ({
+        file,
+        name: enabled
+          ? file.file_name.replace(/\.disabled$/, "")
+          : `${file.file_name}.disabled`,
+      }));
+    if (
+      plan.some((item) => entries.some((file) => file.file_name === item.name))
+    )
+      throw new Error("目标已有同名文件，请先处理冲突");
+    stored.resources = entries.map((file) => {
+      const item = plan.find((candidate) => candidate.file === file);
+      return item
+        ? {
+            ...file,
+            file_name: item.name,
+            path: file.path.replace(/[^/]+$/, item.name),
+            enabled,
+            fingerprint: `preview-${++previewResourceSequence}`,
+          }
+        : file;
+    });
+    return {
+      changed: plan.length,
+      undo_id: null,
+      message: enabled ? "已启用所选模组" : "已禁用所选模组",
+    } as T;
+  }
   if (command === "save_settings") {
     const settings = args!.settings as Settings;
     const rootId = settings.root_id || preview!.settings.root_id!;
@@ -491,13 +652,34 @@ function App() {
   } | null>(null);
   const [rootName, setRootName] = useState("");
   const [rootError, setRootError] = useState("");
+  const [resourceTarget, setResourceTarget] = useState<{
+    id: string | null;
+  } | null>(null);
+  const resourceBusy = resourceTarget !== null;
   const rootId = data?.settings.root_id || null;
   const rootKey = `${rootId || ""}:${data?.settings.root || ""}`;
   const contextKey = React.useRef(rootKey);
   contextKey.current = rootKey;
   const rootApi = React.useMemo<Api>(
-    () => (command, args) =>
-      api(command, rootCommands.has(command) ? { ...args, rootId } : args),
+    () =>
+      async <T,>(
+        command: string,
+        args?: Record<string, unknown>,
+      ): Promise<T> => {
+        const target = { id: rootId };
+        if (resourceWrites.has(command)) setResourceTarget(target);
+        try {
+          return await api<T>(
+            command,
+            rootCommands.has(command) ? { ...args, rootId } : args,
+          );
+        } finally {
+          if (resourceWrites.has(command))
+            setResourceTarget((current) =>
+              current === target ? null : current,
+            );
+        }
+      },
     [rootId],
   );
   const taskApi = React.useMemo<Api>(
@@ -752,7 +934,10 @@ function App() {
       : downloadStatus.root_path
         ? downloadStatus.root_path === data?.settings.root
         : true);
-  const rootOccupied = (!!busy && processInRoot) || installInRoot;
+  const rootOccupied =
+    (!!busy && processInRoot) ||
+    installInRoot ||
+    (resourceBusy && resourceTarget?.id === rootId);
   const selectedRoot = data?.roots?.find((root) => root.id === rootId);
   const rootAvailable = selectedRoot?.available !== false;
   async function save(cfg: Settings) {
@@ -785,6 +970,7 @@ function App() {
       !selected ||
       busy ||
       downloadBusy ||
+      resourceBusy ||
       rootWorking ||
       !rootAvailable
     )
@@ -877,7 +1063,8 @@ function App() {
           downloadStatus.root_path === menuRoot.path ||
           (!downloadStatus.root_id &&
             !downloadStatus.root_path &&
-            menuRoot.id === rootId))));
+            menuRoot.id === rootId))) ||
+      (resourceBusy && resourceTarget?.id === menuRoot.id));
   const downloadItems = [
     { id: "minecraft", label: "Minecraft", icon: Blocks },
     { id: "mods", label: "模组", group: "社区资源", icon: Puzzle },
@@ -1288,6 +1475,7 @@ function App() {
                       (!boundGame &&
                         (!selected ||
                           downloadBusy ||
+                          resourceBusy ||
                           checking ||
                           rootWorking ||
                           !rootAvailable ||
@@ -1365,7 +1553,7 @@ function App() {
                 rootAvailable={rootAvailable && !rootWorking}
                 native={native}
                 installed={data.instances}
-                gameBusy={!!busy}
+                gameBusy={!!busy || resourceBusy}
                 onInstalled={load}
                 onBusyChange={setDownloadBusy}
                 onStatusChange={setDownloadStatus}
@@ -1459,6 +1647,13 @@ function App() {
                     )
                   }
                   disabled={rootOccupied || rootWorking}
+                  mutationDisabled={
+                    !!busy ||
+                    downloadBusy ||
+                    resourceBusy ||
+                    rootWorking ||
+                    !rootAvailable
+                  }
                 />
               ) : screen === "home" ? (
                 <>

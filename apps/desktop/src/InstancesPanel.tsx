@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Box,
   ChevronDown,
@@ -163,6 +163,7 @@ export function InstancePanel({
   onNotify,
   onResourceDetails,
   disabled,
+  mutationDisabled,
 }: {
   instance: Instance;
   section: string;
@@ -174,6 +175,7 @@ export function InstancePanel({
   onNotify: (s: string) => void;
   onResourceDetails?: (resource: LocalResourceDetails) => void;
   disabled: boolean;
+  mutationDisabled?: boolean;
 }) {
   const [memory, setMemory] = useState(
     settings.overrides[instance.id] || settings.memory_gib,
@@ -517,7 +519,10 @@ export function InstancePanel({
       section={section}
       api={api}
       onOpen={onOpen}
+      onNotify={onNotify}
       onResourceDetails={onResourceDetails}
+      disabled={disabled}
+      mutationDisabled={mutationDisabled}
     />
   );
 }
@@ -528,22 +533,58 @@ export type LocalResourceDetails = {
   version?: string;
   description?: string;
   file_name?: string;
+  fingerprint?: string | null;
   icon?: string;
   kind: string;
 };
 type Resource = Omit<LocalResourceDetails, "kind">;
+type ResourceFile = { file_name: string; fingerprint: string };
+type RemovedResourceOperation = {
+  id: string;
+  files: string[];
+  created_at: number;
+};
+type ResourceWriteResult = {
+  changed: number;
+  undo_id: string | null;
+  message: string;
+};
+type ResourceImportResult = {
+  status: "complete" | "cancelled" | "unavailable";
+  changed: number;
+  message?: string;
+  undo_id?: string | null;
+};
+type ResourceRemovalChoice = {
+  files: ResourceFile[];
+  names: string[];
+};
+function writableResourceFile(resource: Resource): ResourceFile | null {
+  return resource.file_name && resource.fingerprint
+    ? {
+        file_name: resource.file_name,
+        fingerprint: resource.fingerprint,
+      }
+    : null;
+}
 function ResourcePanel({
   id,
   section,
   api,
   onOpen,
+  onNotify,
   onResourceDetails,
+  disabled,
+  mutationDisabled = false,
 }: {
   id: string;
   section: string;
   api: Api;
   onOpen: (s: string) => void;
+  onNotify: (s: string) => void;
   onResourceDetails?: (resource: LocalResourceDetails) => void;
+  disabled: boolean;
+  mutationDisabled?: boolean;
 }) {
   const [entries, setEntries] = useState<Resource[]>([]),
     [query, setQuery] = useState(""),
@@ -552,9 +593,69 @@ function ResourcePanel({
     [descending, setDescending] = useState(false),
     [filter, setFilter] = useState<"all" | "updates">("all"),
     [selected, setSelected] = useState<string[]>([]),
-    [detail, setDetail] = useState<Resource | null>(null);
+    [detail, setDetail] = useState<Resource | null>(null),
+    [working, setWorking] = useState(""),
+    [actionError, setActionError] = useState(""),
+    [recoveryError, setRecoveryError] = useState(""),
+    [removed, setRemoved] = useState<RemovedResourceOperation[]>([]),
+    [removalChoice, setRemovalChoice] = useState<ResourceRemovalChoice | null>(
+      null,
+    );
+  const alive = useRef(false),
+    scopeGeneration = useRef(0),
+    readGeneration = useRef(0),
+    workingRef = useRef(false),
+    removalDialog = useRef<HTMLDivElement>(null),
+    currentIdentity = useRef({ id, section, api });
+  currentIdentity.current = { id, section, api };
+  const writableKind = ["mods", "resourcepacks", "shaderpacks"].includes(
+    section,
+  );
+  function isCurrent(scope: number) {
+    return (
+      alive.current &&
+      scopeGeneration.current === scope &&
+      currentIdentity.current.id === id &&
+      currentIdentity.current.section === section &&
+      currentIdentity.current.api === api
+    );
+  }
+  async function readResources(scope: number, clearSelection = true) {
+    if (!isCurrent(scope)) return;
+    const request = ++readGeneration.current;
+    setLoading(true);
+    setError("");
+    setRecoveryError("");
+    const [resourcesResult, removedResult] = await Promise.allSettled([
+      api<Resource[]>("instance_resources", { id, kind: section }),
+      writableKind
+        ? api<RemovedResourceOperation[]>("resource_removed", {
+            id,
+            kind: section,
+          })
+        : Promise.resolve([] as RemovedResourceOperation[]),
+    ]);
+    if (!isCurrent(scope) || readGeneration.current !== request) return;
+    if (resourcesResult.status === "fulfilled") {
+      setEntries(resourcesResult.value);
+      if (clearSelection) setSelected([]);
+    } else {
+      setError(String(resourcesResult.reason));
+    }
+    if (removedResult.status === "fulfilled") {
+      setRemoved(
+        [...removedResult.value].sort((a, b) => b.created_at - a.created_at),
+      );
+    } else {
+      setRecoveryError(String(removedResult.reason));
+    }
+    setLoading(false);
+  }
   useEffect(() => {
-    let live = true;
+    const scope = ++scopeGeneration.current;
+    alive.current = true;
+    workingRef.current = false;
+    setWorking("");
     setLoading(true);
     setEntries([]);
     setError("");
@@ -562,18 +663,15 @@ function ResourcePanel({
     setSelected([]);
     setFilter("all");
     setDetail(null);
-    api<Resource[]>("instance_resources", { id, kind: section })
-      .then((v) => {
-        if (live) setEntries(v);
-      })
-      .catch((e) => {
-        if (live) setError(String(e));
-      })
-      .finally(() => {
-        if (live) setLoading(false);
-      });
+    setActionError("");
+    setRecoveryError("");
+    setRemoved([]);
+    setRemovalChoice(null);
+    void readResources(scope);
     return () => {
-      live = false;
+      alive.current = false;
+      ++scopeGeneration.current;
+      ++readGeneration.current;
     };
   }, [id, section, api]);
   useEffect(() => {
@@ -584,6 +682,17 @@ function ResourcePanel({
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [detail]);
+  useEffect(() => {
+    if (!removalChoice) return;
+    const previous = document.activeElement as HTMLElement | null;
+    removalDialog.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    return () => {
+      if (previous?.isConnected) previous.focus();
+    };
+  }, [removalChoice]);
+  const mutationBlocked =
+    disabled || mutationDisabled || !!working || loading || !writableKind;
+  const writesDisabled = mutationBlocked || !!error || !!recoveryError;
   const filtered = entries
     .filter((v) =>
       [v.name, v.file_name, v.description].some((value) =>
@@ -608,43 +717,141 @@ function ResourcePanel({
     if (onResourceDetails) onResourceDetails({ ...resource, kind: section });
     else setDetail(resource);
   }
-  if (!loading && !error && !entries.length)
-    return (
-      <div className="ce-state-stage">
-        <section className="ce-card ce-state-box">
-          <h2>尚未安装资源</h2>
-          <p>
-            你可以从已经下载好的文件安装资源。
-            <br />
-            如果你已经安装了资源，可能是实例隔离设置有误，请在设置中调整实例隔离选项。
+  function filesFor(resources: Resource[]): ResourceFile[] | null {
+    const files = resources.map(writableResourceFile);
+    return resources.length > 0 && files.every((file) => file !== null)
+      ? (files as ResourceFile[])
+      : null;
+  }
+  async function writeResources(
+    status: string,
+    operation: () => Promise<ResourceWriteResult | ResourceImportResult>,
+    recovering = false,
+  ) {
+    const scope = scopeGeneration.current;
+    if (
+      !isCurrent(scope) ||
+      workingRef.current ||
+      (recovering ? mutationBlocked : writesDisabled)
+    )
+      return;
+    workingRef.current = true;
+    setWorking(status);
+    setActionError("");
+    setRemovalChoice(null);
+    try {
+      const result = await operation();
+      if (!isCurrent(scope)) return;
+      if ("status" in result && result.status === "cancelled") return;
+      if ("status" in result && result.status === "unavailable") {
+        const message =
+          result.message || "系统文件选择器暂时不可用，请稍后重试。";
+        setActionError(message);
+        onNotify(message);
+        return;
+      }
+      setSelected([]);
+      setDetail(null);
+      setWorking("正在重新读取资源…");
+      await readResources(scope, false);
+      if (isCurrent(scope))
+        onNotify(result.message || `已处理 ${result.changed} 个文件`);
+    } catch (e) {
+      if (isCurrent(scope)) {
+        const message = String(e);
+        setActionError(message);
+        onNotify(message);
+      }
+    } finally {
+      if (isCurrent(scope)) {
+        workingRef.current = false;
+        setWorking("");
+      }
+    }
+  }
+  function setEnabled(resources: Resource[], enabled: boolean) {
+    const files = filesFor(resources);
+    if (section !== "mods" || !files) return;
+    void writeResources(enabled ? "正在启用模组…" : "正在禁用模组…", () =>
+      api<ResourceWriteResult>("resource_set_enabled", {
+        id,
+        kind: section,
+        files,
+        enabled,
+      }),
+    );
+  }
+  function importResources() {
+    void writeResources("正在选择并导入本地文件…", () =>
+      api<ResourceImportResult>("resource_import", { id, kind: section }),
+    );
+  }
+  function chooseRemoval(resources: Resource[]) {
+    const files = filesFor(resources);
+    if (writesDisabled || workingRef.current || !files) return;
+    setRemovalChoice({
+      files,
+      names: resources.map((resource) => resource.name),
+    });
+  }
+  function refreshResources() {
+    if (workingRef.current) return;
+    setActionError("");
+    void readResources(scopeGeneration.current);
+  }
+  const selectedWritable = !!filesFor(selectedEntries),
+    latestRemoval = removed[0],
+    operationFeedback = (
+      <>
+        {working && (
+          <p className="ce-resource-operation-status" role="status">
+            {working}
           </p>
-          <div className="ce-actions">
-            <button className="ce-button primary" disabled title={notReady}>
-              从文件安装
-            </button>
-            <button className="ce-button" onClick={() => onOpen(section)}>
-              打开文件夹
+        )}
+        {(actionError || recoveryError) && (
+          <div className="ce-resource-operation-error" role="alert">
+            <span>{actionError || recoveryError}</span>
+            {recoveryError && writableKind && (
+              <button
+                className="ce-button"
+                disabled={mutationBlocked}
+                onClick={() =>
+                  void writeResources(
+                    "正在恢复上次未完成的操作…",
+                    () =>
+                      api<ResourceWriteResult>("resource_recover", {
+                        id,
+                        kind: section,
+                      }),
+                    true,
+                  )
+                }
+              >
+                恢复未完成操作
+              </button>
+            )}
+            <button
+              className="ce-button"
+              onClick={refreshResources}
+              disabled={!!working || loading}
+            >
+              刷新
             </button>
           </div>
-        </section>
-      </div>
-    );
-  return (
-    <div className="ce-local-resources">
-      <label className="ce-card ce-searchbar">
-        <Search size={17} />
-        <input
-          placeholder="搜索资源：名称 / 描述 / 标签"
-          aria-label="搜索资源"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-      </label>
+        )}
+      </>
+    ),
+    toolbar = (
       <section className="ce-card resource-toolbar">
         <button className="ce-button primary" onClick={() => onOpen(section)}>
           打开文件夹
         </button>
-        <button className="ce-button" disabled title={notReady}>
+        <button
+          className="ce-button"
+          disabled={writesDisabled}
+          title={!writableKind ? notReady : undefined}
+          onClick={importResources}
+        >
           从文件安装
         </button>
         <button className="ce-button" disabled title={notReady}>
@@ -668,7 +875,149 @@ function ResourcePanel({
         <button className="ce-button" disabled title={notReady}>
           导出信息
         </button>
+        {latestRemoval && writableKind && (
+          <button
+            className="ce-button"
+            disabled={writesDisabled}
+            title={`恢复上次删除的 ${latestRemoval.files.length} 个文件`}
+            onClick={() =>
+              void writeResources("正在恢复已删除的文件…", () =>
+                api<ResourceWriteResult>("resource_restore", {
+                  id,
+                  kind: section,
+                  operationId: latestRemoval.id,
+                }),
+              )
+            }
+          >
+            撤销删除
+          </button>
+        )}
       </section>
+    ),
+    removalConfirmation = removalChoice && (
+      <div
+        className="modal-shade rd-name-shade"
+        onClick={() => setRemovalChoice(null)}
+      >
+        <div
+          className="rd-name-dialog ce-resource-remove-dialog"
+          ref={removalDialog}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="ce-resource-remove-title"
+          aria-describedby="ce-resource-remove-description"
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setRemovalChoice(null);
+            }
+            if (event.key === "Tab") {
+              const controls = [
+                ...event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                  "button:not(:disabled)",
+                ),
+              ];
+              const first = controls[0],
+                last = controls[controls.length - 1];
+              if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last?.focus();
+              } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first?.focus();
+              }
+            }
+          }}
+        >
+          <h2 id="ce-resource-remove-title">删除资源</h2>
+          <p id="ce-resource-remove-description">
+            确定删除这 {removalChoice.files.length} 个文件吗？删除后可以通过
+            “撤销删除”恢复。
+          </p>
+          <ul className="ce-resource-remove-files">
+            {removalChoice.files.map((file, index) => (
+              <li key={file.file_name}>
+                <strong>{removalChoice.names[index]}</strong>
+                <small>{file.file_name}</small>
+              </li>
+            ))}
+          </ul>
+          <div className="rd-name-actions">
+            <button
+              className="ce-button"
+              onClick={() => setRemovalChoice(null)}
+            >
+              取消
+            </button>
+            <button
+              className="ce-button primary"
+              disabled={writesDisabled}
+              onClick={() =>
+                void writeResources("正在删除资源…", () =>
+                  api<ResourceWriteResult>("resource_remove", {
+                    id,
+                    kind: section,
+                    files: removalChoice.files,
+                  }),
+                )
+              }
+            >
+              删除
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  if (!loading && !error && !entries.length)
+    return (
+      <div
+        className={
+          "ce-local-resources is-empty" + (latestRemoval ? " has-recovery" : "")
+        }
+      >
+        {latestRemoval && toolbar}
+        {operationFeedback}
+        <div className="ce-state-stage">
+          <section className="ce-card ce-state-box">
+            <h2>尚未安装资源</h2>
+            <p>
+              你可以从已经下载好的文件安装资源。
+              <br />
+              如果你已经安装了资源，可能是实例隔离设置有误，请在设置中调整实例隔离选项。
+            </p>
+            <div className="ce-actions">
+              <button
+                className="ce-button primary"
+                disabled={writesDisabled}
+                title={!writableKind ? notReady : undefined}
+                onClick={importResources}
+              >
+                从文件安装
+              </button>
+              <button className="ce-button" onClick={() => onOpen(section)}>
+                打开文件夹
+              </button>
+            </div>
+          </section>
+        </div>
+        {removalConfirmation}
+      </div>
+    );
+  return (
+    <div className="ce-local-resources">
+      <label className="ce-card ce-searchbar">
+        <Search size={17} />
+        <input
+          placeholder="搜索资源：名称 / 描述 / 标签"
+          aria-label="搜索资源"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </label>
+      {toolbar}
+      {operationFeedback}
       <section className="ce-card resource-list">
         <div className="resource-list-heading">
           <div className="resource-tabs">
@@ -705,9 +1054,16 @@ function ResourcePanel({
         {loading ? (
           <p className="ce-empty">正在读取资源…</p>
         ) : error ? (
-          <p className="ce-empty" role="alert">
-            {error}
-          </p>
+          <div className="ce-empty ce-resource-read-error" role="alert">
+            <p>{error}</p>
+            <button
+              className="ce-button"
+              disabled={!!working}
+              onClick={refreshResources}
+            >
+              重新读取
+            </button>
+          </div>
         ) : filter === "updates" ? (
           <div className="ce-resource-updates-state" role="status">
             <strong>模组更新检测尚未开放</strong>
@@ -756,6 +1112,9 @@ function ResourcePanel({
                     {v.description ? `: ${v.description}` : ""}
                   </small>
                   {!v.enabled && <small>已禁用</small>}
+                  {writableKind && !writableResourceFile(v) && (
+                    <small>只读</small>
+                  )}
                 </div>
                 <div
                   className="ce-resource-hover-actions"
@@ -783,12 +1142,23 @@ function ResourcePanel({
                   <span
                     className="ce-resource-action-tip"
                     data-tooltip={
-                      (v.enabled ? "禁用" : "启用") + "（尚未开放）"
+                      section !== "mods"
+                        ? "仅模组支持启用和禁用"
+                        : !writableResourceFile(v)
+                          ? "只读：无法确认普通文件身份"
+                          : v.enabled
+                            ? "禁用"
+                            : "启用"
                     }
                   >
                     <button
-                      disabled
+                      disabled={
+                        writesDisabled ||
+                        section !== "mods" ||
+                        !writableResourceFile(v)
+                      }
                       aria-label={v.name + (v.enabled ? "：禁用" : "：启用")}
+                      onClick={() => setEnabled([v], !v.enabled)}
                     >
                       {v.enabled ? (
                         <CircleMinus size={15} />
@@ -799,9 +1169,19 @@ function ResourcePanel({
                   </span>
                   <span
                     className="ce-resource-action-tip"
-                    data-tooltip="删除（尚未开放）"
+                    data-tooltip={
+                      !writableKind
+                        ? "删除（尚未开放）"
+                        : !writableResourceFile(v)
+                          ? "只读：无法确认普通文件身份"
+                          : "删除（可恢复）"
+                    }
                   >
-                    <button disabled aria-label={v.name + "：删除"}>
+                    <button
+                      disabled={writesDisabled || !writableResourceFile(v)}
+                      aria-label={v.name + "：删除"}
+                      onClick={() => chooseRemoval([v])}
+                    >
                       <Trash2 size={15} />
                     </button>
                   </span>
@@ -815,17 +1195,42 @@ function ResourcePanel({
         <div className="ce-resource-selection-bar" aria-label="所选资源操作">
           <div className="ce-resource-selection-count">
             已选择 {selectedEntries.length} 个文件
+            {writableKind && !selectedWritable && <span>（包含只读项目）</span>}
           </div>
           <div className="ce-resource-selection-actions">
             <button disabled title="模组更新尚未开放">
               <Upload size={16} />
               更新
             </button>
-            <button disabled title="启用资源尚未开放">
+            <button
+              disabled={
+                writesDisabled || section !== "mods" || !selectedWritable
+              }
+              title={
+                section !== "mods"
+                  ? "仅模组支持启用和禁用"
+                  : !selectedWritable
+                    ? "所选资源包含只读项目"
+                    : undefined
+              }
+              onClick={() => setEnabled(selectedEntries, true)}
+            >
               <CircleCheck size={16} />
               启用
             </button>
-            <button disabled title="禁用资源尚未开放">
+            <button
+              disabled={
+                writesDisabled || section !== "mods" || !selectedWritable
+              }
+              title={
+                section !== "mods"
+                  ? "仅模组支持启用和禁用"
+                  : !selectedWritable
+                    ? "所选资源包含只读项目"
+                    : undefined
+              }
+              onClick={() => setEnabled(selectedEntries, false)}
+            >
               <CircleMinus size={16} />
               禁用
             </button>
@@ -837,7 +1242,17 @@ function ResourcePanel({
               <Share2 size={16} />
               分享所选
             </button>
-            <button disabled title="删除资源尚未开放">
+            <button
+              disabled={writesDisabled || !selectedWritable}
+              title={
+                !writableKind
+                  ? notReady
+                  : !selectedWritable
+                    ? "所选资源包含只读项目"
+                    : "删除后可以撤销"
+              }
+              onClick={() => chooseRemoval(selectedEntries)}
+            >
               <Trash2 size={16} />
               删除
             </button>
@@ -848,6 +1263,7 @@ function ResourcePanel({
           </div>
         </div>
       )}
+      {removalConfirmation}
       {detail && (
         <div
           className="ce-local-detail-backdrop"

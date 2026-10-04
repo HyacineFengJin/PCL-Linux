@@ -156,6 +156,8 @@ pub struct ResourceInfo {
     path: String,
     enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
@@ -342,6 +344,9 @@ pub async fn instance_resources(
         for entry in fs::read_dir(folder).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
             let name = entry.file_name().to_string_lossy().into_owned();
+            if crate::resource_ops::is_stage_entry(&name) {
+                continue;
+            }
             if kind == "server" && name != "servers.dat" {
                 continue;
             }
@@ -360,6 +365,19 @@ pub async fn instance_resources(
                 version: None,
                 description: None,
                 icon: None,
+                fingerprint: if (kind == "mods"
+                    && (entry.file_name().to_string_lossy().ends_with(".jar")
+                        || entry
+                            .file_name()
+                            .to_string_lossy()
+                            .ends_with(".jar.disabled")))
+                    || (matches!(kind.as_str(), "resourcepacks" | "shaderpacks")
+                        && entry.file_name().to_string_lossy().ends_with(".zip"))
+                {
+                    crate::resource_ops::fingerprint(&entry.path()).ok()
+                } else {
+                    None
+                },
             };
             if kind == "mods"
                 && (row.file_name.ends_with(".jar") || row.file_name.ends_with(".jar.disabled"))
@@ -397,6 +415,7 @@ mod tests {
             file_name: "fixture.jar".into(),
             path: String::new(),
             enabled: true,
+            fingerprint: None,
             version: None,
             description: None,
             icon: None,

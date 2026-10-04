@@ -342,6 +342,66 @@
 .ce-local-resources {
   padding-bottom: 56px;
 }
+.ce-local-resources.is-empty {
+  padding-bottom: 0;
+}
+.ce-local-resources.is-empty.has-recovery .ce-state-stage {
+  min-height: calc(100vh - 174px);
+}
+.ce-local-resources .resource-toolbar {
+  flex-wrap: wrap;
+}
+.ce-resource-operation-status {
+  margin: 0 0 12px;
+  color: var(--blue);
+  font-size: 13px;
+}
+.ce-resource-operation-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 12px;
+  color: #c44b3b;
+  font-size: 13px;
+}
+.ce-resource-operation-error > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ce-resource-operation-error .ce-button {
+  flex: none;
+}
+.ce-resource-read-error p {
+  overflow-wrap: anywhere;
+}
+.ce-resource-remove-dialog {
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+}
+.ce-resource-remove-dialog > p {
+  margin: 0 7px 12px;
+  line-height: 21px;
+}
+.ce-resource-remove-files {
+  list-style: none;
+  max-height: 190px;
+  overflow-y: auto;
+  margin: 0 7px;
+  padding: 0;
+}
+.ce-resource-remove-files li {
+  margin: 7px 0;
+  overflow-wrap: anywhere;
+}
+.ce-resource-remove-files strong,
+.ce-resource-remove-files small {
+  display: block;
+  font-weight: 400;
+}
+.ce-resource-remove-files small {
+  color: #9299a3;
+}
 .ce-local-resources .resource-tabs button.ce-pill {
   color: white;
   background: var(--blue);
