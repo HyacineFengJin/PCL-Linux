@@ -13,7 +13,9 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { Collapse } from "./Collapse";
-import type { Api } from "./types";
+import type { Api, Instance } from "./types";
+import { ResourceInstall } from "./ResourceInstall";
+import type { ResourceInstallRequest } from "./resourceInstallPlan";
 import "./resource-details.css";
 
 export type ResourceSummary = {
@@ -247,10 +249,20 @@ export function ResourceDetails({
   api,
   resource,
   onNotify,
+  scopeKey,
+  selectedInstance,
+  native,
+  disabled,
+  onTaskStart,
 }: {
   api: Api;
   resource: ResourceSummary;
   onNotify: (message: string) => void;
+  scopeKey: string;
+  selectedInstance: Instance | null;
+  native: boolean;
+  disabled: boolean;
+  onTaskStart: (id: string) => void;
 }) {
   const [details, setDetails] = useState<Details | null>(null);
   const [loading, setLoading] = useState(false);
@@ -265,6 +277,14 @@ export function ResourceDetails({
     title: string;
   } | null>(null);
   const [selectedOpen, setSelectedOpen] = useState(true);
+  const [fileChoice, setFileChoice] = useState<{
+    version: string;
+    filename: string;
+  } | null>(null);
+  const [installChoice, setInstallChoice] = useState<{
+    context: object;
+    request: ResourceInstallRequest;
+  } | null>(null);
   const [dependencies, setDependencies] = useState<
     Record<string, DependencyState>
   >({});
@@ -280,12 +300,48 @@ export function ResourceDetails({
   const nameInput = useRef<HTMLInputElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
   const selectedCard = useRef<HTMLElement>(null);
+  const installButton = useRef<HTMLButtonElement>(null);
   const source = resource.source ?? "Modrinth";
   const local = source.toLowerCase() === "local";
   const modrinth =
     source.toLowerCase() === "modrinth" && Boolean(resource.project_id);
   const pack =
     (details?.project.project_type ?? resource.project_type) === "modpack";
+  const installable =
+    modrinth &&
+    ["mod", "resourcepack", "shader"].includes(
+      details?.project.project_type ?? resource.project_type ?? "",
+    );
+  const selectedFile =
+    selected?.version.files.find(
+      (file) =>
+        fileChoice?.version === selected.version.id &&
+        fileChoice.filename === file.filename,
+    ) ??
+    selected?.version.files.find((file) => file.primary) ??
+    selected?.version.files[0];
+  const contextKey = JSON.stringify([
+    scopeKey,
+    source,
+    resource.project_id,
+    retry,
+    selectedInstance?.id,
+    selectedInstance?.minecraft_version,
+    selectedInstance?.loader,
+    selected?.version.id,
+    selectedFile?.filename,
+  ]);
+  // Equal IDs can reappear after browsing another root. The owner object also
+  // invalidates saved actions and an open confirmation when that scope changes.
+  const installationContext = useRef({ api, contextKey });
+  if (
+    installationContext.current.api !== api ||
+    installationContext.current.contextKey !== contextKey
+  )
+    installationContext.current = { api, contextKey };
+  const renderedInstallationContext = installationContext.current;
+  const admission = useRef({ native, disabled });
+  admission.current = { native, disabled };
   const project = details?.project;
   const title = project?.title ?? resource.title;
   const loaders = project?.loaders ?? resource.categories.filter(isLoader);
@@ -346,6 +402,8 @@ export function ResourceDetails({
     setDependencies({});
     setDependencyOpen({});
     setSelected(null);
+    setFileChoice(null);
+    setInstallChoice(null);
     setPackChoice(null);
     setGameFilter("全部");
     setLoaderFilter("全部");
@@ -477,6 +535,8 @@ export function ResourceDetails({
   }
   function chooseVersion(version: Version, groupTitle: string) {
     setSelected({ version, title: groupTitle });
+    setFileChoice(null);
+    setInstallChoice(null);
     setSelectedOpen(true);
     if (pack) {
       setInstanceName(
@@ -842,11 +902,36 @@ export function ResourceDetails({
                   <div className="rd-version-list-label">版本列表</div>
                   {versionRow(selected.version, selected.title)}
                   <div className="rd-selected-files">
-                    {selected.version.files.map((file, index) => (
-                      <span key={`${file.filename}:${index}`}>
-                        {file.filename}（{fileSize(file.size)}）
-                      </span>
-                    ))}
+                    {selected.version.files.map((file, index) =>
+                      selected.version.files.length > 1 ? (
+                        <button
+                          key={`${file.filename}:${index}`}
+                          className="ce-text-button rd-selected-file"
+                          type="button"
+                          aria-pressed={
+                            selectedFile?.filename === file.filename
+                          }
+                          onClick={() => {
+                            if (
+                              installationContext.current !==
+                              renderedInstallationContext
+                            )
+                              return;
+                            setFileChoice({
+                              version: selected.version.id,
+                              filename: file.filename,
+                            });
+                            setInstallChoice(null);
+                          }}
+                        >
+                          {file.filename}（{fileSize(file.size)}）
+                        </button>
+                      ) : (
+                        <span key={`${file.filename}:${index}`}>
+                          {file.filename}（{fileSize(file.size)}）
+                        </span>
+                      ),
+                    )}
                   </div>
                   <div className="rd-selected-actions">
                     <button
@@ -860,6 +945,42 @@ export function ResourceDetails({
                       <Download size={15} />
                       {pack ? "安装整合包" : "下载文件"}
                     </button>
+                    {installable && (
+                      <button
+                        ref={installButton}
+                        className="ce-button"
+                        disabled={
+                          !native ||
+                          disabled ||
+                          !scopeKey ||
+                          !selectedInstance ||
+                          !selectedFile
+                        }
+                        onClick={() => {
+                          if (
+                            installationContext.current !==
+                              renderedInstallationContext ||
+                            !admission.current.native ||
+                            admission.current.disabled ||
+                            !scopeKey ||
+                            !selectedInstance ||
+                            !selectedFile
+                          )
+                            return;
+                          setInstallChoice({
+                            context: renderedInstallationContext,
+                            request: {
+                              project_id: selected.version.project_id,
+                              version_id: selected.version.id,
+                              file_name: selectedFile.filename,
+                            },
+                          });
+                        }}
+                      >
+                        <Download size={15} />
+                        安装到实例
+                      </button>
+                    )}
                   </div>
                 </div>
               </Collapse>
@@ -912,6 +1033,23 @@ export function ResourceDetails({
             </p>
           )}
         </>
+      )}
+      {installChoice?.context === renderedInstallationContext && (
+        <ResourceInstall
+          api={api}
+          scopeKey={scopeKey}
+          selectedInstance={selectedInstance}
+          request={installChoice.request}
+          contextKey={contextKey}
+          native={native}
+          disabled={disabled}
+          onTaskStart={onTaskStart}
+          onClose={() => {
+            setInstallChoice(null);
+            installButton.current?.focus();
+          }}
+          onNotify={onNotify}
+        />
       )}
       {packChoice && (
         <div

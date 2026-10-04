@@ -7,6 +7,7 @@
 - Minecraft 原版版本目录、搜索、自定义实例名称，以及 Fabric、Forge、NeoForge 自动安装。
 - 分步安装进度、任务取消与未完成文件清理，完整文件缓存复用及 SHA-1 校验。
 - 模组加载器安装包目录，以及 Modrinth 模组、整合包、数据包、资源包和光影包搜索、版本详情与依赖浏览。
+- Modrinth 模组、资源包和光影安装，必要依赖规划、SHA-512 校验和相同内容复用。
 - 游戏版本扫描、搜索、选择与实例设置。
 - 实例描述、内置图标、列表分类与收藏管理，以及可恢复的物理实例重命名。
 - 已有实例的组件重置、核心备份与中断恢复；按内容选择导出和导入本地 ZIP，并保存导出配置。
@@ -18,7 +19,7 @@
 - 游戏进程管理、退出状态与日志查看。
 - PCL CE 风格导航、账号侧栏、实例修改／导出、资源详情及任务管理界面。
 
-项目仍在开发中，目前支持游戏与上述加载器安装、已有游戏启动与本地资源管理。OptiFine、LabyMod 自动安装、在线资源下载和模组更新尚未提供；部分早期版本暂不支持自动安装。Microsoft 正版登录暂未开放，服务接入由项目维护者完成。
+项目仍在开发中，目前支持游戏与上述加载器安装、已有游戏启动、本地资源管理和 Modrinth 资源安装。OptiFine、LabyMod 自动安装、在线整合包安装、单文件另存和模组更新尚未提供；部分早期版本暂不支持自动安装。Microsoft 正版登录暂未开放，服务接入由项目维护者完成。
 
 ## 构建与运行
 
@@ -63,7 +64,7 @@ npm run dev --prefix apps/desktop
 
 ## English
 
-PCL Linux is an experimental native Linux launcher for Minecraft: Java Edition, built with Rust, Tauri 2, React, and TypeScript. It installs vanilla, Fabric, and modern Forge/NeoForge versions with custom instance names, launches existing game installations, and displays game logs. Java can be selected automatically or registered manually, with global and per-instance choices. Tasks support cancellation and incomplete-file cleanup. Local management includes multiple game directories, instance display preferences, physical renaming with reference migration and recovery, mod toggling, resource imports, and recoverable removal. Supported existing instances can reset their loader components with core backups and interruption recovery, or export selected content to a local ZIP. The launcher can import its own local ZIP exports under a custom name and restore recoverably deleted instances. Some legacy layouts, OptiFine/LabyMod installation, online resource downloads, and mod updates are not yet available.
+PCL Linux is an experimental native Linux launcher for Minecraft: Java Edition, built with Rust, Tauri 2, React, and TypeScript. It installs vanilla, Fabric, and modern Forge/NeoForge versions with custom instance names, launches existing game installations, and displays game logs. Java can be selected automatically or registered manually, with global and per-instance choices. Tasks support cancellation and incomplete-file cleanup. Local management includes multiple game directories, instance display preferences, physical renaming with reference migration and recovery, mod toggling, resource imports, and recoverable removal. Supported existing instances can reset their loader components with core backups and interruption recovery, or export selected content to a local ZIP. The launcher can import its own local ZIP exports under a custom name and restore recoverably deleted instances. Modrinth mods, resource packs and shaders can be installed with required dependencies, SHA-512 verification and exact-content reuse. Some legacy layouts, OptiFine/LabyMod installation, online modpacks, standalone file saving, and mod updates are not yet available.
 
 Microsoft sign-in is not yet available. The project maintainers are responsible for completing the service integration.
 

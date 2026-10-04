@@ -30,6 +30,7 @@ pub enum TaskKind {
     InstanceImport,
     InstanceDelete,
     InstanceRestore,
+    ResourceDownload,
     ResourceOperation,
 }
 
@@ -247,6 +248,7 @@ impl Tasks {
                     TaskKind::InstanceImport => "import-check",
                     TaskKind::InstanceDelete => "delete-check",
                     TaskKind::InstanceRestore => "restore-check",
+                    TaskKind::ResourceDownload => "resource-check",
                     TaskKind::ResourceOperation => "resources",
                 }
                 .into(),
@@ -258,6 +260,7 @@ impl Tasks {
                     TaskKind::InstanceImport => "正在检查本地 ZIP…",
                     TaskKind::InstanceDelete => "正在检查实例删除范围…",
                     TaskKind::InstanceRestore => "正在检查实例恢复记录…",
+                    TaskKind::ResourceDownload => "正在获取资源与必需前置信息…",
                     TaskKind::ResourceOperation => "正在检查资源文件…",
                 }
                 .into(),
@@ -312,6 +315,7 @@ impl Tasks {
                     TaskKind::InstanceImport => "正在取消导入并清理未完成文件…",
                     TaskKind::InstanceDelete => "正在取消删除…",
                     TaskKind::InstanceRestore => "正在取消恢复…",
+                    TaskKind::ResourceDownload => "正在取消资源下载并清理未完成文件…",
                     TaskKind::ResourceOperation => "正在取消资源操作…",
                 }
                 .into();
@@ -489,6 +493,7 @@ impl Tasks {
                             TaskKind::InstanceImport => "导入已取消，未完成文件已清理",
                             TaskKind::InstanceDelete => "删除已取消，原实例已保留",
                             TaskKind::InstanceRestore => "恢复已取消，可恢复文件已保留",
+                            TaskKind::ResourceDownload => "资源下载已取消，未完成文件已清理",
                             TaskKind::ResourceOperation => "资源操作已取消",
                         }
                         .into()

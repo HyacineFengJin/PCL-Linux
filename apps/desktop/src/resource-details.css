@@ -345,6 +345,16 @@ button.rd-version-row:hover,
 .rd-selected-actions {
   margin: 14px 0 0 41px;
 }
+.rd-selected-file {
+  text-align: left;
+  width: fit-content;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.rd-selected-file[aria-pressed="true"] {
+  color: #2078da;
+  text-decoration: underline;
+}
 .rd-local-path {
   margin: 8px 0 0 41px;
   color: #9299a3;
@@ -393,6 +403,33 @@ button.rd-version-row:hover,
   color: #c44b3b;
   font-size: 12px;
   margin: 6px 7px 0;
+}
+.rd-resource-install .ce-instance-file-dialog {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.rd-resource-install .ce-instance-file-dialog > h2,
+.rd-resource-install .rd-name-actions {
+  flex: none;
+}
+.rd-resource-install-content {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.rd-resource-install-content > p {
+  margin: 10px 7px;
+  font-size: 13px;
+  line-height: 21px;
+  overflow-wrap: anywhere;
+}
+.rd-resource-install-content > .ce-instance-plan-warning {
+  color: #9b8554;
+}
+.rd-resource-install-content > .rd-name-error {
+  color: #c44b3b;
+  font-size: 12px;
 }
 @media (max-width: 700px) {
   .rd-summary {

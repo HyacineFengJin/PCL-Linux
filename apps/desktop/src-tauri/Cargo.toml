@@ -23,6 +23,7 @@ pcl-core = { path = "../../../crates/core" }
 pcl-auth = { path = "../../../crates/auth" }
 pcl-install = { path = "../../../crates/install" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["time", "macros"] }
 
 fastnbt = "2.6.3"
 flate2 = "1"

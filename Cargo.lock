@@ -2914,6 +2914,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tokio",
  "toml 0.8.2",
  "zip",
 ]

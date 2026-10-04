@@ -13,6 +13,28 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+mod verified_batch;
+pub use verified_batch::VerifiedImport;
+
+/// One recoverable transaction for all downloaded resource kinds. Inputs remain
+/// anonymous; the caller closes cancellation and rechecks its captured plan in commit.
+pub fn import_verified_batch(
+    root: &Path,
+    id: &str,
+    files: &mut [VerifiedImport],
+    cancel: &AtomicBool,
+    commit: &mut dyn FnMut() -> Result<(), String>,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<MutationResult, String> {
+    verified_batch::import_verified_batch(root, id, files, cancel, commit, progress)
+}
+pub fn ensure_verified_batches_ready(root: &Path) -> Result<(), String> {
+    verified_batch::ensure_ready(root)
+}
+pub fn recover_verified_batches(root: &Path) -> Result<MutationResult, String> {
+    verified_batch::recover_root(root)
+}
+
 const MAX_FILES: usize = 512;
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_BATCH_BYTES: u64 = 8 * 1024 * 1024 * 1024;
@@ -490,6 +512,9 @@ impl Context {
         let history_lock = write
             .then(|| crate::instance_rename_refs::root_history_lock(&root_path))
             .transpose()?;
+        if write {
+            verified_batch::ensure_ready(&root_path)?;
+        }
         let path = crate::ui_data::resource_dir(&root_path, id, kind)?;
         let relative = relative_string(
             path.strip_prefix(&root_path)
@@ -1580,6 +1605,13 @@ pub fn removed(root: &Path, id: &str, kind: &str) -> Result<Vec<RemovedOperation
 
 /// Read-only launch guard. No game files or journals are changed here.
 pub fn ensure_ready(root: &Path) -> Result<(), String> {
+    ensure_local_resources_ready(root)?;
+    ensure_verified_batches_ready(root)
+}
+
+/// Legacy-only guard for an active batch's commit callback. The batch already
+/// holds the history lock and owns a pending record, so checking itself would fail.
+pub fn ensure_local_resources_ready(root: &Path) -> Result<(), String> {
     let root_path = root.canonicalize().map_err(|e| e.to_string())?;
     let root = Dir::open(&root_path)?;
     let Some(pcl) = root.optional_child(".pcl-linux")? else {
@@ -1605,6 +1637,7 @@ pub fn ensure_ready(root: &Path) -> Result<(), String> {
 }
 
 pub fn ensure_new_instance_name(root: &Path, id: &str) -> Result<(), String> {
+    ensure_verified_batches_ready(root)?;
     safe_name(id)?;
     let directory = Dir::open(root)?;
     let Some(pcl) = directory.optional_child(".pcl-linux")? else {
@@ -1631,6 +1664,7 @@ pub fn ensure_new_instance_name(root: &Path, id: &str) -> Result<(), String> {
 
 /// The caller must hold the same writer admission used for other mutations.
 pub fn recover_pending(root: &Path, id: &str, kind: &str) -> Result<(), String> {
+    verified_batch::recover_pending(root, id)?;
     let context = Context::new(root, id, kind, true)?;
     recover(&context)
 }

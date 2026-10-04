@@ -23,7 +23,9 @@ export function instanceTaskAction(kind: DownloadStatus["kind"]) {
             ? "删除"
             : kind === "instance_restore"
               ? "恢复"
-              : "安装";
+              : kind === "resource_download"
+                ? "资源下载安装"
+                : "安装";
 }
 export function useDownloadSpeed(status: DownloadStatus) {
   const sample = useRef<{
@@ -181,6 +183,8 @@ export function TaskManager({
     status.stage,
   );
   const action = instanceTaskAction(status.kind);
+  const cancelAction =
+    status.kind === "resource_download" ? "资源下载" : action;
   const phase =
     status.phase ||
     (status.stage === "downloading" ? "downloading" : "metadata");
@@ -199,15 +203,21 @@ export function TaskManager({
         ? phase === "committing"
           ? 1
           : 0
-        : phase === "metadata"
-          ? 0
-          : phase === "downloading"
-            ? 1
-            : phase === "installing"
-              ? 2
-              : phase === "complete"
+        : status.kind === "resource_download"
+          ? phase === "resource-publish" || phase === "installing"
+            ? 2
+            : status.stage === "downloading"
+              ? 1
+              : 0
+          : phase === "metadata"
+            ? 0
+            : phase === "downloading"
+              ? 1
+              : phase === "installing"
                 ? 2
-                : 0;
+                : phase === "complete"
+                  ? 2
+                  : 0;
   const fallbackLabels =
     status.kind === "instance_import"
       ? [
@@ -218,7 +228,9 @@ export function TaskManager({
         ]
       : status.kind === "instance_delete" || status.kind === "instance_restore"
         ? ["检查实例文件与引用", "移动实例目录", "校验文件并保存恢复记录"]
-        : ["获取原版版本信息", "下载游戏与运行所需文件", "安装游戏"];
+        : status.kind === "resource_download"
+          ? ["获取资源与前置信息", "下载并校验文件", "安装资源文件"]
+          : ["获取原版版本信息", "下载游戏与运行所需文件", "安装游戏"];
   const steps: DownloadStep[] = status.steps?.length
     ? status.steps
     : fallbackLabels.map((label, index) => ({
@@ -308,8 +320,10 @@ export function TaskManager({
         </strong>
         <button
           className="icon-button"
-          aria-label={cancelling ? "正在清理未完成文件" : `取消${action}任务`}
-          title={cancelling ? "正在清理…" : `取消${action}任务`}
+          aria-label={
+            cancelling ? "正在清理未完成文件" : `取消${cancelAction}任务`
+          }
+          title={cancelling ? "正在清理…" : `取消${cancelAction}任务`}
           disabled={
             !native || !active || status.can_cancel === false || cancelling
           }

@@ -13,8 +13,10 @@ mod instance_rename_service;
 mod instance_reset;
 mod java_commands;
 mod java_service;
+mod modrinth_install;
 mod platform;
 mod resource_details;
+mod resource_install_commands;
 mod resource_ops;
 mod tasks;
 mod ui_catalog;
@@ -66,6 +68,7 @@ struct Bootstrap {
     scan_error: Option<String>,
     reset_recovery_error: Option<String>,
     import_recovery_error: Option<String>,
+    resource_install_recovery_error: Option<String>,
     delete_recovery_error: Option<String>,
     delete_recovery_root_id: Option<String>,
     rename_recovery_error: Option<String>,
@@ -224,6 +227,18 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
             Err(error) => (Some(error), None),
         }
     };
+    let resource_install_recovery_error = if s.tasks.active().is_some_and(|task| {
+        matches!(
+            task.kind,
+            tasks::TaskKind::ResourceDownload | tasks::TaskKind::ResourceOperation
+        ) && task.root_id == settings.root_id
+    }) {
+        None
+    } else {
+        canonical
+            .as_ref()
+            .and_then(|path| resource_ops::ensure_verified_batches_ready(path).err())
+    };
     Bootstrap {
         settings,
         roots,
@@ -232,6 +247,7 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
         scan_error,
         reset_recovery_error,
         import_recovery_error,
+        resource_install_recovery_error,
         delete_recovery_error,
         delete_recovery_root_id,
         rename_recovery_error,
@@ -450,6 +466,9 @@ fn require_root_removable(s: &Shared, id: &str) -> Result<(), String> {
         .config
         .resolve(Some(id))
         .map_err(|error| format!("无法检查实例恢复记录，请先恢复目录访问后再移除登记：{error}"))?;
+    // Keep the registered identity while an interrupted publication still needs
+    // its root-level recovery entry, including instances whose JSON is missing.
+    resource_ops::ensure_verified_batches_ready(Path::new(&root.path))?;
     if !instance_delete::reserved_names(Path::new(&root.path))?.is_empty() {
         return Err("此游戏目录仍有已删除实例，请先恢复它们后再移除目录登记".into());
     }
@@ -1645,6 +1664,9 @@ fn main() {
             resource_recover,
             resource_removed,
             resource_import,
+            resource_install_commands::resource_install_plan,
+            resource_install_commands::resource_install_start,
+            resource_install_commands::resource_install_recover,
             ui_catalog::ui_open_link,
             ui_catalog::loader_catalog,
             ui_catalog::loader_candidates,
@@ -2329,6 +2351,80 @@ mod integration_tests {
     }
 
     #[test]
+    fn resource_request_keeps_explicit_root_and_settings_on_pre_network_failure() {
+        let fixture = Fixture::new();
+        let state = Arc::new(fixture.shared());
+        let (first, id) = rename_fixture(&state);
+        let second = fixture.second(&state.config);
+        state.config.select(&second.id).unwrap();
+        let settings = fs::read(fixture.0.join(".pcl-rust/settings.json")).unwrap();
+        let request = modrinth_install::InstallRequest {
+            project_id: "invalid-id".into(),
+            version_id: "12345678".into(),
+            file_name: None,
+        };
+        let reply = resource_install_commands::start_request(
+            state.clone(),
+            Some(&first.id),
+            id.clone(),
+            request,
+            "confirmed".into(),
+        )
+        .unwrap();
+        let task = state
+            .tasks
+            .wait_terminal(reply["id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(task.root_id, first.id);
+        assert_eq!(task.root_path, first.path);
+        assert_eq!(task.instance_id.as_deref(), Some(id.as_str()));
+        assert_eq!(task.kind, TaskKind::ResourceDownload);
+        assert_eq!(task.stage, tasks::TaskStage::Error);
+        assert_eq!(task.network_bytes, 0);
+        assert!(state.tasks.active().is_none());
+        assert_eq!(state.config.snapshot().root_id, second.id);
+        assert_eq!(
+            settings,
+            fs::read(fixture.0.join(".pcl-rust/settings.json")).unwrap()
+        );
+        assert!(Path::new(&first.path)
+            .join("versions")
+            .join(&id)
+            .join("mods")
+            .read_dir()
+            .unwrap()
+            .next()
+            .is_none());
+        assert!(!fixture.0.join(".pcl-rust/resource-downloads").exists());
+    }
+
+    #[test]
+    fn interrupted_resource_batch_exposes_recovery_and_keeps_root_registered() {
+        let fixture = Fixture::new();
+        let state = fixture.shared();
+        let first = state.config.resolve(None).unwrap();
+        let second = fixture.second(&state.config);
+        let pending = Path::new(&first.path).join(".pcl-linux/resource-batches/unknown-record");
+        fs::create_dir_all(&pending).unwrap();
+        fs::write(pending.join("retain.txt"), b"unknown recovery data").unwrap();
+        assert!(bootstrap_view(&state)
+            .resource_install_recovery_error
+            .is_some());
+        assert!(require_root_removable(&state, &first.id).is_err());
+        state.config.select(&second.id).unwrap();
+        assert!(bootstrap_view(&state)
+            .resource_install_recovery_error
+            .is_none());
+        assert!(require_root_removable(&state, &second.id).is_ok());
+        assert!(resource_ops::recover_verified_batches(Path::new(&first.path)).is_err());
+        assert_eq!(
+            fs::read(pending.join("retain.txt")).unwrap(),
+            b"unknown recovery data"
+        );
+        assert!(state.config.resolve(Some(&first.id)).is_ok());
+    }
+
+    #[test]
     fn instance_jobs_wait_for_game_and_all_writers_and_refuse_shutdown() {
         let fixture = Fixture::new();
         let state = fixture.shared();
@@ -2345,6 +2441,10 @@ mod integration_tests {
             TaskKind::InstanceReset,
             TaskKind::InstanceExport,
             TaskKind::InstanceRename,
+            TaskKind::InstanceImport,
+            TaskKind::InstanceDelete,
+            TaskKind::InstanceRestore,
+            TaskKind::ResourceDownload,
         ] {
             let task = state
                 .tasks

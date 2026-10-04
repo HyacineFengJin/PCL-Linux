@@ -9,9 +9,11 @@
 | 前端状态与桌面调用 | `apps/desktop/src/main.tsx` | 页面、当前目录、bootstrap、作用域 API 与响应接纳 |
 | 实例管理界面 | `InstancesPanel.tsx`、`InstanceOperations.tsx`、`InstanceImport.tsx`、`InstanceTrash.tsx` | 实例资料、改名、修改、导出、ZIP 导入与删除恢复 |
 | 下载与任务界面 | `DownloadPanel.tsx`、`TaskManager.tsx` | 任务轮询、完成刷新、取消后返回 |
+| 在线资源界面 | `ResourceDetails.tsx`、`ResourceInstall.tsx`、`resourceInstallPlan.ts` | 版本与文件选择、作用域确认、必要依赖计划和安装提交 |
 | Java 管理界面 | `JavaPanel.tsx`、`JavaSelect.tsx`、`javaManagement.ts` | 全局与实例选择、目录/修订作用域、过期响应排除 |
 | 桌面命令与应用生命周期 | `apps/desktop/src-tauri/src/main.rs` | 命令参数、目标绑定、任务调度、游戏进程与关闭处理 |
 | 本地实例操作命令 | `instance_commands.rs` | ZIP 导入与删除恢复的目录绑定、计划确认、任务准入与错误归类 |
+| 在线资源命令 | `resource_install_commands.rs` | 目标绑定、后台任务、传输进度、提交检查与根目录恢复 |
 | 改名编排 | `instance_rename_service.rs` | 组合文件/资料 revision、进度、错误归类与缓存刷新 |
 | 持久设置与实例资料 | `config.rs`、`instance_meta.rs`、`export_presets.rs` | 多目录、选择与内存、元资料、导出配置 |
 | Java 桌面服务 | `java_commands.rs`、`java_service.rs`、`platform.rs` | 选择器、登记请求绑定与探测前后校验 |
@@ -20,6 +22,8 @@
 | Minecraft 核心 | `crates/core/src/lib.rs` | 版本识别、继承、依赖和启动参数 |
 | Java 核心 | `crates/core/src/java.rs` | 有限时探测、发现、架构与版本策略、启动选择 |
 | 下载与安装 | `crates/install/src/` | 网络请求、校验缓存、原版与加载器安装 |
+| Modrinth 安装 | `modrinth_install/` | 官方元数据、兼容与必需依赖规划、实例快照、匿名网络暂存 |
+| 资源批次提交 | `resource_ops/verified_batch/` | 不同资源类型的统一提交、所有权登记、回滚和中断恢复 |
 | 账号 | `crates/auth/src/lib.rs`、桌面的 `accounts.rs` | 认证协议、密钥环、账号状态与刷新 |
 
 表中未写目录的 Rust 文件位于 `apps/desktop/src-tauri/src/`；TSX 文件位于 `apps/desktop/src/`。现有桌面和前端 `main` 仍承担较多协调工作；新增业务应先确定职责归属，避免继续堆入页面或命令函数。
@@ -70,6 +74,16 @@ v2 设置在普通启动时备份并迁移。已有改名 journal 的引用载�
 删除和恢复在 settings flock 后取得恢复区锁，提交前重检 Java 依赖和实例引用。项目待恢复 marker 跨游戏目录阻止资料写入；恢复必须绑定原项目及规范目录。恢复记录仅允许已登记状态的重放或明确的空暂存清理，遇到外部修改保留文件。清理日志临时文件前也要验证恢复目录身份，不能先清理再拒绝外部替换的目录。
 
 `instance_delete/filesystem.rs` 负责目录描述符、内容树快照、锁、移动与空目录清理；主模块负责依赖检查、计划、日志状态和删除/恢复。文件事务回归分别在 `instance_import/tests.rs` 和 `instance_delete/tests.rs`；bootstrap、旧资料及外部重建的组合行为在 `main.rs` 的应用集成用例中。桌面命令在大型归档/内容树的只读校验期间释放 `operations`，返回方案或准入任务前再检查占用、目录绑定和待恢复状态。
+
+## Modrinth 规划、下载与提交
+
+`ResourceDetails` 只选择项目、版本和精确文件名；`ResourceInstall` 读取并确认绑定实例的方案。客户端提交的 URL、哈希或加载器不能取得写入权限。`resource_install_commands` 在后台重读权威方案并比较 revision；网络和大型本地哈希检查不持有 `operations`。任务从信息获取开始就占有单写入准入，页面导航与目录浏览不改变捕获目标。
+
+`modrinth_install/provider.rs` 处理官方 API、响应限额和请求取消；`plan.rs` 处理必要依赖、兼容与本地哈希冲突；`target.rs` 固定实例继承描述、资源目录身份及文件快照；`transfer.rs` 接收并校验文件。取消会丢弃正在等待的请求和匿名文件描述符。计时与取消等待使用既有 Tokio runtime；网络字节仅来自收到的响应，不把复用或磁盘复制计为速度。
+
+所有新文件验证后才交给 `resource_ops::import_verified_batch`。它把模组、资源包和光影当作一个事务，提交前只写自己的暂存区，避免提前改变规划中的资源目录。桌面提交回调关闭取消接纳，再重读已接纳的取消标记，检查目标与旧资源事务；不能使用包含当前批次的 guard 拒绝自己的 journal。
+
+持久状态为 Staging → Prepared → Committed。提交前的恢复只清理仍匹配登记 inode 与内容的本次输出；提交后保留安装结果并清理暂存。根目录级恢复入口不依赖所选实例或某一个资源类型，使跨类型的部分提交仍能恢复。冲突和清理失败保持 Error 与记录，不被迟来的取消掩盖。排查入口为 `modrinth_install/tests.rs`、`resource_ops/verified_batch/tests.rs` 及资源命令的任务集成用例。
 
 ## 修改时维持的约束
 

@@ -143,6 +143,7 @@ type State = {
   rename_recovery_error?: string | null;
   rename_recovery_root_id?: string | null;
   import_recovery_error?: string | null;
+  resource_install_recovery_error?: string | null;
   delete_recovery_error?: string | null;
   delete_recovery_root_id?: string | null;
   config_warning?: string | null;
@@ -163,6 +164,8 @@ const resourceWrites = new Set([
   "resource_restore",
   "resource_import",
   "resource_recover",
+  "resource_install_start",
+  "resource_install_recover",
   "instance_metadata_update",
   "instance_reset_start",
   "instance_reset_recover",
@@ -192,6 +195,9 @@ const rootCommands = new Set([
   "resource_import",
   "resource_removed",
   "resource_recover",
+  "resource_install_plan",
+  "resource_install_start",
+  "resource_install_recover",
   "instance_metadata_update",
   "instance_metadata_read",
   "instance_reset_plan",
@@ -920,9 +926,11 @@ function App() {
             // newer bootstrap while rootWorkingRef is set.
             await load();
           if (
-            ["instance_import_recover", "instance_delete_recover"].includes(
-              command,
-            ) ||
+            [
+              "instance_import_recover",
+              "instance_delete_recover",
+              "resource_install_recover",
+            ].includes(command) ||
             (["instance_reset_recover", "instance_rename_recover"].includes(
               command,
             ) &&
@@ -991,6 +999,36 @@ function App() {
       notify("已恢复未完成的实例重置");
     } catch (e) {
       notify(String(e));
+    }
+  }
+  async function recoverResourceInstall() {
+    const targetRoot = viewContext.current.rootId;
+    if (
+      !native ||
+      archiveAdmission.current.blocked ||
+      rootWorkingRef.current ||
+      archiveRecovery.current ||
+      !targetRoot ||
+      contextKey.current !== rootKey ||
+      !viewContext.current.roots?.some(
+        (root) => root.id === targetRoot && root.available,
+      )
+    )
+      return;
+    const token = Symbol();
+    archiveRecovery.current = token;
+    const target = { id: targetRoot };
+    setResourceTarget(target);
+    try {
+      await api("resource_install_recover", { rootId: targetRoot });
+      await load();
+      notify("已恢复未完成的资源安装");
+    } catch (error) {
+      await load();
+      notify(String(error));
+    } finally {
+      if (archiveRecovery.current === token) archiveRecovery.current = null;
+      setResourceTarget((current) => (current === target ? null : current));
     }
   }
   async function recoverInstanceRename() {
@@ -1079,6 +1117,7 @@ function App() {
       "instance_import",
       "instance_delete",
       "instance_restore",
+      "resource_download",
     ].includes(next.kind || "");
     notify(`${next.version || "游戏"} ${instanceTaskAction(next.kind)}已取消`);
     if (!instanceTask) {
@@ -1094,7 +1133,11 @@ function App() {
   const [settingsPage, setSettingsPage] = useState("launch");
   const [downloadPage, setDownloadPage] = useState("minecraft");
   const taskNavigation = React.useRef({ key: "", epoch: 0 });
-  const navigationKey = `${rootKey}:${screen}:${tab}:${instancePage}:${data?.settings.selected || ""}`;
+  const resourceNavigation =
+    screen === "resource"
+      ? `${resource?.source || ""}:${resource?.project_id || resource?.local_path || ""}`
+      : "";
+  const navigationKey = `${rootKey}:${screen}:${tab}:${instancePage}:${data?.settings.selected || ""}:${resourceNavigation}`;
   if (taskNavigation.current.key !== navigationKey) {
     taskNavigation.current = {
       key: navigationKey,
@@ -1368,7 +1411,8 @@ function App() {
     !!data?.rename_recovery_error ||
     !!data?.reset_recovery_error ||
     !!data?.import_recovery_error ||
-    !!data?.delete_recovery_error;
+    !!data?.delete_recovery_error ||
+    !!data?.resource_install_recovery_error;
   archiveAdmission.current = {
     blocked: !!busy || downloadBusy || resourceBusy || rootWorking,
     rootAvailable: rootAvailable && !instanceRecoveryBlocked,
@@ -2067,6 +2111,23 @@ function App() {
                 </button>
               </section>
             )}
+            {data.resource_install_recovery_error && screen !== "tasks" && (
+              <section className="error-banner" role="alert">
+                <TriangleAlert size={17} />
+                <span>{data.resource_install_recovery_error}</span>
+                <button
+                  className="ce-button"
+                  disabled={
+                    !native ||
+                    archiveAdmission.current.blocked ||
+                    !rootAvailable
+                  }
+                  onClick={() => void recoverResourceInstall()}
+                >
+                  恢复资源安装
+                </button>
+              </section>
+            )}
             {data.reset_recovery_error && screen !== "tasks" && (
               <section className="error-banner" role="alert">
                 <TriangleAlert size={17} />
@@ -2113,6 +2174,18 @@ function App() {
                   api={rootApi}
                   resource={resource}
                   onNotify={notify}
+                  scopeKey={rootId || ""}
+                  selectedInstance={selected || null}
+                  native={native}
+                  disabled={
+                    !!busy ||
+                    downloadBusy ||
+                    resourceBusy ||
+                    rootWorking ||
+                    !rootAvailable ||
+                    instanceRecoveryBlocked
+                  }
+                  onTaskStart={showInstanceTask}
                 />
               ) : screen === "tasks" ? (
                 <TaskManager
