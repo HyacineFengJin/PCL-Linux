@@ -83,14 +83,17 @@ import { ResourceDetails, type ResourceSummary } from "./ResourceDetails";
 import {
   TaskPageOwner,
   taskHasFloatingEntry,
-  taskIdentity,
+  taskIsActive,
+  taskNeedsBootstrap,
 } from "./taskLifecycle";
 import { InstanceImport } from "./InstanceImport";
 import { InstanceTrash } from "./InstanceTrash";
+import { useDownloadTasks } from "./useDownloadTasks";
 import {
   TaskManager,
   TaskStatistics,
-  useDownloadSpeed,
+  useAggregateDownloadSpeed,
+  taskAggregate,
   instanceTaskAction,
 } from "./TaskManager";
 import "./account-interactions.css";
@@ -185,7 +188,6 @@ const resourceWrites = new Set([
   "resource_restore",
   "resource_import",
   "resource_recover",
-  "resource_install_start",
   "resource_update_start",
   "resource_update_restore",
   "resource_install_recover",
@@ -612,6 +614,21 @@ async function api<T>(
   if (command === "system_info") return preview!.system as T;
   if (command === "java_catalog")
     return { runtimes: preview!.java || [], unavailable: [] } as T;
+  if (command === "download_tasks") {
+    const task = preview!.download_status;
+    return {
+      revision: "1",
+      tasks: task?.task_id && task.stage !== "idle" ? [task] : [],
+      runningLimit: 4,
+      pendingLimit: 32,
+      blockedRootIds:
+        task?.root_id &&
+        task.stage !== "idle" &&
+        !["complete", "error", "cancelled"].includes(task.stage)
+          ? [task.root_id]
+          : [],
+    } as T;
+  }
   if (command === "download_status")
     return (preview!.download_status || idleDownload) as T;
   if (command === "resource_import")
@@ -834,31 +851,60 @@ function App() {
   const [taskOrigin, setTaskOrigin] = useState<
     "home" | "versions" | "instance" | "resource"
   >("home");
-  const [downloadStatus, setDownloadStatus] =
-    useState<DownloadStatus>(idleDownload);
-  const downloadSnapshot = React.useRef<DownloadStatus>(idleDownload);
+  const tasks = useDownloadTasks({
+    api,
+    native,
+    onTerminal: handleTaskTerminal,
+  });
+  const taskView = tasks.view;
+  const downloadStatuses = taskView.tasks;
+  const [dismissedTasks, setDismissedTasks] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const dismissedSnapshot = React.useRef(dismissedTasks);
+  dismissedSnapshot.current = dismissedTasks;
+  const visibleTasks = downloadStatuses.filter(
+    (task) => taskIsActive(task) || !dismissedTasks.has(task.task_id || ""),
+  );
+  useEffect(() => {
+    dismissedSnapshot.current = new Set();
+    setDismissedTasks(new Set());
+  }, [tasks.owner]);
+  function dismissTask(record: DownloadStatus) {
+    const current = tasks.snapshot.current.tasks.find(
+      (task) => task.task_id === record.task_id,
+    );
+    if (!current || current.stage !== "error" || !current.task_id) return;
+    const next = new Set(dismissedSnapshot.current);
+    next.add(current.task_id);
+    dismissedSnapshot.current = next;
+    setDismissedTasks(next);
+  }
+  const downloadStatus =
+    [...downloadStatuses].reverse().find(taskHasFloatingEntry) ||
+    downloadStatuses.at(-1) ||
+    idleDownload;
   const taskPageOwner = React.useRef(new TaskPageOwner());
   if (screen !== "tasks") taskPageOwner.current.leave();
-  const previousDownloadTasks = React.useRef(new Set<string>());
-  const acceptDownloadStatus = React.useCallback((next: DownloadStatus) => {
-    const old = downloadSnapshot.current;
-    const terminal = (value: DownloadStatus) =>
-      ["complete", "error", "cancelled"].includes(value.stage);
-    if (old.task_id && !next.task_id && !terminal(old)) return;
-    if (old.task_id && next.task_id && old.task_id !== next.task_id) {
-      if (previousDownloadTasks.current.has(next.task_id)) return;
-      previousDownloadTasks.current.add(old.task_id);
-      if (previousDownloadTasks.current.size > 64) {
-        const first = previousDownloadTasks.current.values().next().value;
-        if (first) previousDownloadTasks.current.delete(first);
-      }
-    }
-    if (old.task_id === next.task_id && terminal(old) && !terminal(next))
-      return;
-    downloadSnapshot.current = next;
-    setDownloadStatus(next);
-  }, []);
-  const speed = useDownloadSpeed(downloadStatus);
+  const acceptDownloadStatus = tasks.acceptStatus;
+  const downloadBusy = downloadStatuses.some(taskIsActive);
+  const queueFull =
+    downloadStatuses.filter((task) => task.stage === "queued").length >=
+    taskView.pendingLimit;
+  const aggregateStatus = taskAggregate(downloadStatuses);
+  const speed = useAggregateDownloadSpeed(downloadStatuses);
+  const terminalRefresh = React.useRef<string | null>(null);
+  function handleTaskTerminal(next: DownloadStatus) {
+    if (!taskNeedsBootstrap(next, viewContext.current.rootId)) return;
+    const key = viewContext.current.rootKey;
+    if (terminalRefresh.current === key) return;
+    terminalRefresh.current = key;
+    void Promise.resolve().then(() => {
+      if (terminalRefresh.current !== key) return;
+      terminalRefresh.current = null;
+      if (contextKey.current === key) void load();
+    });
+  }
   const [accountType, setAccountType] = useState("");
   const [profileList, setProfileList] = useState(false);
   const [rootWorking, setRootWorking] = useState(false);
@@ -984,16 +1030,6 @@ function App() {
       },
     [rootId],
   );
-  const taskApi = React.useMemo<Api>(
-    () => (command, args) =>
-      api(
-        command,
-        command === "download_cancel"
-          ? { ...args, taskId: downloadStatus.task_id ?? null }
-          : args,
-      ),
-    [downloadStatus.task_id],
-  );
   function showResource(
     next: ResourceSummary,
     origin: "home" | "instance" = "home",
@@ -1003,41 +1039,40 @@ function App() {
     setScreen("resource");
   }
   function showTasks() {
-    if (!taskPageOwner.current.open(downloadSnapshot.current)) return;
+    if (
+      !taskPageOwner.current.open(
+        tasks.snapshot.current.tasks.filter(
+          (task) =>
+            taskIsActive(task) ||
+            !dismissedSnapshot.current.has(task.task_id || ""),
+        ),
+      )
+    )
+      return;
     const currentScreen = viewContext.current.screen;
     if (currentScreen !== "tasks") setTaskOrigin(currentScreen);
     setScreen("tasks");
   }
   async function showInstanceTask(id: string) {
-    const capturedRoot = contextKey.current;
-    const capturedNavigation = taskNavigation.current.epoch;
-    const capturedTask = downloadSnapshot.current.task_id;
-    setDownloadBusy(true);
-    try {
-      const next = await api<DownloadStatus>("download_status");
-      const currentTask = downloadSnapshot.current.task_id;
-      // The first status read can finish after a newer submitted task was
-      // observed. Its ID might never have appeared in the previous-task set,
-      // so do not adopt that old response or acquire the newer page's lease.
-      if (
-        next.task_id !== id ||
-        (currentTask && currentTask !== id && currentTask !== capturedTask)
+    if (!id) return;
+    const capturedRoot = contextKey.current,
+      capturedNavigation = taskNavigation.current.epoch,
+      capturedOwner = tasks.owner;
+    tasks.track(id);
+    const next = await tasks.refresh();
+    if (
+      !next ||
+      tasks.owner !== capturedOwner ||
+      !next.tasks.some(
+        (task) => task.task_id === id && taskHasFloatingEntry(task),
       )
-        return;
-      acceptDownloadStatus(next);
-      setDownloadBusy(
-        ["preparing", "downloading", "processing"].includes(
-          downloadSnapshot.current.stage,
-        ),
-      );
-      if (
-        contextKey.current === capturedRoot &&
-        taskNavigation.current.epoch === capturedNavigation
-      )
-        showTasks();
-    } catch (e) {
-      notify(String(e));
-    }
+    )
+      return;
+    if (
+      contextKey.current === capturedRoot &&
+      taskNavigation.current.epoch === capturedNavigation
+    )
+      showTasks();
   }
   async function recoverInstanceReset() {
     if (!native || busy || downloadBusy || resourceBusy || !rootAvailable)
@@ -1157,35 +1192,20 @@ function App() {
     setInstanceImport(choice);
   }
   function finishTaskCancellation(next: DownloadStatus) {
-    if (downloadSnapshot.current.task_id !== next.task_id) return;
-    const instanceTask = [
-      "instance_reset",
-      "instance_export",
-      "instance_rename",
-      "instance_import",
-      "instance_delete",
-      "instance_restore",
-      "resource_download",
-      "resource_update",
-      "resource_update_restore",
-      "resource_save",
-      "launcher_logs",
-      "toolbox_download",
-    ].includes(next.kind || "");
+    if (
+      !tasks.snapshot.current.tasks.some(
+        (task) => task.task_id === next.task_id,
+      )
+    )
+      return;
     notify(
       t("main.cancelled", {
-        name: next.version || t("main.game"),
+        name: next.display_name || next.version || t("main.game"),
         action: instanceTaskAction(next.kind),
       }),
     );
-    if (!instanceTask) {
-      setTab("download");
-      setDownloadPage("minecraft");
-      setTaskOrigin("home");
-    }
-    setScreen((current) =>
-      current === "tasks" ? (instanceTask ? taskOrigin : "home") : current,
-    );
+    // The aggregate page lease handles returning. Cancelling A cannot move the
+    // user away while B is still queued/running or needs error review.
   }
   const [instancePage, setInstancePage] = useState("overview");
   const [settingsPage, setSettingsPage] = useState("launch");
@@ -1222,7 +1242,6 @@ function App() {
   useEffect(() => {
     contentRef.current?.scrollTo({ top: 0 });
   }, [screen, tab, settingsPage, downloadPage, instancePage, !!data]);
-  const [downloadBusy, setDownloadBusy] = useState(false);
   const [remember, setRemember] = useState(true);
   const [clientId, setClientId] = useState("");
   const [authWorking, setAuthWorking] = useState(false);
@@ -1234,24 +1253,63 @@ function App() {
   useEffect(() => {
     if (
       screen !== "tasks" ||
-      taskIdentity(downloadSnapshot.current) !== taskIdentity(downloadStatus) ||
-      downloadSnapshot.current.stage !== "complete" ||
-      !taskPageOwner.current.takeCompletion(downloadStatus)
+      tasks.snapshot.current !== taskView ||
+      !taskPageOwner.current.takeCompletion(visibleTasks)
     )
       return;
-    const completedTask = taskIdentity(downloadStatus);
-    // Consumption belongs to this navigation, not the retained task record.
-    // Recheck the latest projection inside the state update: another task or
-    // explicit navigation can be queued before this effect is applied.
-    setScreen((current) =>
-      current === "tasks" &&
-      taskIdentity(downloadSnapshot.current) === completedTask &&
-      downloadSnapshot.current.stage === "complete"
-        ? taskOrigin
-        : current,
-    );
-    if (downloadStatus.message) notify(downloadStatus.message);
-  }, [downloadStatus, screen, taskOrigin]);
+    const completed = taskPageOwner.current.completion;
+    const historyRetired = taskPageOwner.current.historyRetired;
+    if (historyRetired) void load();
+    const onlyCancelledInstall =
+      completed.length === 1 &&
+      completed[0].kind === "install" &&
+      completed[0].stage === "cancelled";
+    if (onlyCancelledInstall) {
+      setTab("download");
+      setDownloadPage("minecraft");
+      setTaskOrigin("home");
+    }
+    setScreen((current) => {
+      if (current !== "tasks") return current;
+      if (
+        tasks.snapshot.current.tasks.some(
+          (task) =>
+            taskHasFloatingEntry(task) &&
+            !dismissedSnapshot.current.has(task.task_id || ""),
+        )
+      ) {
+        taskPageOwner.current.open(
+          tasks.snapshot.current.tasks.filter(
+            (task) =>
+              taskIsActive(task) ||
+              !dismissedSnapshot.current.has(task.task_id || ""),
+          ),
+        );
+        return current;
+      }
+      return onlyCancelledInstall ? "home" : taskOrigin;
+    });
+    const done = completed.filter((task) => task.stage === "complete");
+    if (historyRetired)
+      notify(
+        t("task.historyRetired") +
+          (done.length
+            ? " · " + t("task.batchComplete", { count: done.length })
+            : ""),
+      );
+    else if (done.length > 1)
+      notify(
+        t("task.batchComplete", { count: done.length }) +
+          (done.some((task) => task.error)
+            ? " · " +
+              done
+                .filter((task) => task.error)
+                .map((task) => task.error)
+                .join("; ")
+            : ""),
+      );
+    else if (done[0]?.message) notify(done[0].message);
+  }, [taskView, dismissedTasks, screen, taskOrigin]);
   const launcher = useLauncherPreferences(api, native, notify);
   configureLocale(launcher.prefs.localization);
   const launcherMedia = useLauncherAssets(api, native, launcher, notify);
@@ -1559,13 +1617,7 @@ function App() {
         : true);
   const boundGame =
     !!busy && processInRoot && data?.status.version === selected?.id;
-  const installInRoot =
-    downloadBusy &&
-    (downloadStatus.root_id
-      ? downloadStatus.root_id === rootId
-      : downloadStatus.root_path
-        ? downloadStatus.root_path === data?.settings.root
-        : true);
+  const installInRoot = !!rootId && taskView.blockedRootIds.includes(rootId);
   const rootOccupied =
     (!!busy && processInRoot) ||
     installInRoot ||
@@ -1705,12 +1757,7 @@ function App() {
         (!data?.status.root_id &&
           !data?.status.root_path &&
           menuRoot.id === rootId))) ||
-      (downloadBusy &&
-        (downloadStatus.root_id === menuRoot.id ||
-          downloadStatus.root_path === menuRoot.path ||
-          (!downloadStatus.root_id &&
-            !downloadStatus.root_path &&
-            menuRoot.id === rootId))) ||
+      taskView.blockedRootIds.includes(menuRoot.id) ||
       (resourceBusy && resourceTarget?.id === menuRoot.id));
   const downloadItems = [
     { id: "minecraft", label: "Minecraft", icon: Blocks },
@@ -2019,7 +2066,11 @@ function App() {
                 }
               >
                 {screen === "tasks" ? (
-                  <TaskStatistics status={downloadStatus} speed={speed} />
+                  <TaskStatistics
+                    status={aggregateStatus}
+                    speed={speed}
+                    tasks={downloadStatuses}
+                  />
                 ) : screen === "resource" ? null : screen === "versions" ? (
                   <>
                     <div className="section-label">{t("main.folders")}</div>
@@ -2463,14 +2514,16 @@ function App() {
                     api={api}
                     rootId={rootId}
                     rootAvailable={rootAvailable && !rootWorking}
-                    native={native}
+                    native={native && !tasks.closing}
                     installed={data.instances}
-                    gameBusy={!!busy || resourceBusy || instanceRecoveryBlocked}
-                    onInstalled={load}
-                    onBusyChange={setDownloadBusy}
-                    onStatusChange={acceptDownloadStatus}
+                    gameBusy={
+                      !!busy ||
+                      resourceBusy ||
+                      instanceRecoveryBlocked ||
+                      queueFull
+                    }
                     onResourceDetails={showResource}
-                    onTaskStart={showTasks}
+                    onTaskStart={showInstanceTask}
                   />
                 </div>
                 <div
@@ -2485,14 +2538,23 @@ function App() {
                       onNotify={notify}
                       scopeKey={rootId || ""}
                       selectedInstance={selected || null}
-                      native={native}
+                      native={native && !tasks.closing}
                       disabled={
                         !!busy ||
-                        downloadBusy ||
                         resourceBusy ||
                         rootWorking ||
                         !rootAvailable ||
-                        instanceRecoveryBlocked
+                        instanceRecoveryBlocked ||
+                        queueFull
+                      }
+                      saveDisabled={queueFull || tasks.closing}
+                      saveStartDisabled={!!busy || queueFull || tasks.closing}
+                      saveStartDisabledReason={
+                        busy
+                          ? t("task.gameBusy")
+                          : queueFull
+                            ? t("task.queueFull")
+                            : undefined
                       }
                       onTaskStart={showInstanceTask}
                       onResourceDetails={(next) =>
@@ -2500,15 +2562,33 @@ function App() {
                       }
                     />
                   ) : screen === "tasks" ? (
-                    <TaskManager
-                      key={downloadStatus.task_id || "legacy-task"}
-                      api={taskApi}
-                      status={downloadStatus}
-                      native={native}
-                      onNotify={notify}
-                      onStatusChange={acceptDownloadStatus}
-                      onCancelled={finishTaskCancellation}
-                    />
+                    <>
+                      {tasks.error && (
+                        <div className="error-banner" role="alert">
+                          <TriangleAlert size={17} />
+                          <span>
+                            {t("common.serviceError", { error: tasks.error })}
+                          </span>
+                          <button
+                            className="ce-button"
+                            disabled={tasks.closing}
+                            onClick={() => void tasks.refresh()}
+                          >
+                            {t("task.retry")}
+                          </button>
+                        </div>
+                      )}
+                      <TaskManager
+                        api={api}
+                        status={downloadStatus}
+                        tasks={visibleTasks}
+                        native={native && !tasks.closing}
+                        onNotify={notify}
+                        onStatusChange={acceptDownloadStatus}
+                        onCancelled={finishTaskCancellation}
+                        onDismiss={dismissTask}
+                      />
+                    </>
                   ) : screen === "versions" ? (
                     <>
                       <InstanceTrash
@@ -2520,7 +2600,7 @@ function App() {
                           !archiveAdmission.current.rootAvailable
                         }
                         onTaskStart={showInstanceTask}
-                        refreshKey={`${data.settings.revision || ""}:${downloadStatus.task_id || ""}:${downloadStatus.stage}`}
+                        refreshKey={`${data.settings.revision || ""}:${taskView.revision}`}
                       />
                       {data.config_warning && (
                         <div className="error-banner" role="alert">
@@ -2707,8 +2787,18 @@ function App() {
                           onOpen={open}
                           api={api}
                           onTaskStart={showInstanceTask}
-                          native={native}
+                          native={native && !tasks.closing}
                           busy={launcher.busy}
+                          networkSubmissionDisabled={
+                            !!busy || queueFull || tasks.closing
+                          }
+                          networkSubmissionReason={
+                            busy
+                              ? t("task.gameBusy")
+                              : queueFull
+                                ? t("task.queueFull")
+                                : undefined
+                          }
                           onTool={launcherLocal.tool}
                         />
                       )}
@@ -2718,14 +2808,21 @@ function App() {
               </main>
             </div>
           )}
-          {taskHasFloatingEntry(downloadStatus) && screen !== "tasks" && (
+          {visibleTasks.some(taskHasFloatingEntry) && screen !== "tasks" && (
             <button
               className="ce-task-entry"
-              title={t("main.tasks")}
-              aria-label={t("main.tasks")}
+              title={t("task.listCount", {
+                count: visibleTasks.filter(taskHasFloatingEntry).length,
+              })}
+              aria-label={t("task.listCount", {
+                count: visibleTasks.filter(taskHasFloatingEntry).length,
+              })}
               onClick={showTasks}
             >
               <Download size={23} />
+              <span className="ce-task-count">
+                {formatNumber(visibleTasks.filter(taskHasFloatingEntry).length)}
+              </span>
             </button>
           )}
           {data &&

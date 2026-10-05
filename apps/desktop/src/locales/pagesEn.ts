@@ -534,6 +534,23 @@ const messages = {
   "task.minecraftMetadata": "Get vanilla version information",
   "task.minecraftDownload": "Download game and runtime files",
   "task.minecraftInstall": "Install game",
+  "task.queued":
+    "Queued for a worker or target folder; no files are being written yet",
+  "task.aggregateHint":
+    "Average progress of queued and running tasks; queued or unknown progress counts as 0, without weighting by file bytes",
+  "task.dismiss": "Dismiss this failed task record",
+  "task.resourceOperation": "Resource file operation",
+  "task.resourceFileWork": "Process resource files",
+  "task.historyRetired":
+    "Some tasks have left retained history; the current folder was refreshed, but their outcomes can no longer be confirmed",
+  "task.gameBusy":
+    "A game is preparing or running. Network tasks can be submitted after it ends.",
+  "task.queueFull":
+    "The pending queue is full. Wait for a task to start or cancel one before submitting.",
+  "task.invalidSnapshot": "The task service returned an invalid task list",
+  "task.listCount": "View tasks ({count})",
+  "task.batchComplete": "{count} tasks finished",
+  "task.retry": "Refresh task list",
   "task.empty": "No tasks",
   "task.cleanupPending": "Cleaning incomplete files",
   "task.cleanup": "Cleaning…",

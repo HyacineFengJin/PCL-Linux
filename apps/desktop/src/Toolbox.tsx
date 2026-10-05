@@ -12,6 +12,8 @@ export function Toolbox({
   onTool,
   native = false,
   busy = false,
+  networkSubmissionDisabled = false,
+  networkSubmissionReason,
 }: {
   onOpen: (s: string) => void;
   root?: string;
@@ -20,6 +22,8 @@ export function Toolbox({
   onTool?: (tool: LocalTool) => Promise<void>;
   native?: boolean;
   busy?: boolean;
+  networkSubmissionDisabled?: boolean;
+  networkSubmissionReason?: string;
 }) {
   const [player, setPlayer] = useState(""),
     [server, setServer] = useState("");
@@ -59,6 +63,8 @@ export function Toolbox({
         api={api}
         native={native}
         disabled={busy}
+        startDisabled={networkSubmissionDisabled}
+        startDisabledReason={networkSubmissionReason}
         onTaskStart={onTaskStart}
       />
       <section className="ce-card">

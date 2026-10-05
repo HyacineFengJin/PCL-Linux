@@ -185,8 +185,20 @@ fn exercise(
     report: impl Fn(SaveProgress),
     gate: CommitGate<'_>,
 ) -> Result<SaveResult> {
-    let plan = fake.plan();
     let target = files::SaveTarget::capture(&fixture.project, &fixture.target())?;
+    exercise_target(&target, fake, body, delay, cancel, rate, report, gate)
+}
+fn exercise_target(
+    target: &CapturedSaveTarget,
+    fake: &Fake,
+    body: &[u8],
+    delay: Duration,
+    cancel: &AtomicBool,
+    rate: u32,
+    report: impl Fn(SaveProgress),
+    gate: CommitGate<'_>,
+) -> Result<SaveResult> {
+    let plan = fake.plan();
     let provider = transport(cancel, rate);
     let (url, worker) = server(body, delay);
     let metadata = AtomicU64::new(0);
@@ -200,7 +212,7 @@ fn exercise(
     };
     let result = run(save_with(
         &session,
-        &target,
+        target,
         plan.request,
         &plan.revision,
         cancel,
@@ -209,6 +221,81 @@ fn exercise(
     ));
     worker.join().unwrap();
     result
+}
+
+#[test]
+fn queued_save_worker_defers_metadata_and_real_http_until_turn_then_publishes_held_target() {
+    use crate::tasks::{TaskKind, TaskOutcome, TaskScope, TaskStage, TaskTarget, Tasks};
+    let fixture = Fixture::new();
+    let manager = Arc::new(Tasks::new());
+    let target =
+        Arc::new(CapturedSaveTarget::capture(&fixture.project, &fixture.target()).unwrap());
+    let task_target = TaskTarget {
+        root_id: "launcher".into(),
+        root_path: fixture.folder.display().to_string(),
+        instance_id: None,
+    };
+    let blocker = manager
+        .admit_queued(
+            task_target.clone(),
+            TaskKind::Install,
+            TaskScope::root(&fixture.folder).unwrap(),
+        )
+        .unwrap();
+    blocker.wait_turn().unwrap();
+    let task = manager
+        .admit_queued(
+            task_target,
+            TaskKind::ResourceSave,
+            TaskScope::files(&[target.path().to_path_buf()]).unwrap(),
+        )
+        .unwrap();
+    let id = task.id().to_owned();
+    let fake = Arc::new(Fake::new(b"fixture payload"));
+    let provider = fake.clone();
+    let (send, receive) = std::sync::mpsc::channel();
+    let worker = thread::spawn(move || {
+        send.send(()).unwrap();
+        crate::resource_save_commands::wait_target(&task, &target).unwrap();
+        let cancel = task.cancellation_token();
+        let mut gate = || {
+            task.begin_finishing();
+            Ok(())
+        };
+        let result = exercise_target(
+            &target,
+            &provider,
+            b"fixture payload",
+            Duration::ZERO,
+            &cancel,
+            0,
+            |_| {},
+            &mut gate,
+        )
+        .unwrap();
+        drop(target);
+        task.finish(TaskOutcome::Complete {
+            result: serde_json::to_value(&result).ok(),
+            message: "fixture saved".into(),
+            error: result.warning,
+        });
+    });
+    receive.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(manager.snapshot(&id).unwrap().stage, TaskStage::Queued);
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(fs::read_dir(&fixture.folder).unwrap().count(), 0);
+    blocker.finish(TaskOutcome::Complete {
+        result: None,
+        message: "fixture finished".into(),
+        error: None,
+    });
+    worker.join().unwrap();
+    assert_eq!(fs::read(fixture.target()).unwrap(), b"fixture payload");
+    assert_eq!(
+        manager.wait_terminal(&id).unwrap().result.unwrap()["network_bytes"],
+        b"fixture payload".len()
+    );
+    fixture.assert_untouched_project();
 }
 #[test]
 fn exact_official_selection_and_strict_payload_reject_forged_identity_or_urls() {

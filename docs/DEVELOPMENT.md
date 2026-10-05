@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 前端状态与桌面调用 | `apps/desktop/src/main.tsx` | 页面、当前目录、bootstrap、作用域 API 与响应接纳 |
 | 实例管理界面 | `InstancesPanel.tsx`、`InstanceOperations.tsx`、`InstanceImport.tsx`、`InstanceTrash.tsx` | 实例资料、改名、修改、导出、ZIP 导入与删除恢复 |
-| 下载与任务界面 | `DownloadPanel.tsx`、`TaskManager.tsx` | 任务轮询、完成刷新、取消后返回 |
+| 下载与任务界面 | `useDownloadTasks.ts`、`DownloadPanel.tsx`、`TaskManager.tsx` | 集合轮询、逐项取消、完成刷新与页面所有权 |
 | 在线资源界面 | `ResourceDetails.tsx`、`ResourceInstall.tsx`、`resourceInstallPlan.ts`、`LocalResources.tsx`、`ResourceUpdates.tsx` | 版本与文件选择、作用域确认、必要依赖计划和安装提交 |
 | Java 管理界面 | `JavaPanel.tsx`、`JavaSelect.tsx`、`javaManagement.ts` | 全局与实例选择、目录/修订作用域、过期响应排除 |
 | 桌面命令与应用生命周期 | `apps/desktop/src-tauri/src/main.rs` | 命令参数、目标绑定、任务调度、游戏进程与关闭处理 |
@@ -18,7 +18,7 @@
 | 持久设置与实例资料 | `config.rs`、`instance_meta.rs`、`export_presets.rs` | 多目录、选择与内存、元资料、导出配置 |
 | Java 桌面服务 | `java_commands.rs`、`java_service.rs`、`platform.rs` | 选择器、登记请求绑定与探测前后校验 |
 | 文件操作 | `resource_ops.rs`、`instance_reset.rs`、`instance_export.rs`、`instance_import.rs`、`instance_delete.rs` | 本地资源事务、组件重置、ZIP 导出/导入、实例删除恢复 |
-| 任务协调 | `tasks.rs`、`downloads.rs` | 单写入任务、取消与结束语义、下载页面的任务投影 |
+| 任务协调 | `tasks.rs`、`tasks/schedule.rs`、`tasks/scope.rs`、`downloads.rs` | 并发/队列、物理路径互斥、取消与结束、带修订号的集合投影 |
 | Minecraft 核心 | `crates/core/src/lib.rs` | 版本识别、继承、依赖和启动参数 |
 | Java 核心 | `crates/core/src/java.rs` | 有限时探测、发现、架构与版本策略、启动选择 |
 | 下载与安装 | `crates/install/src/` | 网络请求、校验缓存、原版与加载器安装 |
@@ -79,7 +79,7 @@ v2 设置在普通启动时备份并迁移。已有改名 journal 的引用载�
 
 ## Modrinth 规划、下载与提交
 
-`ResourceDetails` 只选择项目、版本和精确文件名；`ResourceInstall` 读取并确认绑定实例的方案。客户端提交的 URL、哈希或加载器不能取得写入权限。`resource_install_commands` 在后台重读权威方案并比较 revision；网络和大型本地哈希检查不持有 `operations`。任务从信息获取开始就占有单写入准入，页面导航与目录浏览不改变捕获目标。
+`ResourceDetails` 只选择项目、版本和精确文件名；`ResourceInstall` 读取并确认绑定实例的方案。客户端提交的 URL、哈希或加载器不能取得写入权限。`resource_install_commands` 在后台重读权威方案并比较 revision；网络和大型本地哈希检查不持有 `operations`。任务提交即保留目标队列位置；获得目录 turn 后重检绑定与确认方案再开始下载，页面导航与目录浏览不改变捕获目标。
 
 `modrinth_install/provider.rs` 处理官方 API、响应限额和请求取消；`plan.rs` 处理必要依赖、兼容与本地哈希冲突；`target.rs` 固定实例继承描述、资源目录身份及文件快照；`transfer.rs` 接收并校验文件。取消会丢弃正在等待的请求和匿名文件描述符。计时与取消等待使用既有 Tokio runtime；网络字节仅来自收到的响应，不把复用或磁盘复制计为速度。
 
@@ -185,3 +185,11 @@ Rust 测试不能证明真实桌面选择器、网络授权页面或 Minecraft �
 `ToolboxGenerators.tsx` 与 `achievementImage.ts` 使用真实内置图像生成成就 PNG。`toolbox_images/pixels.rs` 负责有界 PNG 解码、Minecraft 头部坐标、透明叠加与最近邻缩放；选择的皮肤以原生内存快照和过期 ID 绑定，不把源路径交给渲染器。图片保存前重新验证编码，选择器取消和发布冲突均保留已有内容。
 
 `local_resource_info` 使用描述符绑定所选实例、隔离规则与精确扫描指纹，先限制 ZIP 索引，再读取有界元数据条目。`ui_data.rs` 将列表展示和信息导出分为不同解析用途：列表可截取文字，导出保留原字符串和资源包的结构化介绍。大量哈希读取不持有操作锁，选择器结束后重新检查内容；最后的短期准入保护目标绑定和文件发布。它不调用路径重开的列表接口，也不提取归档内容或序列化账号信息。
+
+## 多任务协调
+
+`Tasks::admit` 保持旧事务的全局立即独占语义。四种网络任务显式调用 `admit_queued`，声明游戏根目录或已验证的最终输出文件 scope；禁止用显示用 root ID 代替物理路径互斥。`TaskScope` 核对规范路径、目录 inode 和祖先关系，同根/嵌套根排队，不相关路径可以越过阻塞的队首。最多4项运行、32项等待。
+
+工作线程在 operations 锁外调用 `wait_turn`，获得 turn 后重检目录登记、名称保留、恢复记录及方案 revision。取消只设置该任务的 token 并唤醒等待；任务 owner 释放暂存和捕获的文件描述符后才能报告终态、释放 scope。关闭入口捕获全部运行与等待任务，取消和 drain 在 admission 锁外执行。bootstrap 对恢复 journal 的抑制只查询实际运行的 workers，不能让 queued 任务遮住恢复问题。
+
+`download_tasks` 返回整个任务集合、单调修订号和同一快照下的 `blockedRootIds`。事件只唤醒集合读取，避免乱序事件覆盖新状态；`download_status(taskId)` 和取消结果按明确 ID 返回，旧无参数调用仅用于兼容。前端导航、轮询、取消都由独立的 owner/任务 ID 控制，一项结束不能退出其他尚未结束的任务。网络策略仅在集合空闲时交换，防止不同 Arc 快照产生多份总速度预算。

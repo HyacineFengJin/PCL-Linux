@@ -10,34 +10,41 @@ import {
 } from "lucide-react";
 import type { DownloadStatus, DownloadStep } from "./DownloadPanel";
 import type { Api } from "./types";
-import { taskDisplayName } from "./taskLifecycle";
+import {
+  taskDisplayName,
+  taskHasFloatingEntry,
+  taskIsActive,
+  taskAggregate,
+} from "./taskLifecycle";
 import "./task-manager.css";
 export function instanceTaskAction(kind: DownloadStatus["kind"]) {
-  return kind === "toolbox_download"
-    ? t("task.toolboxDownload")
-    : kind === "resource_save"
-      ? t("task.resourceSave")
-      : kind === "launcher_logs"
-        ? t("task.launcherLogs")
-        : kind === "instance_reset"
-          ? t("ui.reset")
-          : kind === "instance_export"
-            ? t("nav.export")
-            : kind === "instance_rename"
-              ? t("ui.rename")
-              : kind === "instance_import"
-                ? t("ui.import")
-                : kind === "instance_delete"
-                  ? t("ui.delete")
-                  : kind === "instance_restore"
-                    ? t("ui.restore")
-                    : kind === "resource_update_restore"
-                      ? t("task.modRestore")
-                      : kind === "resource_update"
-                        ? t("nav.modUpdates")
-                        : kind === "resource_download"
-                          ? t("task.resourceInstall")
-                          : t("ui.install");
+  return kind === "resource_operation"
+    ? t("task.resourceOperation")
+    : kind === "toolbox_download"
+      ? t("task.toolboxDownload")
+      : kind === "resource_save"
+        ? t("task.resourceSave")
+        : kind === "launcher_logs"
+          ? t("task.launcherLogs")
+          : kind === "instance_reset"
+            ? t("ui.reset")
+            : kind === "instance_export"
+              ? t("nav.export")
+              : kind === "instance_rename"
+                ? t("ui.rename")
+                : kind === "instance_import"
+                  ? t("ui.import")
+                  : kind === "instance_delete"
+                    ? t("ui.delete")
+                    : kind === "instance_restore"
+                      ? t("ui.restore")
+                      : kind === "resource_update_restore"
+                        ? t("task.modRestore")
+                        : kind === "resource_update"
+                          ? t("nav.modUpdates")
+                          : kind === "resource_download"
+                            ? t("task.resourceInstall")
+                            : t("ui.install");
 }
 export function useDownloadSpeed(status: DownloadStatus) {
   const sample = useRef<{
@@ -50,9 +57,12 @@ export function useDownloadSpeed(status: DownloadStatus) {
     const now = performance.now();
     const old = sample.current;
     const bytes = status.network_bytes;
-    const running = ["downloading", "preparing", "processing"].includes(
-      status.stage,
-    );
+    const running = [
+      "queued",
+      "downloading",
+      "preparing",
+      "processing",
+    ].includes(status.stage);
     const task =
       status.task_id || `${status.root_id || ""}:${status.version || ""}`;
     if (bytes === undefined || !running) {
@@ -71,9 +81,11 @@ export function useDownloadSpeed(status: DownloadStatus) {
 export function TaskStatistics({
   status,
   speed,
+  tasks,
 }: {
   status: DownloadStatus;
   speed: number | null;
+  tasks?: readonly DownloadStatus[];
 }) {
   const terminalCancelled =
     status.stage === "cancelled" || status.stage === "idle";
@@ -92,7 +104,13 @@ export function TaskStatistics({
   return (
     <div className="ce-task-statistics">
       <div>
-        <span>{t("task.progress")}</span>
+        <span
+          title={
+            tasks && tasks.length > 1 ? t("task.aggregateHint") : undefined
+          }
+        >
+          {t("task.progress")}
+        </span>
         <strong>
           {percent === null
             ? "—"
@@ -110,7 +128,8 @@ export function TaskStatistics({
           status.kind === "instance_delete" ||
           status.kind === "instance_restore" ||
           status.kind === "resource_update_restore" ||
-          status.kind === "launcher_logs"
+          status.kind === "launcher_logs" ||
+          status.kind === "resource_operation"
             ? "—"
             : `${formatNumber(speed / 1048576, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MiB/s`}
         </strong>
@@ -118,21 +137,35 @@ export function TaskStatistics({
       <div>
         <span>{t("task.remaining")}</span>
         <strong>
-          {!terminalCancelled && status.total > 0
-            ? formatNumber(Math.max(0, status.total - status.completed))
-            : "—"}
+          {tasks
+            ? !terminalCancelled &&
+              tasks.filter(taskIsActive).every((task) => task.total > 0)
+              ? formatNumber(
+                  tasks
+                    .filter(taskIsActive)
+                    .reduce(
+                      (sum, task) =>
+                        sum + Math.max(0, task.total - task.completed),
+                      0,
+                    ),
+                )
+              : "—"
+            : !terminalCancelled && status.total > 0
+              ? formatNumber(Math.max(0, status.total - status.completed))
+              : "—"}
         </strong>
       </div>
     </div>
   );
 }
-export function TaskManager({
+function TaskCard({
   api,
   status,
   native,
   onNotify,
   onStatusChange,
   onCancelled,
+  onDismiss,
 }: {
   api: Api;
   status: DownloadStatus;
@@ -140,6 +173,7 @@ export function TaskManager({
   onNotify: (s: string) => void;
   onStatusChange?: (status: DownloadStatus) => void;
   onCancelled?: (status: DownloadStatus) => void;
+  onDismiss?: (status: DownloadStatus) => void;
 }) {
   const [cancelling, setCancelling] = useState(false);
   const cancelPending = useRef(false);
@@ -151,6 +185,7 @@ export function TaskManager({
     onNotify,
     onStatusChange,
     onCancelled,
+    onDismiss,
   });
   latest.current = {
     api,
@@ -159,6 +194,7 @@ export function TaskManager({
     onNotify,
     onStatusChange,
     onCancelled,
+    onDismiss,
   };
   const notifiedCancellation = useRef<string | null>(null);
   const requestedCancellation = useRef<string | null>(null);
@@ -195,7 +231,17 @@ export function TaskManager({
   useEffect(() => {
     if (status.stage === "cancelled") finishCancellation(status);
   }, [status]);
-  const active = ["downloading", "preparing", "processing"].includes(
+  function dismiss() {
+    if (
+      !mounted.current ||
+      currentTask.current !== taskKey ||
+      latest.current.api !== api ||
+      latest.current.status.stage !== "error"
+    )
+      return;
+    latest.current.onDismiss?.(latest.current.status);
+  }
+  const active = ["queued", "downloading", "preparing", "processing"].includes(
     status.stage,
   );
   const action = instanceTaskAction(status.kind);
@@ -246,47 +292,49 @@ export function TaskManager({
                     ? 2
                     : 0;
   const fallbackLabels =
-    status.kind === "resource_save"
-      ? [
-          t("task.resourceMetadata"),
-          t("task.downloadVerify"),
-          t("task.savePublish"),
-        ]
-      : status.kind === "launcher_logs" || status.kind === "toolbox_download"
-        ? []
-        : status.kind === "instance_import"
-          ? [
-              t("task.importCheck"),
-              t("task.importExtract"),
-              t("task.importPublish"),
-              t("task.importCleanup"),
-            ]
-          : status.kind === "instance_delete" ||
-              status.kind === "instance_restore"
+    status.kind === "resource_operation"
+      ? [t("task.resourceFileWork")]
+      : status.kind === "resource_save"
+        ? [
+            t("task.resourceMetadata"),
+            t("task.downloadVerify"),
+            t("task.savePublish"),
+          ]
+        : status.kind === "launcher_logs" || status.kind === "toolbox_download"
+          ? []
+          : status.kind === "instance_import"
             ? [
-                t("task.instanceCheck"),
-                t("task.instanceMove"),
-                t("task.instanceRecord"),
+                t("task.importCheck"),
+                t("task.importExtract"),
+                t("task.importPublish"),
+                t("task.importCleanup"),
               ]
-            : status.kind === "resource_update_restore"
-              ? [t("task.updateUndoCheck"), t("task.updateUndoApply")]
-              : status.kind === "resource_update"
-                ? [
-                    t("task.updateCheck"),
-                    t("task.downloadVerify"),
-                    t("task.updateApply"),
-                  ]
-                : status.kind === "resource_download"
+            : status.kind === "instance_delete" ||
+                status.kind === "instance_restore"
+              ? [
+                  t("task.instanceCheck"),
+                  t("task.instanceMove"),
+                  t("task.instanceRecord"),
+                ]
+              : status.kind === "resource_update_restore"
+                ? [t("task.updateUndoCheck"), t("task.updateUndoApply")]
+                : status.kind === "resource_update"
                   ? [
-                      t("task.resourceMetadata"),
+                      t("task.updateCheck"),
                       t("task.downloadVerify"),
-                      t("task.resourceApply"),
+                      t("task.updateApply"),
                     ]
-                  : [
-                      t("task.minecraftMetadata"),
-                      t("task.minecraftDownload"),
-                      t("task.minecraftInstall"),
-                    ];
+                  : status.kind === "resource_download"
+                    ? [
+                        t("task.resourceMetadata"),
+                        t("task.downloadVerify"),
+                        t("task.resourceApply"),
+                      ]
+                    : [
+                        t("task.minecraftMetadata"),
+                        t("task.minecraftDownload"),
+                        t("task.minecraftInstall"),
+                      ];
   const steps: DownloadStep[] = status.steps?.length
     ? status.steps
     : fallbackLabels.map((label, index) => ({
@@ -295,7 +343,7 @@ export function TaskManager({
         state:
           status.stage === "complete"
             ? "complete"
-            : active && index === current
+            : active && status.stage !== "queued" && index === current
               ? "running"
               : "pending",
       }));
@@ -305,7 +353,7 @@ export function TaskManager({
       !mounted.current ||
       !latest.current.native ||
       !active ||
-      !["downloading", "preparing", "processing"].includes(
+      !["queued", "downloading", "preparing", "processing"].includes(
         latest.current.status.stage,
       ) ||
       currentTask.current !== taskKey ||
@@ -359,13 +407,7 @@ export function TaskManager({
       }
     }
   }
-  if (status.stage === "idle" || status.stage === "cancelled")
-    return (
-      <section className="ce-card ce-task-empty">
-        <Download size={36} />
-        <p>{t("task.empty")}</p>
-      </section>
-    );
+  if (["idle", "cancelled", "complete"].includes(status.stage)) return null;
   return (
     <section className={`ce-card ce-task-card ${status.stage}`}>
       <div className="ce-task-heading">
@@ -382,19 +424,27 @@ export function TaskManager({
         <button
           className="icon-button"
           aria-label={
-            cancelling
-              ? t("task.cleanupPending")
-              : t("task.cancel", { action: cancelAction })
+            status.stage === "error" && onDismiss
+              ? t("task.dismiss")
+              : cancelling
+                ? t("task.cleanupPending")
+                : t("task.cancel", { action: cancelAction })
           }
           title={
-            cancelling
-              ? t("task.cleanup")
-              : t("task.cancel", { action: cancelAction })
+            status.stage === "error" && onDismiss
+              ? t("task.dismiss")
+              : cancelling
+                ? t("task.cleanup")
+                : t("task.cancel", { action: cancelAction })
           }
           disabled={
-            !native || !active || status.can_cancel === false || cancelling
+            status.stage === "error" && onDismiss
+              ? false
+              : !native || !active || status.can_cancel === false || cancelling
           }
-          onClick={cancel}
+          onClick={() =>
+            status.stage === "error" && onDismiss ? dismiss() : void cancel()
+          }
         >
           {cancelling ? (
             <LoaderCircle size={17} className="spin" />
@@ -403,6 +453,11 @@ export function TaskManager({
           )}
         </button>
       </div>
+      {status.stage === "queued" && (
+        <p className="ce-task-message" role="status">
+          {t("task.queued")}
+        </p>
+      )}
       <div className="ce-task-steps">
         {steps.map((step) => (
           <div key={step.id} className={`ce-task-step ${step.state}`}>
@@ -436,3 +491,83 @@ export function TaskManager({
     </section>
   );
 }
+
+/** Existing CE cards each retain their own cancellation request and ID. Removing
+ * another completed card cannot replace this card's handler or cleanup lifetime. */
+export function TaskManager(props: {
+  api: Api;
+  status?: DownloadStatus;
+  tasks?: readonly DownloadStatus[];
+  native: boolean;
+  onNotify: (s: string) => void;
+  onStatusChange?: (status: DownloadStatus) => void;
+  onCancelled?: (status: DownloadStatus) => void;
+  onDismiss?: (status: DownloadStatus) => void;
+}) {
+  const records = props.tasks || (props.status ? [props.status] : []);
+  const visible = records.filter(taskHasFloatingEntry);
+  return (
+    <div className="ce-task-list">
+      {records.map((task) => (
+        <TaskCard
+          key={task.task_id || `${task.root_id}:${task.version}`}
+          {...props}
+          status={task}
+        />
+      ))}
+      {!visible.length && (
+        <section className="ce-card ce-task-empty">
+          <Download size={36} />
+          <p>{t("task.empty")}</p>
+        </section>
+      )}
+    </div>
+  );
+}
+
+/** Network counters are sampled per job before summing rates. Adding or removing
+ * jobs cannot turn their already-transferred bytes into an artificial speed. */
+export function useAggregateDownloadSpeed(tasks: readonly DownloadStatus[]) {
+  const samples = useRef(new Map<string, { bytes: number; time: number }>());
+  const [speed, setSpeed] = useState<number | null>(null);
+  useEffect(() => {
+    const now = performance.now(),
+      next = new Map<string, { bytes: number; time: number }>();
+    let rate = 0,
+      measured = false;
+    for (const task of tasks) {
+      if (
+        !taskIsActive(task) ||
+        [
+          "resource_operation",
+          "instance_export",
+          "instance_rename",
+          "instance_import",
+          "instance_delete",
+          "instance_restore",
+          "resource_update_restore",
+          "launcher_logs",
+        ].includes(task.kind || "") ||
+        task.stage === "queued" ||
+        task.network_bytes === undefined ||
+        !task.task_id
+      )
+        continue;
+      const old = samples.current.get(task.task_id),
+        bytes = task.network_bytes;
+      if (old && bytes >= old.bytes && now - old.time >= 250) {
+        rate += ((bytes - old.bytes) * 1000) / (now - old.time);
+        measured = true;
+        next.set(task.task_id, { bytes, time: now });
+      } else
+        next.set(
+          task.task_id,
+          old && bytes >= old.bytes ? old : { bytes, time: now },
+        );
+    }
+    samples.current = next;
+    setSpeed(measured ? rate : null);
+  }, [tasks]);
+  return speed;
+}
+export { taskAggregate };

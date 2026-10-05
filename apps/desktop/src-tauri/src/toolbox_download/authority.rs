@@ -54,6 +54,16 @@ pub struct StartGuard<'a> {
     session: MutexGuard<'a, Session>,
 }
 impl StartGuard<'_> {
+    /// Scheduling uses the confirmed final basename, allowing independent files
+    /// in one directory to run together while matching root scopes still block.
+    pub fn target(&self) -> PathBuf {
+        let pending = self.session.pending.as_ref().unwrap();
+        pending
+            .directory
+            .directory
+            .path()
+            .join(&pending.preview.file_name)
+    }
     pub fn directory(&self) -> &Path {
         self.session
             .pending

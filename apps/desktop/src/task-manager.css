@@ -32,6 +32,29 @@
 .ce-task-card {
   padding: 12px 16px 18px;
 }
+.ce-task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.ce-task-list > .ce-task-card {
+  margin: 0;
+}
+.ce-task-count {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--ce-surface, #fff);
+  color: var(--ce-link, #2078da);
+  font-size: 11px;
+  display: grid;
+  place-items: center;
+}
 .ce-task-heading {
   display: flex;
   justify-content: space-between;

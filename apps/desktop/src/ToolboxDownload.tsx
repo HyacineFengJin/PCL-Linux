@@ -44,11 +44,15 @@ export function ToolboxDownload({
   api,
   native,
   disabled,
+  startDisabled = false,
+  startDisabledReason,
   onTaskStart,
 }: {
   api?: Api;
   native: boolean;
   disabled: boolean;
+  startDisabled?: boolean;
+  startDisabledReason?: string;
   onTaskStart?: (id: string) => void;
 }) {
   const [url, setUrl] = useState(""),
@@ -73,8 +77,8 @@ export function ToolboxDownload({
     key = JSON.stringify([url, fileName, directory?.token]);
   const live = useRef(true),
     pending = useRef<symbol | null>(null);
-  const current = useRef({ key, native, disabled, onTaskStart });
-  current.current = { key, native, disabled, onTaskStart };
+  const current = useRef({ key, native, disabled, startDisabled, onTaskStart });
+  current.current = { key, native, disabled, startDisabled, onTaskStart };
   useEffect(() => {
     live.current = true;
     return () => {
@@ -99,6 +103,7 @@ export function ToolboxDownload({
       !active() ||
       !current.current.native ||
       current.current.disabled ||
+      (kind === "start" && current.current.startDisabled) ||
       !api ||
       pending.current ||
       (captureKey && current.current.key !== key)
@@ -180,6 +185,7 @@ export function ToolboxDownload({
       !visible ||
       previewRef.current !== visible ||
       blocked ||
+      current.current.startDisabled ||
       pending.current ||
       current.current.key !== visible.key
     )
@@ -296,7 +302,7 @@ export function ToolboxDownload({
           busy={!!activity}
           committing={activity === "start"}
           confirmLabel={t("toolbox.start")}
-          confirmDisabled={blocked}
+          confirmDisabled={blocked || startDisabled}
           onConfirm={start}
           onClose={() => {
             if (
@@ -310,6 +316,9 @@ export function ToolboxDownload({
             }
           }}
         >
+          {startDisabled && (
+            <p role="status">{startDisabledReason || t("common.working")}</p>
+          )}
           <div
             className="ce-operation-plan"
             style={{ overflowWrap: "anywhere" }}

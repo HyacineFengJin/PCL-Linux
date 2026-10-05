@@ -7,7 +7,6 @@ import {
   type MessageKey,
 } from "./i18n";
 import { useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import {
   Box,
   Pickaxe,
@@ -33,71 +32,14 @@ import grassIcon from "./assets/game-icons/grass.png";
 import commandIcon from "./assets/game-icons/command.png";
 import "./community-loading.css";
 
-export type DownloadStep = {
-  id: string;
-  label: string;
-  state: "pending" | "running" | "complete";
-  progress?: number | null;
-};
-export type DownloadStatus = {
-  kind?:
-    | "install"
-    | "instance_reset"
-    | "instance_export"
-    | "instance_rename"
-    | "instance_import"
-    | "instance_delete"
-    | "instance_restore"
-    | "resource_download"
-    | "resource_update"
-    | "resource_update_restore"
-    | "resource_save"
-    | "launcher_logs"
-    | "toolbox_download"
-    | null;
-  stage:
-    | "idle"
-    | "preparing"
-    | "downloading"
-    | "processing"
-    | "complete"
-    | "error"
-    | "cancelled";
-  phase?: string;
-  message: string;
-  version: string | null;
-  display_name?: string | null;
-  completed: number;
-  total: number;
-  bytes_done: number;
-  bytes_total: number;
-  network_bytes?: number;
-  task_id?: string | null;
-  root_id?: string | null;
-  root_path?: string | null;
-  progress?: number;
-  error?: string | null;
-  can_cancel?: boolean;
-  steps?: DownloadStep[];
-  result?: {
-    id: string;
-    java_major: number;
-    files_downloaded: number;
-    files_reused: number;
-  } | null;
-};
+import { idleDownload, type DownloadStatus } from "./taskTypes";
+export { idleDownload } from "./taskTypes";
+export type {
+  DownloadStatus,
+  DownloadStep,
+  DownloadTaskView,
+} from "./taskTypes";
 type VersionEntry = { id: string; kind: string; release_time: string };
-export const idleDownload: DownloadStatus = {
-  stage: "idle",
-  message: "",
-  version: null,
-  completed: 0,
-  total: 0,
-  bytes_done: 0,
-  bytes_total: 0,
-};
-const active = (status: DownloadStatus) =>
-  ["preparing", "downloading", "processing"].includes(status.stage);
 const kindName = (kind: string) =>
   kind === "release"
     ? t("download.release")
@@ -112,9 +54,6 @@ export function DownloadPanel({
   rootAvailable = true,
   installed,
   gameBusy,
-  onInstalled,
-  onBusyChange,
-  onStatusChange,
   onResourceDetails,
   onTaskStart,
   visible = true,
@@ -129,11 +68,8 @@ export function DownloadPanel({
   compatibility?: ResourceBrowseRequest & { sequence: number };
   installed: { id: string }[];
   gameBusy: boolean;
-  onInstalled: () => Promise<void>;
-  onBusyChange: (busy: boolean) => void;
-  onStatusChange: (status: DownloadStatus) => void;
   onResourceDetails: (resource: ResourceSummary) => void;
-  onTaskStart: () => void;
+  onTaskStart: (id: string) => void;
   visible?: boolean;
 }) {
   const [catalog, setCatalog] = useState<VersionEntry[]>([]);
@@ -142,14 +78,11 @@ export function DownloadPanel({
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<string[]>([]);
   const [choice, setChoice] = useState<VersionEntry | null>(null);
-  const [status, setStatus] = useState<DownloadStatus>(idleDownload);
   const [working, setWorking] = useState(false);
-  const completed = useRef("");
   const starting = useRef(false);
   const mounted = useRef(true);
-  const statusEpoch = useRef(0);
+  const submissionEpoch = useRef(0);
   const catalogEpoch = useRef(0);
-  const latestStatus = useRef<DownloadStatus>(idleDownload);
   const context = useRef({ rootId, section, visible, api, choice });
   if (
     context.current.rootId !== rootId ||
@@ -161,22 +94,16 @@ export function DownloadPanel({
     context.current = { rootId, section, visible, api, choice };
   const renderedContext = context.current;
   const callbacks = useRef({
-    onInstalled,
-    onBusyChange,
-    onStatusChange,
     onTaskStart,
   });
   callbacks.current = {
-    onInstalled,
-    onBusyChange,
-    onStatusChange,
     onTaskStart,
   };
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
-      statusEpoch.current += 1;
+      submissionEpoch.current += 1;
       catalogEpoch.current += 1;
     };
   }, []);
@@ -208,98 +135,9 @@ export function DownloadPanel({
       catalogEpoch.current += 1;
     };
   }, [api]);
-  useEffect(() => {
-    let disposed = false;
-    let polling = false;
-    async function poll() {
-      if (polling || starting.current) return;
-      const epoch = statusEpoch.current;
-      polling = true;
-      try {
-        const next = await api<DownloadStatus>("download_status");
-        if (disposed || starting.current || epoch !== statusEpoch.current)
-          return;
-        if (
-          next.task_id &&
-          next.task_id === latestStatus.current.task_id &&
-          ["complete", "error", "cancelled"].includes(
-            latestStatus.current.stage,
-          ) &&
-          active(next)
-        )
-          return;
-        latestStatus.current = next;
-        setStatus(next);
-        callbacks.current.onStatusChange(next);
-        callbacks.current.onBusyChange(active(next));
-        if (active(next)) completed.current = "";
-        if (
-          (next.stage === "complete" ||
-            (next.stage === "error" &&
-              [
-                "instance_rename",
-                "instance_import",
-                "instance_delete",
-                "instance_restore",
-                "resource_download",
-                "resource_update",
-                "resource_update_restore",
-              ].includes(next.kind || ""))) &&
-          next.kind !== "resource_save" &&
-          next.kind !== "launcher_logs" &&
-          next.kind !== "toolbox_download" &&
-          next.version &&
-          completed.current !==
-            (next.task_id ||
-              `${next.root_id || next.root_path || ""}:${next.version}`)
-        ) {
-          completed.current =
-            next.task_id ||
-            `${next.root_id || next.root_path || ""}:${next.version}`;
-          if (
-            next.kind === "instance_rename" ||
-            next.kind === "instance_import" ||
-            next.kind === "instance_delete" ||
-            next.kind === "instance_restore" ||
-            next.kind === "resource_download" ||
-            next.kind === "resource_update" ||
-            next.kind === "resource_update_restore" ||
-            next.kind === "install" ||
-            !next.root_id ||
-            next.root_id === context.current.rootId
-          )
-            if (next.kind !== "instance_export")
-              await callbacks.current.onInstalled();
-        }
-      } catch (e) {
-        if (
-          !disposed &&
-          epoch === statusEpoch.current &&
-          context.current.visible
-        )
-          setError(String(e));
-      } finally {
-        polling = false;
-      }
-    }
-    void poll();
-    const timer = window.setInterval(poll, 1000);
-    let unlisten: (() => void) | undefined;
-    if (native) {
-      void listen("task_changed", () => void poll())
-        .then((stop) => {
-          if (disposed) stop();
-          else unlisten = stop;
-        })
-        .catch(() => {});
-    }
-    return () => {
-      disposed = true;
-      clearInterval(timer);
-      unlisten?.();
-    };
-  }, [api, native]);
-  const busy = active(status) || working;
+  // Global task polling belongs to App. This panel only owns its submission
+  // lifetime, so another queued/running job does not disable catalog choices.
+  const busy = working;
   const ids = new Set(installed.map((item) => item.id));
   const aprilVersions = new Set([
     "26w14a",
@@ -413,11 +251,9 @@ export function DownloadPanel({
     const targetRootId = rootId;
     const targetVersion = choice.id;
     starting.current = true;
-    const epoch = ++statusEpoch.current;
-    let accepted = false;
+    const epoch = ++submissionEpoch.current;
     setWorking(true);
     setError("");
-    callbacks.current.onBusyChange(true);
     try {
       const taskId = await api<string>("download_start", {
         id: targetVersion,
@@ -425,55 +261,25 @@ export function DownloadPanel({
         name: options.name,
         components: options.components,
       });
-      accepted = true;
       if (
         !mounted.current ||
-        epoch !== statusEpoch.current ||
+        epoch !== submissionEpoch.current ||
         context.current.api !== source.api
       )
         return;
-      completed.current = "";
-      const submitted: DownloadStatus = {
-        ...idleDownload,
-        stage: "preparing",
-        phase: "metadata",
-        message: t("download.preparing"),
-        task_id: taskId,
-        root_id: targetRootId,
-        version: options.name,
-        progress: 0,
-        can_cancel: true,
-      };
-      latestStatus.current = submitted;
-      setStatus(submitted);
-      callbacks.current.onStatusChange(submitted);
       if (source === context.current && source.visible) {
         setChoice(null);
-        callbacks.current.onTaskStart();
+        callbacks.current.onTaskStart(taskId);
       }
-      const next = await api<DownloadStatus>("download_status");
-      if (
-        !mounted.current ||
-        epoch !== statusEpoch.current ||
-        next.task_id !== taskId ||
-        context.current.api !== source.api
-      )
-        return;
-      latestStatus.current = next;
-      setStatus(next);
-      callbacks.current.onStatusChange(next);
-      callbacks.current.onBusyChange(active(next));
     } catch (e) {
       if (
         mounted.current &&
-        epoch === statusEpoch.current &&
+        epoch === submissionEpoch.current &&
         source === context.current
       )
         setError(String(e));
-      if (mounted.current && epoch === statusEpoch.current && !accepted)
-        callbacks.current.onBusyChange(active(latestStatus.current));
     } finally {
-      if (epoch === statusEpoch.current) {
+      if (epoch === submissionEpoch.current) {
         starting.current = false;
         if (mounted.current) setWorking(false);
       }

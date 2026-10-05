@@ -53,6 +53,8 @@ export function ResourceSave({
   contextKey,
   native,
   disabled,
+  startDisabled = false,
+  startDisabledReason,
   onTaskStart,
   onClose,
 }: {
@@ -61,6 +63,8 @@ export function ResourceSave({
   contextKey: string;
   native: boolean;
   disabled: boolean;
+  startDisabled?: boolean;
+  startDisabledReason?: string;
   onTaskStart: (id: string) => void;
   onClose: () => void;
 }) {
@@ -72,6 +76,8 @@ export function ResourceSave({
   ]);
   const owner = useInstanceOperationScope(api, identity, native, disabled);
   const scope = owner.scope;
+  const submissionBlocked = useRef(startDisabled);
+  submissionBlocked.current = startDisabled;
   const closed = useRef<object | null>(null);
   const current = () => owner.current() && closed.current !== scope;
   const [state, setState] = useState<{
@@ -150,6 +156,7 @@ export function ResourceSave({
     if (
       !current() ||
       !owner.allowed() ||
+      submissionBlocked.current ||
       !visible?.preview ||
       operation.current?.scope === scope
     )
@@ -197,11 +204,16 @@ export function ResourceSave({
             ? t("save.confirm")
             : t("save.chooseAgain")
       }
-      confirmDisabled={!owner.allowed() || !!working}
+      confirmDisabled={
+        !owner.allowed() || !!working || (!!preview && startDisabled)
+      }
       onConfirm={() => void (preview ? start() : prepare())}
       onClose={close}
     >
       <p>{t("save.help")}</p>
+      {preview && startDisabled && (
+        <p role="status">{startDisabledReason || t("common.working")}</p>
+      )}
       {working === "prepare" && <p>{t("save.preparing")}</p>}
       {preview && (
         <>

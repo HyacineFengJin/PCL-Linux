@@ -88,6 +88,180 @@ impl Drop for Fixture {
         let _ = fs::remove_dir_all(&self.path);
     }
 }
+
+#[test]
+fn cancelled_queued_toolbox_worker_drops_authority_before_terminal_without_http() {
+    use crate::tasks::{TaskKind, TaskOutcome, TaskScope, TaskStage, TaskTarget, Tasks};
+    let fixture = Fixture::new();
+    let server = Server::new(|_| Reply::body(b"fixture"));
+    let prepared = fixture.pending(&server.url);
+    let weak = Arc::downgrade(&prepared.directory);
+    let manager = Arc::new(Tasks::new());
+    let target = TaskTarget {
+        root_id: "launcher".into(),
+        root_path: fixture.folder.display().to_string(),
+        instance_id: None,
+    };
+    let blocker = manager
+        .admit_queued(
+            target.clone(),
+            TaskKind::Install,
+            TaskScope::root(&fixture.folder).unwrap(),
+        )
+        .unwrap();
+    blocker.wait_turn().unwrap();
+    let task = manager
+        .admit_queued(
+            target,
+            TaskKind::ToolboxDownload,
+            TaskScope::files(&[fixture.target()]).unwrap(),
+        )
+        .unwrap();
+    let id = task.id().to_owned();
+    let terminal = Arc::new(AtomicBool::new(false));
+    let observed = terminal.clone();
+    manager.set_listener(move |snapshot| {
+        if snapshot.stage == TaskStage::Cancelled {
+            assert!(
+                weak.upgrade().is_none(),
+                "prepared chooser clone must close before terminal"
+            );
+            observed.store(true, Ordering::SeqCst);
+        }
+    });
+    manager.cancel(&id).unwrap();
+    assert!(!manager.snapshot(&id).unwrap().stage.is_terminal());
+    let worker = thread::spawn(move || {
+        let result =
+            crate::toolbox_download_commands::with_download_turn(&task, prepared, |prepared| {
+                let client = reqwest::Client::builder().no_proxy().build().unwrap();
+                let scheduler = DownloadScheduler::new(Default::default()).unwrap();
+                let cancel = task.cancellation_token();
+                run(download_with_client(
+                    prepared,
+                    &client,
+                    &scheduler,
+                    &cancel,
+                    |_| {},
+                    &mut || Ok(()),
+                    transfer::TransferLimits::default(),
+                ))
+            });
+        assert_eq!(result.unwrap_err(), crate::tasks::CANCELLED);
+        // The production gate's owned argument and closure have both dropped.
+        task.finish(TaskOutcome::Failed(crate::tasks::CANCELLED.into()));
+    });
+    worker.join().unwrap();
+    assert_eq!(
+        manager.wait_terminal(&id).unwrap().stage,
+        TaskStage::Cancelled
+    );
+    assert!(terminal.load(Ordering::SeqCst));
+    assert!(server.requests.lock().unwrap().is_empty());
+    fixture.assert_empty();
+    blocker.finish(TaskOutcome::Complete {
+        result: None,
+        message: "fixture finished".into(),
+        error: None,
+    });
+}
+
+#[test]
+fn independent_toolbox_files_in_one_chosen_folder_download_concurrently_and_publish() {
+    use crate::tasks::{TaskKind, TaskOutcome, TaskScope, TaskTarget, Tasks};
+    let fixture = Fixture::new();
+    let arrivals = Arc::new(AtomicUsize::new(0));
+    let overlaps = Arc::new(AtomicUsize::new(0));
+    let requests = arrivals.clone();
+    let concurrent = overlaps.clone();
+    let server = Server::new(move |_| {
+        requests.fetch_add(1, Ordering::SeqCst);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while requests.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(2));
+        }
+        if requests.load(Ordering::SeqCst) == 2 {
+            concurrent.fetch_add(1, Ordering::SeqCst);
+        }
+        Reply::body(b"parallel fixture payload")
+    });
+    let manager = Arc::new(Tasks::new());
+    let scheduler = DownloadScheduler::new(Default::default()).unwrap();
+    let mut workers = Vec::new();
+    for name in ["first.bin", "second.bin"] {
+        let (session, directory) = fixture.session();
+        let preview = session
+            .prepare(
+                PrepareRequest {
+                    directory_token: directory.token,
+                    url: format!("{}/{name}", server.url),
+                    file_name: name.into(),
+                },
+                "fixture-prefs".into(),
+            )
+            .unwrap();
+        let pending = session
+            .start_guard(&preview.token, "fixture-prefs")
+            .unwrap();
+        assert_eq!(pending.target(), fixture.folder.join(name));
+        let task = manager
+            .admit_queued(
+                TaskTarget {
+                    root_id: "launcher".into(),
+                    root_path: fixture.folder.display().to_string(),
+                    instance_id: None,
+                },
+                TaskKind::ToolboxDownload,
+                TaskScope::files(&[pending.target()]).unwrap(),
+            )
+            .unwrap();
+        let prepared = pending.take();
+        let budget = scheduler.clone();
+        workers.push(thread::spawn(move || {
+            let result =
+                crate::toolbox_download_commands::with_download_turn(&task, prepared, |prepared| {
+                    let cancel = task.cancellation_token();
+                    let mut gate = || {
+                        task.begin_finishing();
+                        Ok(())
+                    };
+                    run(download_with_client(
+                        prepared,
+                        &client(),
+                        &budget,
+                        &cancel,
+                        |_| {},
+                        &mut gate,
+                        transfer::TransferLimits::default(),
+                    ))
+                })
+                .unwrap();
+            task.finish(TaskOutcome::Complete {
+                result: serde_json::to_value(&result).ok(),
+                message: "fixture saved".into(),
+                error: result.warning,
+            });
+        }));
+    }
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert_eq!(arrivals.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        overlaps.load(Ordering::SeqCst),
+        2,
+        "both HTTP requests must overlap before either response"
+    );
+    for name in ["first.bin", "second.bin"] {
+        assert_eq!(
+            fs::read(fixture.folder.join(name)).unwrap(),
+            b"parallel fixture payload"
+        );
+    }
+    assert_eq!(fs::read_dir(&fixture.folder).unwrap().count(), 2);
+    assert!(manager.active_all().is_empty());
+    fixture.assert_decoy();
+}
 #[derive(Clone)]
 struct Reply {
     status: u16,

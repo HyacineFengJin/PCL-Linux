@@ -62,8 +62,8 @@ pub fn network_policy(prefs: &LauncherPreferences) -> pcl_network::Policy {
     }
 }
 
-/// One shared scheduler is captured at task submission. Editing these fields
-/// changes the next task, never the budget or cache rules of an admitted job.
+/// All live submissions capture the same scheduler. Policy changes are admitted
+/// only when idle, so concurrent tasks cannot split the total transfer budget.
 pub fn download_policy(prefs: &LauncherPreferences) -> pcl_network::DownloadPolicy {
     pcl_network::DownloadPolicy {
         max_concurrent_transfers: prefs.management.max_concurrent_transfers,
@@ -75,6 +75,7 @@ pub fn download_policy(prefs: &LauncherPreferences) -> pcl_network::DownloadPoli
 #[cfg(test)]
 mod policy_tests {
     use super::*;
+    use std::path::Path;
     #[test]
     fn download_policy_keeps_budgets_and_cache_permission_in_same_snapshot() {
         let mut prefs = LauncherPreferences::default();
@@ -90,14 +91,52 @@ mod policy_tests {
         assert!(prefs.validate().is_err());
         assert!(pcl_network::DownloadScheduler::new(download_policy(&prefs)).is_err());
     }
+
+    #[test]
+    fn a_live_queue_cannot_split_the_shared_download_budget() {
+        let fixture = crate::integration_tests::Fixture::new();
+        let shared = fixture.shared();
+        let root = shared.config.resolve(None).unwrap();
+        let task = shared
+            .tasks
+            .admit_queued(
+                crate::tasks::TaskTarget {
+                    root_id: root.id,
+                    root_path: root.path.clone(),
+                    instance_id: None,
+                },
+                crate::tasks::TaskKind::Install,
+                crate::tasks::TaskScope::root(Path::new(&root.path)).unwrap(),
+            )
+            .unwrap();
+        let current = pcl_network::download_snapshot().policy().clone();
+        let mut next = LauncherPreferences::default();
+        next.management.max_concurrent_transfers = current.max_concurrent_transfers;
+        next.management.total_rate_limit_mib_per_second = current.total_rate_limit_mib_per_second;
+        next.advanced.forbid_download_copy = current.forbid_cross_root_cache_copy;
+        assert!(prepare_download_change(&shared, &next).unwrap().is_none());
+        next.management.max_concurrent_transfers = if current.max_concurrent_transfers == 64 {
+            63
+        } else {
+            64
+        };
+        assert!(prepare_download_change(&shared, &next).is_err());
+        drop(task);
+        assert!(prepare_download_change(&shared, &next).unwrap().is_some());
+    }
 }
 fn prepare_download_change(
+    shared: &Shared,
     next: &LauncherPreferences,
 ) -> Result<Option<Arc<pcl_network::DownloadScheduler>>, String> {
     let policy = download_policy(next);
     if pcl_network::download_snapshot().policy() == &policy {
         return Ok(None);
     }
+    // Concurrent jobs must share one slot/rate budget. Swapping this Arc while
+    // a worker or queued submission retains the previous one would create two
+    // independent budgets and exceed the user's total limit.
+    require_network_idle(shared)?;
     pcl_network::DownloadScheduler::new(policy).map(Some)
 }
 
@@ -245,7 +284,7 @@ pub async fn launcher_preferences_update(
         patch.clone().apply(&mut next);
         next.validate()?;
         let network = prepare_network_change(&shared, &next)?;
-        let downloads = prepare_download_change(&next)?;
+        let downloads = prepare_download_change(&shared, &next)?;
         let view = shared.launcher_preferences.update(&revision, patch)?;
         if minecraft_notice_policy_changed(&before, &view.preferences) {
             shared.minecraft_updates.invalidate();
@@ -380,7 +419,7 @@ pub async fn launcher_apply_settings_import(
         }
         let next = crate::launcher_prefs::preview_import(&pending.bytes)?;
         let network = prepare_network_change(&shared, &next)?;
-        let downloads = prepare_download_change(&next)?;
+        let downloads = prepare_download_change(&shared, &next)?;
         let view = shared
             .launcher_preferences
             .import_settings(&revision, &pending.bytes)?;

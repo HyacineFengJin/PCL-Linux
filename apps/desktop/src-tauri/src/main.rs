@@ -113,7 +113,7 @@ impl Shared {
 }
 
 struct CloseDecision {
-    active_task_id: Option<String>,
+    active_task_ids: Vec<String>,
     wait_for_workers: bool,
     first_request: bool,
     event: LauncherClosing,
@@ -144,10 +144,17 @@ fn begin_launcher_close(state: &Shared) -> CloseDecision {
     let _operation = state.operations.lock().unwrap();
     let first_request = !state.closing.load(Ordering::SeqCst);
     let event = set_launcher_closing(state, true);
-    let active_task_id = state.tasks.active().map(|task| task.id);
-    let wait_for_workers = active_task_id.is_some() || state.launcher_updates.busy();
+    // Capture queued workers too: they may own prepared file descriptors and
+    // must release those resources before the native window is destroyed.
+    let active_task_ids: Vec<_> = state
+        .tasks
+        .active_all()
+        .into_iter()
+        .map(|task| task.id)
+        .collect();
+    let wait_for_workers = !active_task_ids.is_empty() || state.launcher_updates.busy();
     CloseDecision {
-        active_task_id,
+        active_task_ids,
         wait_for_workers,
         first_request,
         event,
@@ -243,7 +250,10 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
         .into_iter()
         .flatten()
         .collect();
-    let resetting_here = s.tasks.active().is_some_and(|task| {
+    // Queued jobs have not touched a recovery journal yet. Suppression belongs
+    // only to workers holding a turn, across every root rather than the latest job.
+    let running = s.tasks.running_all();
+    let resetting_here = running.iter().any(|task| {
         task.kind == tasks::TaskKind::InstanceReset && task.root_id == settings.root_id
     });
     let reset_recovery_error = if resetting_here {
@@ -253,10 +263,9 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
             .as_ref()
             .and_then(|path| instance_reset::ensure_ready(path).err())
     };
-    let renaming = s
-        .tasks
-        .active()
-        .is_some_and(|task| task.kind == tasks::TaskKind::InstanceRename);
+    let renaming = running
+        .iter()
+        .any(|task| task.kind == tasks::TaskKind::InstanceRename);
     let (rename_recovery_error, rename_recovery_root_id) = if renaming {
         (None, None)
     } else {
@@ -285,7 +294,7 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
             Err(error) => (Some(error), None),
         }
     };
-    let import_recovery_error = if s.tasks.active().is_some_and(|task| {
+    let import_recovery_error = if running.iter().any(|task| {
         task.kind == tasks::TaskKind::InstanceImport && task.root_id == settings.root_id
     }) {
         None
@@ -294,7 +303,7 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
             .as_ref()
             .and_then(|path| instance_import::ensure_ready(path).err())
     };
-    let (delete_recovery_error, delete_recovery_root_id) = if s.tasks.active().is_some_and(|task| {
+    let (delete_recovery_error, delete_recovery_root_id) = if running.iter().any(|task| {
         matches!(
             task.kind,
             tasks::TaskKind::InstanceDelete | tasks::TaskKind::InstanceRestore
@@ -323,7 +332,7 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
             Err(error) => (Some(error), None),
         }
     };
-    let resource_install_recovery_error = if s.tasks.active().is_some_and(|task| {
+    let resource_install_recovery_error = if running.iter().any(|task| {
         matches!(
             task.kind,
             tasks::TaskKind::ResourceDownload
@@ -458,8 +467,9 @@ fn save_settings(settings: Settings, state: State<'_, Arc<Shared>>) -> Result<Se
 fn require_reference_write(s: &Shared) -> Result<(), String> {
     launcher_monitor_runtime::refresh(s)?;
     if s.tasks
-        .active()
-        .is_some_and(|task| task.kind == tasks::TaskKind::InstanceRename)
+        .active_all()
+        .iter()
+        .any(|task| task.kind == tasks::TaskKind::InstanceRename)
     {
         return Err("请等待实例重命名完成后再保存或切换游戏目录".into());
     }
@@ -550,8 +560,10 @@ async fn root_update(
 
 fn require_root_unused(s: &Shared, id: &str) -> Result<(), String> {
     launcher_monitor_runtime::require_root_unused(s, id)?;
+    let root = s.config.resolve(Some(id))?;
     let run = s.status.lock().unwrap();
     if s.tasks.uses_root(id)
+        || s.tasks.blocks_path(Path::new(&root.path))?
         || (run.root_id.as_deref() == Some(id)
             && matches!(run.stage.as_str(), "preparing" | "running"))
     {
@@ -608,8 +620,47 @@ async fn download_catalog(
         .map_err(|_| "获取版本列表的任务失败")?
 }
 #[tauri::command]
-fn download_status(state: State<'_, Arc<Shared>>) -> downloads::DownloadStatus {
-    state.downloads.snapshot()
+fn download_status(
+    task_id: Option<String>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<downloads::DownloadStatus, String> {
+    match task_id {
+        Some(id) => state
+            .downloads
+            .snapshot_for(&id)
+            .ok_or_else(|| "下载任务不存在或已从历史记录移除".into()),
+        None => Ok(state.downloads.snapshot()),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadTasksView {
+    #[serde(flatten)]
+    collection: downloads::DownloadTaskList,
+    blocked_root_ids: Vec<String>,
+}
+
+#[tauri::command]
+fn download_tasks(state: State<'_, Arc<Shared>>) -> Result<DownloadTasksView, String> {
+    download_tasks_view(&state)
+}
+
+fn download_tasks_view(state: &Shared) -> Result<DownloadTasksView, String> {
+    let _operation = state.operations.lock().unwrap();
+    let roots: Vec<_> = state
+        .config
+        .roots()
+        .into_iter()
+        .map(|root| (root.id, PathBuf::from(root.path)))
+        .collect();
+    // Scope projection and task snapshots share one registry revision. A
+    // concurrent finish must not leave a stale busy root attached to new data.
+    let (collection, blocked_root_ids) = state.downloads.list_snapshot_with_roots(&roots)?;
+    Ok(DownloadTasksView {
+        collection,
+        blocked_root_ids,
+    })
 }
 #[tauri::command]
 async fn download_cancel(
@@ -630,16 +681,7 @@ fn download_start(
     state: State<'_, Arc<Shared>>,
 ) -> Result<String, String> {
     let _operation = state.operations.lock().unwrap();
-    if state.closing.load(Ordering::SeqCst) {
-        return Err("启动器正在关闭，请重新打开后安装".into());
-    }
-    launcher_monitor_runtime::require_idle(&state)?;
-    let run = state.status.lock().unwrap();
-    if matches!(run.stage.as_str(), "preparing" | "running") {
-        return Err("请在游戏退出后安装新实例".into());
-    }
-    state.config.ensure_writable()?;
-    instance_rename_refs::ensure_project_ready(&state.project)?;
+    require_network_submission(&state)?;
     let root = state.config.resolve(root_id.as_deref())?;
     ensure_instance_files_ready(&state, &root)?;
     let request = pcl_install::InstallRequest {
@@ -664,11 +706,26 @@ fn download_start(
         .auto_select_installed;
     let shared = state.inner().clone();
     let target = root.id.clone();
+    let captured_root = root.clone();
+    let captured_name = request.name.clone();
+    let before_start = shared.clone();
     state.downloads.start(
         PathBuf::from(root.path),
         root.id,
         request,
         shared.project.clone(),
+        move || {
+            let _operation = before_start.operations.lock().unwrap();
+            require_network_submission(&before_start)?;
+            let current = before_start.config.resolve(Some(&captured_root.id))?;
+            if current.path != captured_root.path {
+                return Err("游戏目录登记已变化，请重新提交安装".into());
+            }
+            ensure_instance_files_ready(&before_start, &current)?;
+            instance_reset::ensure_ready(Path::new(&current.path))?;
+            resource_ops::ensure_verified_batches_ready(Path::new(&current.path))?;
+            instance_commands::new_name(&before_start, &current, &captured_name)
+        },
         move |result| {
             if auto_select {
                 shared.config.select_installed(&target, &result.id)
@@ -710,6 +767,27 @@ fn require_instance_job(s: &Shared) -> Result<(), String> {
         return Err("请在当前文件操作结束后操作实例".into());
     }
     Ok(())
+}
+
+// Caller holds operations. Network submissions may join the queue while other
+// downloads run; their worker must revalidate its captured target after its
+// turn is granted. Legacy mutations keep require_instance_job's exclusive gate.
+fn require_network_submission(s: &Shared) -> Result<(), String> {
+    launcher_monitor_runtime::require_idle(s)?;
+    s.config.ensure_writable()?;
+    if s.closing.load(Ordering::SeqCst) {
+        return Err("启动器正在关闭，请重新打开后再下载".into());
+    }
+    if s.launcher_updates.busy() {
+        return Err("请等待启动器更新操作结束后再下载".into());
+    }
+    if matches!(
+        s.status.lock().unwrap().stage.as_str(),
+        "preparing" | "running"
+    ) {
+        return Err("请在游戏退出后下载或安装文件".into());
+    }
+    instance_rename_refs::ensure_project_ready(&s.project)
 }
 
 fn ensure_instance_files_ready(s: &Shared, root: &GameRoot) -> Result<(), String> {
@@ -1131,6 +1209,9 @@ enum ResourceRequest {
 }
 
 fn require_resource_write(s: &Shared) -> Result<(), String> {
+    if s.closing.load(Ordering::SeqCst) {
+        return Err("启动器正在关闭，请重新打开后操作资源文件".into());
+    }
     launcher_monitor_runtime::require_idle(s)?;
     s.config.ensure_writable()?;
     if matches!(
@@ -1865,7 +1946,7 @@ fn main() {
                 let _ = window.emit("launcher_closing", decision.event);
                 if decision.wait_for_workers {
                     api.prevent_close();
-                    if let Some(id) = decision.active_task_id {
+                    for id in decision.active_task_ids {
                         let _ = state.tasks.cancel(&id);
                     }
                     state.launcher_updates.service.cancel();
@@ -1873,7 +1954,8 @@ fn main() {
                         let shared = state.inner().clone();
                         let window = window.clone();
                         std::thread::spawn(move || {
-                            while shared.tasks.active().is_some() || shared.launcher_updates.busy()
+                            while !shared.tasks.active_all().is_empty()
+                                || shared.launcher_updates.busy()
                             {
                                 std::thread::sleep(Duration::from_millis(100));
                             }
@@ -1995,6 +2077,7 @@ fn main() {
             auth_open_help,
             download_catalog,
             download_status,
+            download_tasks,
             download_start,
             instance_reset_plan,
             instance_reset_start,
@@ -2112,8 +2195,9 @@ mod integration_tests {
         let decision = begin_launcher_close(&shared);
         assert!(decision.first_request);
         assert!(!decision.wait_for_workers);
-        assert!(decision.active_task_id.is_none());
+        assert!(decision.active_task_ids.is_empty());
         assert!(require_instance_job(&shared).is_err());
+        assert!(require_resource_write(&shared).is_err());
         assert!(with_account_write(&shared, || -> Result<(), String> {
             panic!("closed admission")
         })
@@ -2152,7 +2236,7 @@ mod integration_tests {
         drop(operation);
         let decision = decision.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(decision.first_request && decision.wait_for_workers);
-        assert_eq!(decision.active_task_id.as_deref(), Some(id.as_str()));
+        assert_eq!(decision.active_task_ids, vec![id]);
         assert!(require_instance_job(&shared).is_err());
         task.finish(TaskOutcome::Failed(
             "finished isolated close fixture".into(),
@@ -2160,6 +2244,90 @@ mod integration_tests {
         closer.join().unwrap();
         let final_close = begin_launcher_close(&shared);
         assert!(!final_close.first_request && !final_close.wait_for_workers);
+    }
+
+    #[test]
+    fn close_captures_running_and_queued_workers_from_all_roots() {
+        let fixture = Fixture::new();
+        let shared = fixture.shared();
+        let first_root = shared.config.resolve(None).unwrap();
+        let second_root = fixture.second(&shared.config);
+        let queued = |root: &GameRoot| {
+            shared
+                .tasks
+                .admit_queued(
+                    TaskTarget {
+                        root_id: root.id.clone(),
+                        root_path: root.path.clone(),
+                        instance_id: None,
+                    },
+                    TaskKind::Install,
+                    tasks::TaskScope::root(Path::new(&root.path)).unwrap(),
+                )
+                .unwrap()
+        };
+        let first = queued(&first_root);
+        let second = queued(&second_root);
+        first.wait_turn().unwrap();
+        second.wait_turn().unwrap();
+        let waiting = queued(&first_root);
+        assert_eq!(shared.tasks.running_all().len(), 2);
+        let decision = begin_launcher_close(&shared);
+        assert!(decision.wait_for_workers);
+        let captured: std::collections::HashSet<_> = decision
+            .active_task_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            captured,
+            [first.id(), second.id(), waiting.id()]
+                .into_iter()
+                .collect()
+        );
+        assert!(require_network_submission(&shared).is_err());
+        for id in &decision.active_task_ids {
+            shared.tasks.cancel(id).unwrap();
+        }
+        assert!(waiting.wait_turn().is_err());
+        // Accepted cancellation does not grant another worker a turn or permit
+        // close until each owner has released its prepared artifacts.
+        assert!(begin_launcher_close(&shared).wait_for_workers);
+        waiting.finish(TaskOutcome::Failed(tasks::CANCELLED.into()));
+        first.finish(TaskOutcome::Failed(tasks::CANCELLED.into()));
+        assert!(begin_launcher_close(&shared).wait_for_workers);
+        second.finish(TaskOutcome::Failed(tasks::CANCELLED.into()));
+        assert!(!begin_launcher_close(&shared).wait_for_workers);
+    }
+
+    #[test]
+    fn launcher_file_scope_blocks_containing_root_without_root_id_guessing() {
+        let fixture = Fixture::new();
+        let shared = fixture.shared();
+        let root = shared.config.resolve(None).unwrap();
+        let output = Path::new(&root.path).join("download.bin");
+        let task = shared
+            .tasks
+            .admit_queued(
+                TaskTarget {
+                    root_id: "launcher".into(),
+                    root_path: root.path.clone(),
+                    instance_id: None,
+                },
+                TaskKind::ToolboxDownload,
+                tasks::TaskScope::files(&[output]).unwrap(),
+            )
+            .unwrap();
+        assert!(require_root_unused(&shared, &root.id).is_err());
+        let view = download_tasks_view(&shared).unwrap();
+        assert!(view.blocked_root_ids.contains(&root.id));
+        assert_eq!(view.collection.tasks.len(), 1);
+        task.finish(TaskOutcome::Failed(tasks::CANCELLED.into()));
+        assert!(require_root_unused(&shared, &root.id).is_ok());
+        assert!(download_tasks_view(&shared)
+            .unwrap()
+            .blocked_root_ids
+            .is_empty());
     }
 
     #[test]
@@ -2971,13 +3139,14 @@ mod integration_tests {
         let second = fixture.second(&state.config);
         let task = state
             .tasks
-            .admit(
+            .admit_queued(
                 TaskTarget {
                     root_id: first.id.clone(),
                     root_path: first.path.clone(),
                     instance_id: Some("Same".into()),
                 },
                 TaskKind::Install,
+                tasks::TaskScope::root(Path::new(&first.path)).unwrap(),
             )
             .unwrap();
         state.config.select(&second.id).unwrap();
@@ -3010,12 +3179,16 @@ mod integration_tests {
         state.config.select(&second.id).unwrap();
         assert!(admit_resource(&state, "Same", Some(&second.id), None).is_err());
         assert!(require_root_unused(&state, &first.id).is_err());
-        assert!(require_root_unused(&state, &second.id).is_ok());
+        // This legacy mutation keeps a global lease until it is migrated to
+        // explicit queue scopes; registry changes wait alongside other writers.
+        assert!(require_root_unused(&state, &second.id).is_err());
         state.tasks.cancel(task.id()).unwrap();
         assert!(state.tasks.active().is_some());
         assert!(admit_resource(&state, "Same", Some(&second.id), None).is_err());
         task.finish(TaskOutcome::Failed("cancelled".into()));
         assert!(state.tasks.active().is_none());
+        assert!(require_root_unused(&state, &first.id).is_ok());
+        assert!(require_root_unused(&state, &second.id).is_ok());
         let (_, task) = admit_resource(&state, "Same", Some(&second.id), None).unwrap();
         task.finish(TaskOutcome::Complete {
             result: None,

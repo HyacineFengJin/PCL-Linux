@@ -562,6 +562,62 @@ fn target_edits_including_resource_collisions_invalidate_preparation() {
     f.local("mods", "sample.jar", b"external conflicting mod");
     assert!(p.plan(&f, None).unwrap_err().contains("已存在"));
 }
+
+#[test]
+fn queued_confirmation_rejects_new_profile_and_inventory_before_artifact_transfer() {
+    use crate::tasks::{TaskKind, TaskOutcome, TaskScope, TaskTarget, Tasks};
+    for profile_change in [false, true] {
+        let fixture = Fixture::new();
+        let provider = basic();
+        let confirmed = provider.plan(&fixture, None).unwrap();
+        let manager = Arc::new(Tasks::new());
+        let target = TaskTarget {
+            root_id: "root-fixture".into(),
+            root_path: fixture.root.display().to_string(),
+            instance_id: Some("sample".into()),
+        };
+        let blocker = manager
+            .admit_queued(
+                target.clone(),
+                TaskKind::Install,
+                TaskScope::root(&fixture.root).unwrap(),
+            )
+            .unwrap();
+        blocker.wait_turn().unwrap();
+        let queued = manager
+            .admit_queued(
+                target,
+                TaskKind::ResourceDownload,
+                TaskScope::root(&fixture.root).unwrap(),
+            )
+            .unwrap();
+        if profile_change {
+            // The same compatibility/id remains valid; only exact confirmation
+            // identity should detect this external edit to the profile bytes.
+            fs::write(fixture.root.join("versions/sample/sample.json"), br#"{"id":"sample","clientVersion":"1.20.1","libraries":[{"name":"net.fabricmc:fabric-loader:0.16.0"}],"fixture":"changed"}"#).unwrap();
+        } else {
+            fixture.local("mods", "other.jar", b"external resource");
+        }
+        blocker.finish(TaskOutcome::Complete {
+            result: None,
+            message: "fixture finished".into(),
+            error: None,
+        });
+        queued.wait_turn().unwrap();
+        let fresh = provider.plan(&fixture, None).unwrap();
+        assert!(require_confirmed_plan(&fresh, &confirmed.revision).is_err());
+        assert!(recheck_target(&confirmed, &AtomicBool::new(false)).is_err());
+        assert!(!fixture
+            .root
+            .join("versions/sample/mods/sample.jar")
+            .exists());
+        assert!(!fixture
+            .project
+            .join(".pcl-rust/resource-downloads")
+            .exists());
+        queued.finish(TaskOutcome::Error("fixture confirmation refused".into()));
+    }
+}
 #[test]
 fn shader_download_plans_warn_about_unconfirmed_engine() {
     let f = Fixture::new();

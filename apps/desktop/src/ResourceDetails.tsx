@@ -249,6 +249,9 @@ export function ResourceDetails({
   selectedInstance,
   native,
   disabled,
+  saveDisabled = disabled,
+  saveStartDisabled = false,
+  saveStartDisabledReason,
   onTaskStart,
   onResourceDetails,
 }: {
@@ -259,6 +262,9 @@ export function ResourceDetails({
   selectedInstance: Instance | null;
   native: boolean;
   disabled: boolean;
+  saveDisabled?: boolean;
+  saveStartDisabled?: boolean;
+  saveStartDisabledReason?: string;
   onTaskStart: (id: string) => void;
   onResourceDetails: (resource: ResourceSummary) => void;
 }) {
@@ -347,8 +353,8 @@ export function ResourceDetails({
   )
     installationContext.current = { api, contextKey };
   const renderedInstallationContext = installationContext.current;
-  const admission = useRef({ native, disabled });
-  admission.current = { native, disabled };
+  const admission = useRef({ native, disabled, saveDisabled });
+  admission.current = { native, disabled, saveDisabled };
   const project = details?.project;
   const title = project?.title ?? resource.title;
   const loaders = project?.loaders ?? resource.categories.filter(isLoader);
@@ -1009,7 +1015,7 @@ export function ResourceDetails({
                         !pack &&
                         (!native ||
                           !saveAvailable ||
-                          disabled ||
+                          saveDisabled ||
                           !modrinth ||
                           !selectedFile)
                       }
@@ -1027,7 +1033,7 @@ export function ResourceDetails({
                           installationContext.current !==
                             renderedInstallationContext ||
                           !admission.current.native ||
-                          admission.current.disabled ||
+                          admission.current.saveDisabled ||
                           !saveAvailable ||
                           !modrinth ||
                           !selectedFile
@@ -1156,7 +1162,9 @@ export function ResourceDetails({
           request={saveChoice.request}
           contextKey={contextKey}
           native={native && saveAvailable}
-          disabled={disabled}
+          disabled={saveDisabled}
+          startDisabled={saveStartDisabled}
+          startDisabledReason={saveStartDisabledReason}
           onTaskStart={onTaskStart}
           onClose={() => setSaveChoice(null)}
         />

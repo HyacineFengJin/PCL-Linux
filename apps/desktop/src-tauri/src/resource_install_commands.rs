@@ -3,8 +3,9 @@
 //! The UI submits provider IDs, an exact file selection and a confirmation
 //! revision. Network metadata, compatibility and file publication stay in the
 //! planner/transfer/batch services. Read-only preparation releases operations;
-//! start admits the single writer before any network work, so cancellation and
-//! application shutdown own the entire request, download and cleanup lifetime.
+//! start admits a queued root writer before any network work. Each worker waits
+//! outside operations, then repeats binding/recovery checks before metadata;
+//! cancellation and shutdown own the full queued, transfer and cleanup lifetime.
 
 use crate::{config::GameRoot, modrinth_install, resource_ops, tasks, Shared};
 use pcl_install::InstallStep;
@@ -20,12 +21,55 @@ pub(super) fn capture(shared: &Shared, root_id: Option<&str>, id: &str) -> Resul
     crate::require_instance_job(shared)?;
     pcl_core::identifier(id)?;
     let root = shared.config.resolve(root_id)?;
-    crate::ensure_instance_files_ready(shared, &root)?;
+    ready(shared, &root, id)?;
+    Ok(root)
+}
+
+fn ready(shared: &Shared, root: &GameRoot, id: &str) -> Result<()> {
+    crate::ensure_instance_files_ready(shared, root)?;
     let path = Path::new(&root.path);
     crate::instance_delete::ensure_name_available(path, id)?;
     crate::instance_reset::ensure_ready(path)?;
     resource_ops::ensure_ready(path)?;
-    Ok(root)
+    Ok(())
+}
+
+/// Submission checks the registered root and global reference store. Root-local
+/// recovery/reservation checks belong to the turn: another legitimate network
+/// writer may currently own its temporary publication journal in this root.
+fn capture_submission(shared: &Shared, root_id: Option<&str>, id: &str) -> Result<GameRoot> {
+    crate::require_network_submission(shared)?;
+    pcl_core::identifier(id)?;
+    shared.config.resolve(root_id)
+}
+
+fn worker_ready(
+    shared: &Shared,
+    root: &GameRoot,
+    id: &str,
+    task: &tasks::TaskHandle,
+) -> Result<()> {
+    let _operation = shared.operations.lock().unwrap();
+    if task.cancellation_token().load(Ordering::SeqCst) {
+        return Err(tasks::CANCELLED.into());
+    }
+    crate::require_network_submission(shared)?;
+    same_root(shared, root)?;
+    ready(shared, root, id)
+}
+
+/// The owned work closure is consumed even when a queued cancellation returns
+/// early, so its captured resources close before the caller finishes the task.
+fn with_worker_turn<T>(
+    shared: &Shared,
+    root: &GameRoot,
+    id: &str,
+    task: &tasks::TaskHandle,
+    work: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    task.wait_turn()?;
+    worker_ready(shared, root, id, task)?;
+    work()
 }
 
 pub(super) fn same_root(shared: &Shared, root: &GameRoot) -> Result<()> {
@@ -46,7 +90,9 @@ pub async fn resource_install_plan(
     tauri::async_runtime::spawn_blocking(move || {
         let root = {
             let _operation = shared.operations.lock().unwrap();
-            capture(&shared, root_id.as_deref(), &id)?
+            let root = capture_submission(&shared, root_id.as_deref(), &id)?;
+            ready(&shared, &root, &id)?;
+            root
         };
         // This confirmation read has no file writer. Start repeats the full
         // authoritative plan under its own admitted cancellation lifetime.
@@ -62,7 +108,8 @@ pub async fn resource_install_plan(
         modrinth_install::recheck_target(&plan, &cancel)?;
         let _operation = shared.operations.lock().unwrap();
         same_root(&shared, &root)?;
-        capture(&shared, Some(&root.id), &id)?;
+        crate::require_network_submission(&shared)?;
+        ready(&shared, &root, &id)?;
         Ok(plan)
     })
     .await
@@ -96,17 +143,18 @@ pub(super) fn start_request(
     revision: String,
 ) -> Result<Value> {
     let _operation = shared.operations.lock().unwrap();
-    let root = capture(&shared, root_id, &id)?;
+    let root = capture_submission(&shared, root_id, &id)?;
     if revision.is_empty() || revision.len() > 256 {
         return Err("缺少有效的资源安装方案，请重新检查".into());
     }
-    let task = shared.tasks.admit(
+    let task = shared.tasks.admit_queued(
         tasks::TaskTarget {
             root_id: root.id.clone(),
             root_path: root.path.clone(),
             instance_id: Some(id.clone()),
         },
         tasks::TaskKind::ResourceDownload,
+        tasks::TaskScope::root(Path::new(&root.path))?,
     )?;
     let task_id = task.id().to_owned();
     shared.downloads.track(&task);
@@ -116,15 +164,17 @@ pub(super) fn start_request(
         .name(format!("pcl-resource-{task_id}"))
         .spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                install_with_policy(
-                    &worker,
-                    &root,
-                    &id,
-                    request,
-                    &revision,
-                    &task,
-                    download_policy,
-                )
+                with_worker_turn(&worker, &root, &id, &task, || {
+                    install_with_policy(
+                        &worker,
+                        &root,
+                        &id,
+                        request,
+                        &revision,
+                        &task,
+                        download_policy,
+                    )
+                })
             }))
             .unwrap_or_else(|_| Err("资源安装意外退出，请检查未完成的资源安装恢复记录".into()));
             finish(task, result);
@@ -313,7 +363,7 @@ fn finish(task: tasks::TaskHandle, result: Result<Value>) {
                 error: None,
             });
         }
-        Err(error) if error == modrinth_install::CANCELLED => {
+        Err(error) if error == modrinth_install::CANCELLED || error == tasks::CANCELLED => {
             task.finish(tasks::TaskOutcome::Failed(error));
         }
         Err(error) => {
@@ -366,6 +416,184 @@ pub async fn resource_install_recover(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        fs,
+        io::{Read, Write},
+        net::TcpListener,
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
+
+    struct Loopback {
+        url: String,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        requests: Arc<std::sync::Mutex<Vec<String>>>,
+        worker: Option<thread::JoinHandle<()>>,
+    }
+    impl Loopback {
+        fn new() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let signal = stop.clone();
+            let seen = requests.clone();
+            let worker = thread::spawn(move || {
+                while !signal.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut socket, _)) => {
+                            socket
+                                .set_read_timeout(Some(Duration::from_secs(2)))
+                                .unwrap();
+                            let mut bytes = [0; 4096];
+                            let count = socket.read(&mut bytes).unwrap();
+                            let path = String::from_utf8_lossy(&bytes[..count])
+                                .split_whitespace()
+                                .nth(1)
+                                .unwrap()
+                                .to_string();
+                            seen.lock().unwrap().push(path);
+                            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nfixture").unwrap();
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(2))
+                        }
+                        Err(error) => panic!("fixture listener failed: {error}"),
+                    }
+                }
+            });
+            Self {
+                url,
+                stop,
+                requests,
+                worker: Some(worker),
+            }
+        }
+    }
+    impl Drop for Loopback {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            self.worker.take().unwrap().join().unwrap();
+        }
+    }
+
+    fn fake_http_worker(
+        shared: Arc<Shared>,
+        root: GameRoot,
+        task: tasks::TaskHandle,
+        url: String,
+        file: &str,
+    ) -> (thread::JoinHandle<()>, mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (ready, observed) = mpsc::channel();
+        let (release, wait) = mpsc::channel();
+        let file = file.to_string();
+        let worker = thread::spawn(move || {
+            let result = with_worker_turn(&shared, &root, "Sample", &task, || {
+                // This controlled transport exercises the production worker
+                // boundary; it grants no production URL/source authority.
+                let body = reqwest::blocking::Client::builder()
+                    .no_proxy()
+                    .timeout(Duration::from_secs(2))
+                    .build()
+                    .unwrap()
+                    .get(url)
+                    .send()
+                    .unwrap()
+                    .error_for_status()
+                    .unwrap()
+                    .bytes()
+                    .unwrap();
+                fs::write(Path::new(&root.path).join(file), &body).unwrap();
+                ready.send(()).unwrap();
+                wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                Ok(json!({"bytes":body.len()}))
+            });
+            finish(task, result);
+        });
+        (worker, observed, release)
+    }
+
+    #[test]
+    fn real_worker_gate_serializes_same_root_but_runs_independent_root_http() {
+        for independent in [false, true] {
+            let fixture = crate::integration_tests::Fixture::new();
+            let shared = Arc::new(fixture.shared());
+            let first = shared.config.resolve(None).unwrap();
+            let second = if independent {
+                let path = fixture.0.join("other");
+                fs::create_dir(&path).unwrap();
+                shared
+                    .config
+                    .register(path.to_str().unwrap().into(), None)
+                    .unwrap()
+            } else {
+                first.clone()
+            };
+            let admit = |root: &GameRoot| {
+                shared
+                    .tasks
+                    .admit_queued(
+                        tasks::TaskTarget {
+                            root_id: root.id.clone(),
+                            root_path: root.path.clone(),
+                            instance_id: Some("Sample".into()),
+                        },
+                        tasks::TaskKind::ResourceDownload,
+                        tasks::TaskScope::root(Path::new(&root.path)).unwrap(),
+                    )
+                    .unwrap()
+            };
+            let a = admit(&first);
+            let b = admit(&second);
+            let b_id = b.id().to_string();
+            let server = Loopback::new();
+            let (worker_a, ready_a, release_a) = fake_http_worker(
+                shared.clone(),
+                first.clone(),
+                a,
+                format!("{}/first", server.url),
+                "first.fixture",
+            );
+            let (worker_b, ready_b, release_b) = fake_http_worker(
+                shared.clone(),
+                second.clone(),
+                b,
+                format!("{}/second", server.url),
+                "second.fixture",
+            );
+            ready_a.recv_timeout(Duration::from_secs(2)).unwrap();
+            if independent {
+                ready_b.recv_timeout(Duration::from_secs(2)).unwrap();
+                assert_eq!(server.requests.lock().unwrap().len(), 2);
+                assert_eq!(shared.tasks.running_all().len(), 2);
+            } else {
+                assert_eq!(
+                    shared.tasks.snapshot(&b_id).unwrap().stage,
+                    tasks::TaskStage::Queued
+                );
+                assert_eq!(&*server.requests.lock().unwrap(), &["/first"]);
+                assert!(!Path::new(&second.path).join("second.fixture").exists());
+            }
+            release_a.send(()).unwrap();
+            worker_a.join().unwrap();
+            if !independent {
+                ready_b.recv_timeout(Duration::from_secs(2)).unwrap();
+            }
+            release_b.send(()).unwrap();
+            worker_b.join().unwrap();
+            assert_eq!(
+                fs::read(Path::new(&first.path).join("first.fixture")).unwrap(),
+                b"fixture"
+            );
+            assert_eq!(
+                fs::read(Path::new(&second.path).join("second.fixture")).unwrap(),
+                b"fixture"
+            );
+            assert!(shared.tasks.active_all().is_empty());
+        }
+    }
 
     fn admitted() -> (Arc<tasks::Tasks>, tasks::TaskHandle) {
         let tasks = Arc::new(tasks::Tasks::new());
@@ -423,5 +651,86 @@ mod tests {
         assert!(result.error.is_none());
         assert!(result.message.contains("未完成文件已清理"));
         assert!(tasks.active().is_none());
+    }
+
+    #[test]
+    fn network_submission_and_worker_ready_allow_own_admitted_root() {
+        let fixture = crate::integration_tests::Fixture::new();
+        let shared = fixture.shared();
+        let root = shared.config.resolve(None).unwrap();
+        let task = shared
+            .tasks
+            .admit_queued(
+                tasks::TaskTarget {
+                    root_id: root.id.clone(),
+                    root_path: root.path.clone(),
+                    instance_id: Some("Sample".into()),
+                },
+                tasks::TaskKind::ResourceDownload,
+                tasks::TaskScope::root(Path::new(&root.path)).unwrap(),
+            )
+            .unwrap();
+        task.wait_turn().unwrap();
+        let bound = {
+            let _operation = shared.operations.lock().unwrap();
+            capture_submission(&shared, Some(&root.id), "Sample").unwrap()
+        };
+        assert_eq!(bound.path, root.path);
+        // The old generic mutation guard rejected a worker's own active task.
+        // This check must retain target readiness without that self-rejection.
+        worker_ready(&shared, &bound, "Sample", &task).unwrap();
+        task.finish(tasks::TaskOutcome::Complete {
+            result: None,
+            message: "fixture finished".into(),
+            error: None,
+        });
+    }
+
+    #[test]
+    fn queued_resource_worker_rechecks_removed_root_binding_before_network() {
+        let fixture = crate::integration_tests::Fixture::new();
+        let shared = fixture.shared();
+        let root = shared.config.resolve(None).unwrap();
+        let target = tasks::TaskTarget {
+            root_id: root.id.clone(),
+            root_path: root.path.clone(),
+            instance_id: Some("Sample".into()),
+        };
+        let blocker = shared
+            .tasks
+            .admit_queued(
+                target.clone(),
+                tasks::TaskKind::Install,
+                tasks::TaskScope::root(Path::new(&root.path)).unwrap(),
+            )
+            .unwrap();
+        blocker.wait_turn().unwrap();
+        let task = shared
+            .tasks
+            .admit_queued(
+                target,
+                tasks::TaskKind::ResourceDownload,
+                tasks::TaskScope::root(Path::new(&root.path)).unwrap(),
+            )
+            .unwrap();
+        let other = fixture.0.join("other");
+        std::fs::create_dir(&other).unwrap();
+        let registered = shared
+            .config
+            .register(other.to_str().unwrap().into(), None)
+            .unwrap();
+        shared.config.select(&registered.id).unwrap();
+        shared.config.remove(&root.id).unwrap();
+        blocker.finish(tasks::TaskOutcome::Complete {
+            result: None,
+            message: "fixture finished".into(),
+            error: None,
+        });
+        task.wait_turn().unwrap();
+        assert!(worker_ready(&shared, &root, "Sample", &task).is_err());
+        assert!(!Path::new(&root.path).join(".pcl-linux").exists());
+        task.finish(tasks::TaskOutcome::Error(
+            "fixture root binding changed".into(),
+        ));
     }
 }

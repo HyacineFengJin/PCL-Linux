@@ -157,7 +157,7 @@ impl Directory {
         Ok(())
     }
 }
-pub(super) struct SaveTarget {
+pub(crate) struct SaveTarget {
     pub path: PathBuf,
     pub file_name: String,
     parent_path: PathBuf,
@@ -191,6 +191,13 @@ impl SaveTarget {
         })
     }
     pub fn recheck(&self) -> Result<()> {
+        self.recheck_directory()?;
+        self.parent.absent(&self.file_name)
+    }
+    /// Remembered chooser authority can seed another basename only while the
+    /// same directory still exists. A path replacement cannot grant a new
+    /// directory the authority of a previously selected folder.
+    pub fn recheck_directory(&self) -> Result<()> {
         if self.parent.identity()? != self.parent_identity
             || Directory::open(&self.parent_path)?.identity()? != self.parent_identity
             || self.project.identity()? != self.project_identity
@@ -198,12 +205,15 @@ impl SaveTarget {
         {
             return Err("应用目录或所选保存目录已被替换；文件未发布".into());
         }
-        self.parent.absent(&self.file_name)
+        Ok(())
+    }
+    pub fn path(&self) -> &Path {
+        &self.path
     }
     pub fn anonymous(&self) -> Result<File> {
         self.parent.anonymous()
     }
-    pub fn publish(&self, file: &VerifiedAnonymous) -> Result<Option<String>> {
+    pub(super) fn publish(&self, file: &VerifiedAnonymous) -> Result<Option<String>> {
         self.publish_with_sync(file, || {
             self.parent.0.sync_all().map_err(|error| error.to_string())
         })

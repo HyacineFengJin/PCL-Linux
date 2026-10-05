@@ -1,7 +1,19 @@
+//! Task record ownership and bounded writer scheduling. Legacy admission is
+//! globally exclusive; only explicitly migrated download workers may queue and
+//! must obtain their turn before network or filesystem work. A cancellation
+//! request never releases a scope: the worker first acknowledges cleanup.
+
+#[path = "tasks/schedule.rs"]
+mod schedule;
+#[path = "tasks/scope.rs"]
+mod scope;
+pub use scope::TaskScope;
+
 use serde::Serialize;
 use serde_json::Value;
 use std::{
     collections::VecDeque,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Condvar, Mutex,
@@ -10,6 +22,9 @@ use std::{
 };
 
 const HISTORY_LIMIT: usize = 64;
+const RUNNING_LIMIT: usize = 4;
+const PENDING_LIMIT: usize = 32;
+pub const CANCELLED: &str = "任务已取消";
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 type Listener = Arc<dyn Fn(TaskSnapshot) + Send + Sync>;
 
@@ -42,6 +57,7 @@ pub enum TaskKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStage {
+    Queued,
     Preparing,
     Downloading,
     Processing,
@@ -57,6 +73,7 @@ impl TaskStage {
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Queued => "queued",
             Self::Preparing => "preparing",
             Self::Downloading => "downloading",
             Self::Processing => "processing",
@@ -122,26 +139,84 @@ pub enum TaskOutcome {
 struct TaskRecord {
     snapshot: TaskSnapshot,
     cancel: Arc<AtomicBool>,
+    turn: schedule::Turn,
+    scope: TaskScope,
+    initial_phase: String,
+    initial_message: String,
+    waiters: usize,
 }
 
 struct Inner {
     history: VecDeque<TaskRecord>,
-    active_id: Option<String>,
     listener: Option<Listener>,
+    revision: u64,
 }
 
-/// One admitted writer and a bounded, in-memory record of its finished tasks.
-/// The worker owns its handle until it has stopped using the captured target.
+/// Every queued/running record remains owned by its worker until cleanup. The
+/// history budget can trim only terminal records without a waiting observer.
 pub struct Tasks {
     inner: Mutex<Inner>,
     finished: Condvar,
     history_limit: usize,
+    running_limit: usize,
+    pending_limit: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskListSnapshot {
+    pub revision: String,
+    pub tasks: Vec<TaskSnapshot>,
+    pub running_limit: usize,
+    pub pending_limit: usize,
+}
+
+impl Inner {
+    fn changed(&mut self) {
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .expect("task revision exhausted");
+    }
 }
 
 pub struct TaskHandle {
     tasks: Arc<Tasks>,
     id: String,
     cancel: Arc<AtomicBool>,
+}
+
+struct HistoryPin<'a> {
+    tasks: &'a Tasks,
+    id: String,
+}
+
+impl Drop for HistoryPin<'_> {
+    fn drop(&mut self) {
+        let notice = {
+            let mut inner = self.tasks.inner.lock().unwrap();
+            if let Some(record) = inner
+                .history
+                .iter_mut()
+                .find(|record| record.snapshot.id == self.id)
+            {
+                record.waiters -= 1;
+            }
+            let revision = inner.revision;
+            self.tasks.trim(&mut inner);
+            if inner.revision != revision {
+                inner
+                    .history
+                    .back()
+                    .map(|record| (inner.listener.clone(), record.snapshot.clone()))
+            } else {
+                None
+            }
+        };
+        if let Some((listener, snapshot)) = notice {
+            publish(listener, snapshot);
+        }
+    }
 }
 
 fn now_ms() -> u64 {
@@ -174,11 +249,13 @@ impl Tasks {
         Self {
             inner: Mutex::new(Inner {
                 history: VecDeque::new(),
-                active_id: None,
                 listener: None,
+                revision: 0,
             }),
             finished: Condvar::new(),
             history_limit: history_limit.max(1),
+            running_limit: RUNNING_LIMIT,
+            pending_limit: PENDING_LIMIT,
         }
     }
 
@@ -197,6 +274,58 @@ impl Tasks {
             .collect()
     }
 
+    /// One mutex read binds the complete task set to its monotonic revision.
+    #[cfg(test)]
+    pub fn list_snapshot(&self) -> TaskListSnapshot {
+        let inner = self.inner.lock().unwrap();
+        self.project_list(&inner)
+    }
+
+    fn project_list(&self, inner: &Inner) -> TaskListSnapshot {
+        TaskListSnapshot {
+            revision: inner.revision.to_string(),
+            tasks: inner
+                .history
+                .iter()
+                .rev()
+                .map(|record| record.snapshot.clone())
+                .collect(),
+            running_limit: self.running_limit,
+            pending_limit: self.pending_limit,
+        }
+    }
+
+    /// Resolve registry paths before locking the scheduler, then bind task and
+    /// blocked-root projections to one revision. No filesystem IO runs while
+    /// task progress, cancellation or turn reservation waits for this mutex.
+    /// Offline registry entries retain exact root-ID ownership; legacy global
+    /// leases block them conservatively without failing the complete UI view.
+    pub fn list_snapshot_with_roots(
+        &self,
+        roots: &[(String, PathBuf)],
+    ) -> Result<(TaskListSnapshot, Vec<String>), String> {
+        let scopes: Vec<_> = roots
+            .iter()
+            .map(|(id, path)| (id, TaskScope::root(path).ok()))
+            .collect();
+        let inner = self.inner.lock().unwrap();
+        let blocked = scopes
+            .into_iter()
+            .filter(|(id, scope)| {
+                inner.history.iter().any(|record| {
+                    !record.snapshot.stage.is_terminal()
+                        && (record.snapshot.root_id == **id
+                            || scope
+                                .as_ref()
+                                .is_some_and(|scope| record.scope.conflicts(scope))
+                            || (scope.is_none() && record.scope.is_global()))
+                })
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        Ok((self.project_list(&inner), blocked))
+    }
+
     pub fn snapshot(&self, id: &str) -> Option<TaskSnapshot> {
         self.inner
             .lock()
@@ -208,21 +337,56 @@ impl Tasks {
     }
 
     pub fn active(&self) -> Option<TaskSnapshot> {
-        let inner = self.inner.lock().unwrap();
-        let id = inner.active_id.as_ref()?;
-        inner
+        self.inner
+            .lock()
+            .unwrap()
             .history
             .iter()
-            .find(|record| &record.snapshot.id == id)
+            .find(|record| !record.snapshot.stage.is_terminal())
             .map(|record| record.snapshot.clone())
     }
 
-    pub fn active_root_id(&self) -> Option<String> {
-        self.active().map(|snapshot| snapshot.root_id)
+    pub fn active_all(&self) -> Vec<TaskSnapshot> {
+        self.inner
+            .lock()
+            .unwrap()
+            .history
+            .iter()
+            .filter(|record| !record.snapshot.stage.is_terminal())
+            .map(|record| record.snapshot.clone())
+            .collect()
+    }
+
+    pub fn running_all(&self) -> Vec<TaskSnapshot> {
+        self.inner
+            .lock()
+            .unwrap()
+            .history
+            .iter()
+            .filter(|record| {
+                record.turn == schedule::Turn::Running && !record.snapshot.stage.is_terminal()
+            })
+            .map(|record| record.snapshot.clone())
+            .collect()
+    }
+
+    /// Includes queued ownership and final files physically inside this root.
+    /// Root IDs are presentation identities, not filesystem conflict keys.
+    pub fn blocks_path(&self, root: &Path) -> Result<bool, String> {
+        let root = TaskScope::root(root)?;
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .history
+            .iter()
+            .any(|record| !record.snapshot.stage.is_terminal() && record.scope.conflicts(&root)))
     }
 
     pub fn uses_root(&self, root_id: &str) -> bool {
-        self.active_root_id().as_deref() == Some(root_id)
+        self.inner.lock().unwrap().history.iter().any(|record| {
+            !record.snapshot.stage.is_terminal() && record.snapshot.root_id == root_id
+        })
     }
 
     pub fn admit(
@@ -230,17 +394,67 @@ impl Tasks {
         target: TaskTarget,
         kind: TaskKind,
     ) -> Result<TaskHandle, String> {
+        self.admit_inner(target, kind, TaskScope::global(), false)
+    }
+
+    /// Only workers migrated to wait_turn may enter the concurrent scheduler.
+    /// Keeping legacy admission globally exclusive prevents an old synchronous
+    /// transaction from writing without a gate while another scope is active.
+    pub fn admit_queued(
+        self: &Arc<Self>,
+        target: TaskTarget,
+        kind: TaskKind,
+        scope: TaskScope,
+    ) -> Result<TaskHandle, String> {
+        if !matches!(
+            kind,
+            TaskKind::Install
+                | TaskKind::ResourceDownload
+                | TaskKind::ResourceSave
+                | TaskKind::ToolboxDownload
+        ) {
+            return Err("此任务尚未支持排队，请使用独占操作".into());
+        }
+        self.admit_inner(target, kind, scope, true)
+    }
+
+    fn admit_inner(
+        self: &Arc<Self>,
+        target: TaskTarget,
+        kind: TaskKind,
+        scope: TaskScope,
+        queued: bool,
+    ) -> Result<TaskHandle, String> {
         let (snapshot, cancel, listener) = {
             let mut inner = self.inner.lock().unwrap();
-            if inner.active_id.is_some() {
+            if !queued
+                && inner
+                    .history
+                    .iter()
+                    .any(|record| !record.snapshot.stage.is_terminal())
+            {
                 return Err("已有文件写入任务，请等待完成或取消".into());
+            }
+            let runs_now = !queued || schedule::can_start(&inner, &scope, self.running_limit);
+            if !runs_now
+                && inner
+                    .history
+                    .iter()
+                    .filter(|record| {
+                        record.turn == schedule::Turn::Queued
+                            && !record.snapshot.stage.is_terminal()
+                    })
+                    .count()
+                    >= self.pending_limit
+            {
+                return Err("排队任务已达32项，请等待完成或取消".into());
             }
             let created_at = now_ms();
             let id = format!(
                 "task-{created_at}-{}",
                 NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed)
             );
-            let snapshot = TaskSnapshot {
+            let mut snapshot = TaskSnapshot {
                 id: id.clone(),
                 root_id: target.root_id,
                 root_path: target.root_path,
@@ -295,15 +509,32 @@ impl Tasks {
                 created_at,
                 finished_at: None,
             };
+            let initial_phase = snapshot.phase.clone();
+            let initial_message = snapshot.message.clone();
+            if !runs_now {
+                snapshot.stage = TaskStage::Queued;
+                snapshot.phase = "queued".into();
+                snapshot.message = "等待其他任务完成后开始…".into();
+            }
             let cancel = Arc::new(AtomicBool::new(false));
             inner.history.push_back(TaskRecord {
                 snapshot: snapshot.clone(),
                 cancel: cancel.clone(),
+                turn: if runs_now {
+                    schedule::Turn::Running
+                } else {
+                    schedule::Turn::Queued
+                },
+                scope,
+                initial_phase,
+                initial_message,
+                waiters: 0,
             });
-            inner.active_id = Some(id);
+            inner.changed();
             self.trim(&mut inner);
             (snapshot, cancel, inner.listener.clone())
         };
+        self.finished.notify_all();
         let handle = TaskHandle {
             tasks: self.clone(),
             id: snapshot.id.clone(),
@@ -342,10 +573,18 @@ impl Tasks {
                     TaskKind::LauncherLogs => "正在取消日志操作…",
                 }
                 .into();
+                if record.turn == schedule::Turn::Queued {
+                    record.snapshot.message = "正在取消排队任务，请等待清理完成…".into();
+                }
             }
-            (record.snapshot.clone(), inner.listener.clone(), changed)
+            let snapshot = record.snapshot.clone();
+            if changed {
+                inner.changed();
+            }
+            (snapshot, inner.listener.clone(), changed)
         };
         if changed {
+            self.finished.notify_all();
             publish(listener, snapshot.clone());
         }
         Ok(snapshot)
@@ -353,7 +592,35 @@ impl Tasks {
 
     /// The worker publishes terminal state only after dropping its staging files
     /// and stopping child processes. A cancellation caller waits for that point.
+    #[cfg(test)]
     pub fn wait_terminal(&self, id: &str) -> Result<TaskSnapshot, String> {
+        let _pin = self.pin_history(id)?;
+        self.wait_terminal_pinned(id)
+    }
+
+    /// Pin before issuing cancellation, so history trimming cannot remove the
+    /// exact requested terminal record between cancel and its response.
+    pub fn cancel_and_wait(&self, id: &str) -> Result<TaskSnapshot, String> {
+        let _pin = self.pin_history(id)?;
+        self.cancel(id)?;
+        self.wait_terminal_pinned(id)
+    }
+
+    fn pin_history(&self, id: &str) -> Result<HistoryPin<'_>, String> {
+        let mut inner = self.inner.lock().unwrap();
+        let record = inner
+            .history
+            .iter_mut()
+            .find(|record| record.snapshot.id == id)
+            .ok_or("找不到此任务")?;
+        record.waiters = record.waiters.checked_add(1).ok_or("等待任务数量过多")?;
+        Ok(HistoryPin {
+            tasks: self,
+            id: id.into(),
+        })
+    }
+
+    fn wait_terminal_pinned(&self, id: &str) -> Result<TaskSnapshot, String> {
         let mut inner = self.inner.lock().unwrap();
         loop {
             let record = inner
@@ -368,32 +635,77 @@ impl Tasks {
         }
     }
 
+    fn wait_turn(&self, id: &str, cancel: &AtomicBool) -> Result<(), String> {
+        let scope = {
+            let mut inner = self.inner.lock().unwrap();
+            loop {
+                let record = inner
+                    .history
+                    .iter()
+                    .find(|record| record.snapshot.id == id)
+                    .ok_or("找不到此任务")?;
+                if cancel.load(Ordering::SeqCst) {
+                    return Err(CANCELLED.into());
+                }
+                match record.turn {
+                    schedule::Turn::Running => break record.scope.clone(),
+                    schedule::Turn::Terminal => return Err("此任务已结束".into()),
+                    schedule::Turn::Queued => {
+                        inner = self.finished.wait(inner).map_err(|_| "等待任务运行失败")?;
+                    }
+                }
+            }
+        };
+        scope.recheck()?;
+        if cancel.load(Ordering::SeqCst) {
+            Err(CANCELLED.into())
+        } else {
+            Ok(())
+        }
+    }
+
     fn trim(&self, inner: &mut Inner) {
-        while inner.history.len() > self.history_limit {
+        // Preserve the legacy total-history budget while live jobs and pinned
+        // cancellation replies are protected. When live jobs exceed that budget,
+        // retain at least the newest terminal result so completion remains visible.
+        let live = inner
+            .history
+            .iter()
+            .filter(|record| !record.snapshot.stage.is_terminal())
+            .count();
+        let terminal_budget = self.history_limit.saturating_sub(live).max(1);
+        while inner
+            .history
+            .iter()
+            .filter(|record| record.snapshot.stage.is_terminal() && record.waiters == 0)
+            .count()
+            > terminal_budget
+        {
             let Some(index) = inner
                 .history
                 .iter()
-                .position(|record| Some(&record.snapshot.id) != inner.active_id.as_ref())
+                .position(|record| record.snapshot.stage.is_terminal() && record.waiters == 0)
             else {
                 break;
             };
             inner.history.remove(index);
+            inner.changed();
         }
     }
 
     fn update(&self, id: &str, progress: TaskProgress) -> Option<TaskSnapshot> {
-        if progress.stage.is_terminal() {
+        if progress.stage.is_terminal() || progress.stage == TaskStage::Queued {
             return None;
         }
         let (snapshot, listener) = {
             let mut inner = self.inner.lock().unwrap();
-            if inner.active_id.as_deref() != Some(id) {
-                return None;
-            }
             let record = inner
                 .history
                 .iter_mut()
                 .find(|record| record.snapshot.id == id)?;
+            if record.turn != schedule::Turn::Running {
+                return None;
+            }
             let snapshot = &mut record.snapshot;
             snapshot.stage = progress.stage;
             snapshot.phase = progress.phase;
@@ -449,7 +761,9 @@ impl Tasks {
                     .sum::<f64>()
                     / snapshot.steps.len() as f64
             };
-            (snapshot.clone(), inner.listener.clone())
+            let snapshot = snapshot.clone();
+            inner.changed();
+            (snapshot, inner.listener.clone())
         };
         publish(listener, snapshot.clone());
         Some(snapshot)
@@ -458,9 +772,6 @@ impl Tasks {
     fn begin_finishing(&self, id: &str) {
         let change = {
             let mut inner = self.inner.lock().unwrap();
-            if inner.active_id.as_deref() != Some(id) {
-                return;
-            }
             let Some(record) = inner
                 .history
                 .iter_mut()
@@ -468,23 +779,31 @@ impl Tasks {
             else {
                 return;
             };
+            if record.turn != schedule::Turn::Running {
+                return;
+            }
             record.snapshot.stage = TaskStage::Processing;
             record.snapshot.can_cancel = false;
-            (record.snapshot.clone(), inner.listener.clone())
+            let snapshot = record.snapshot.clone();
+            inner.changed();
+            (snapshot, inner.listener.clone())
         };
         publish(change.1, change.0);
     }
 
     fn finish(&self, id: &str, outcome: TaskOutcome) -> Option<TaskSnapshot> {
-        let (snapshot, listener) = {
+        let (snapshot, listener, promoted) = {
             let mut inner = self.inner.lock().unwrap();
-            if inner.active_id.as_deref() != Some(id) {
-                return None;
-            }
             let record = inner
                 .history
                 .iter_mut()
                 .find(|record| record.snapshot.id == id)?;
+            if record.turn == schedule::Turn::Terminal
+                || (record.turn == schedule::Turn::Queued
+                    && matches!(outcome, TaskOutcome::Complete { .. }))
+            {
+                return None;
+            }
             let snapshot = &mut record.snapshot;
             match outcome {
                 TaskOutcome::Complete {
@@ -542,12 +861,17 @@ impl Tasks {
             snapshot.can_cancel = false;
             snapshot.finished_at = Some(now_ms().max(snapshot.created_at));
             let snapshot = snapshot.clone();
-            inner.active_id = None;
+            record.turn = schedule::Turn::Terminal;
+            inner.changed();
+            let promoted = schedule::promote(&mut inner, self.running_limit);
             self.trim(&mut inner);
-            (snapshot, inner.listener.clone())
+            (snapshot, inner.listener.clone(), promoted)
         };
         self.finished.notify_all();
-        publish(listener, snapshot.clone());
+        publish(listener.clone(), snapshot.clone());
+        for change in promoted {
+            publish(listener.clone(), change);
+        }
         Some(snapshot)
     }
 }
@@ -559,6 +883,13 @@ impl TaskHandle {
 
     pub fn cancellation_token(&self) -> Arc<AtomicBool> {
         self.cancel.clone()
+    }
+
+    /// Call outside operations and before any worker network/filesystem side
+    /// effect. An error does not release this handle: drop captured artifacts,
+    /// then finish Failed(CANCELLED) or Error before allowing another writer.
+    pub fn wait_turn(&self) -> Result<(), String> {
+        self.tasks.wait_turn(&self.id, &self.cancel)
     }
 
     pub fn update(&self, progress: TaskProgress) -> Option<TaskSnapshot> {
@@ -574,9 +905,6 @@ impl TaskHandle {
         }
         let change = {
             let mut inner = self.tasks.inner.lock().unwrap();
-            if inner.active_id.as_deref() != Some(&self.id) {
-                return;
-            }
             let Some(record) = inner
                 .history
                 .iter_mut()
@@ -586,11 +914,14 @@ impl TaskHandle {
             };
             if record.snapshot.kind != TaskKind::ResourceDownload
                 || record.snapshot.display_name.is_some()
+                || record.snapshot.stage.is_terminal()
             {
                 return;
             }
             record.snapshot.display_name = Some(name.into());
-            (record.snapshot.clone(), inner.listener.clone())
+            let snapshot = record.snapshot.clone();
+            inner.changed();
+            (snapshot, inner.listener.clone())
         };
         publish(change.1, change.0);
     }
@@ -625,6 +956,10 @@ impl Drop for TaskHandle {
             .finish(&self.id, TaskOutcome::Failed("任务意外退出，请重试".into()));
     }
 }
+
+#[cfg(test)]
+#[path = "tasks/scheduling_tests.rs"]
+mod scheduling_tests;
 
 #[cfg(test)]
 mod tests {

@@ -153,7 +153,7 @@ impl LocalRuntime {
                 DiagnosticEvent::Stage
             },
             stage: match task.stage {
-                TaskStage::Preparing => DiagnosticStage::Plan,
+                TaskStage::Queued | TaskStage::Preparing => DiagnosticStage::Plan,
                 TaskStage::Downloading => DiagnosticStage::Download,
                 TaskStage::Processing => DiagnosticStage::Publish,
                 _ => DiagnosticStage::Finished,

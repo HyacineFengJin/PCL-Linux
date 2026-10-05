@@ -15,6 +15,7 @@ use crate::modrinth_install::{
     provider::{ApiFile, HttpProvider},
     transfer,
 };
+pub(crate) use files::SaveTarget as CapturedSaveTarget;
 pub use model::{CommitGate, SavePlan, SaveProgress, SaveRequest, SaveResult};
 use pcl_network::DownloadScheduler;
 use std::{
@@ -55,12 +56,12 @@ fn progress(
         network_bytes,
     });
 }
-/// The confirmed target belongs to a native chooser token held by the task
-/// owner. `request` and `revision` derive network authority; the target supplies
-/// only the chosen local basename/location. Metadata is never artifact-paced.
-pub async fn save(
-    project: &Path,
-    confirmed_target: &Path,
+/// The command captures and holds the native chooser's target before admission.
+/// Keeping that descriptor through a queued wait prevents a replacement parent
+/// pathname from retargeting this write. Request/revision supply only official
+/// network authority; the target supplies the chosen local basename/location.
+pub(crate) async fn save_captured(
+    target: &CapturedSaveTarget,
     request: SaveRequest,
     revision: &str,
     scheduler: Arc<DownloadScheduler>,
@@ -70,7 +71,7 @@ pub async fn save(
 ) -> Result<SaveResult> {
     cancelled(cancel)?;
     authority::validate_request(&request)?;
-    let target = files::SaveTarget::capture(project, confirmed_target)?;
+    target.recheck()?;
     let provider = HttpProvider::new(cancel)?.with_download_policy(scheduler);
     let metadata_bytes = AtomicU64::new(0);
     let resolve = |request| {
@@ -101,7 +102,7 @@ pub async fn save(
     };
     save_with(
         &session,
-        &target,
+        target,
         request,
         revision,
         cancel,

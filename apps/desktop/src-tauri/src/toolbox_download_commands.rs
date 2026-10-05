@@ -8,6 +8,17 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::State;
+
+/// Own prepared URL/chooser authority before waiting. A cancelled queued turn
+/// drops this argument and the work closure before the caller emits terminal.
+pub(super) fn with_download_turn<T>(
+    task: &tasks::TaskHandle,
+    prepared: PreparedDownload,
+    work: impl FnOnce(PreparedDownload) -> Result<T, String>,
+) -> Result<T, String> {
+    task.wait_turn()?;
+    work(prepared)
+}
 #[tauri::command]
 pub async fn toolbox_download_choose(
     window: tauri::WebviewWindow,
@@ -61,20 +72,19 @@ pub fn toolbox_download_start(
 ) -> Result<serde_json::Value, String> {
     let shared = state.inner().clone();
     let _operation = shared.operations.lock().unwrap();
-    if shared.closing.load(Ordering::SeqCst) {
-        return Err("启动器正在关闭".into());
-    }
+    crate::require_network_submission(&shared)?;
     let preferences = shared.launcher_preferences.snapshot();
     let pending = shared
         .toolbox_download
         .start_guard(&token, &preferences.revision)?;
-    let task = shared.tasks.admit(
+    let task = shared.tasks.admit_queued(
         tasks::TaskTarget {
             root_id: "launcher".into(),
             root_path: pending.directory().display().to_string(),
             instance_id: None,
         },
         tasks::TaskKind::ToolboxDownload,
+        tasks::TaskScope::files(&[pending.target()])?,
     )?;
     let prepared = pending.take();
     let network = pcl_network::snapshot();
@@ -85,39 +95,41 @@ pub fn toolbox_download_start(
         .name(format!("pcl-toolbox-download-{task_id}"))
         .spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let cancel = task.cancellation_token();
-                let mut gate = || {
-                    task.begin_finishing();
-                    if cancel.load(Ordering::SeqCst) {
-                        Err(CANCELLED.into())
-                    } else {
-                        Ok(())
-                    }
-                };
-                tauri::async_runtime::block_on(download(
-                    prepared,
-                    network,
-                    scheduler,
-                    &cancel,
-                    |progress| {
-                        task.update(tasks::TaskProgress {
-                            stage: if progress.phase == "downloading" {
-                                tasks::TaskStage::Downloading
-                            } else {
-                                tasks::TaskStage::Processing
-                            },
-                            phase: progress.phase,
-                            message: progress.message,
-                            completed: 0,
-                            total: 1,
-                            bytes_done: progress.bytes_done,
-                            bytes_total: progress.bytes_total,
-                            network_bytes: progress.network_bytes,
-                            steps: Vec::new(),
-                        });
-                    },
-                    &mut gate,
-                ))
+                with_download_turn(&task, prepared, |prepared| {
+                    let cancel = task.cancellation_token();
+                    let mut gate = || {
+                        task.begin_finishing();
+                        if cancel.load(Ordering::SeqCst) {
+                            Err(CANCELLED.into())
+                        } else {
+                            Ok(())
+                        }
+                    };
+                    tauri::async_runtime::block_on(download(
+                        prepared,
+                        network,
+                        scheduler,
+                        &cancel,
+                        |progress| {
+                            task.update(tasks::TaskProgress {
+                                stage: if progress.phase == "downloading" {
+                                    tasks::TaskStage::Downloading
+                                } else {
+                                    tasks::TaskStage::Processing
+                                },
+                                phase: progress.phase,
+                                message: progress.message,
+                                completed: 0,
+                                total: 1,
+                                bytes_done: progress.bytes_done,
+                                bytes_total: progress.bytes_total,
+                                network_bytes: progress.network_bytes,
+                                steps: Vec::new(),
+                            });
+                        },
+                        &mut gate,
+                    ))
+                })
             }))
             .unwrap_or_else(|_| Err("工具箱下载工作线程意外退出，请检查所选目录".into()));
             match result {
@@ -130,7 +142,7 @@ pub fn toolbox_download_start(
                     });
                 }
                 Err(error) => {
-                    task.finish(if error == CANCELLED {
+                    task.finish(if error == CANCELLED || error == tasks::CANCELLED {
                         tasks::TaskOutcome::Failed(error)
                     } else {
                         tasks::TaskOutcome::Error(error)

@@ -1,4 +1,6 @@
-use crate::tasks::{TaskHandle, TaskKind, TaskOutcome, TaskProgress, TaskStage, TaskTarget, Tasks};
+use crate::tasks::{
+    TaskHandle, TaskKind, TaskOutcome, TaskProgress, TaskScope, TaskStage, TaskTarget, Tasks,
+};
 use pcl_install::{InstallRequest, InstallResult, Installer, Progress, VersionEntry};
 use serde::Serialize;
 use serde_json::Value;
@@ -29,6 +31,15 @@ pub struct DownloadStatus {
     pub result: Option<Value>,
     pub error: Option<String>,
     pub can_cancel: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadTaskList {
+    pub revision: String,
+    pub tasks: Vec<DownloadStatus>,
+    pub running_limit: usize,
+    pub pending_limit: usize,
 }
 
 impl Default for DownloadStatus {
@@ -80,6 +91,32 @@ impl Downloads {
         Self::project(snapshot)
     }
 
+    pub fn snapshot_for(&self, task_id: &str) -> Option<DownloadStatus> {
+        self.tasks.snapshot(task_id).map(Self::project)
+    }
+
+    #[cfg(test)]
+    pub fn list_snapshot(&self) -> DownloadTaskList {
+        Self::project_list(self.tasks.list_snapshot())
+    }
+
+    pub fn list_snapshot_with_roots(
+        &self,
+        roots: &[(String, PathBuf)],
+    ) -> Result<(DownloadTaskList, Vec<String>), String> {
+        let (list, blocked) = self.tasks.list_snapshot_with_roots(roots)?;
+        Ok((Self::project_list(list), blocked))
+    }
+
+    fn project_list(list: crate::tasks::TaskListSnapshot) -> DownloadTaskList {
+        DownloadTaskList {
+            revision: list.revision,
+            tasks: list.tasks.into_iter().map(Self::project).collect(),
+            running_limit: list.running_limit,
+            pending_limit: list.pending_limit,
+        }
+    }
+
     fn project(snapshot: crate::tasks::TaskSnapshot) -> DownloadStatus {
         DownloadStatus {
             kind: Some(snapshot.kind),
@@ -105,10 +142,19 @@ impl Downloads {
     }
 
     pub fn cancel_and_wait(&self, task_id: Option<&str>) -> Result<DownloadStatus, String> {
-        let id = task_id
-            .map(str::to_owned)
-            .or_else(|| self.current.lock().unwrap().clone())
-            .ok_or("找不到安装任务")?;
+        let id = if let Some(id) = task_id {
+            id.to_owned()
+        } else {
+            let active = self.tasks.active_all();
+            if active.len() > 1 {
+                return Err("有多个任务，请选择要取消的具体任务".into());
+            }
+            active
+                .first()
+                .map(|task| task.id.clone())
+                .or_else(|| self.current.lock().unwrap().clone())
+                .ok_or("找不到安装任务")?
+        };
         let snapshot = self.tasks.snapshot(&id).ok_or("找不到此任务")?;
         if !matches!(
             snapshot.kind,
@@ -124,14 +170,14 @@ impl Downloads {
                 | TaskKind::ToolboxDownload
                 | TaskKind::ResourceUpdate
                 | TaskKind::ResourceUpdateRestore
+                | TaskKind::ResourceOperation
                 | TaskKind::LauncherLogs
         ) {
             return Err("此任务不在任务管理页面中".into());
         }
-        self.tasks.cancel(&id)?;
         // Always return the requested task. A newly admitted install must never
         // become the target of a late cancellation or its response.
-        Ok(Self::project(self.tasks.wait_terminal(&id)?))
+        Ok(Self::project(self.tasks.cancel_and_wait(&id)?))
     }
 
     pub fn track(&self, task: &TaskHandle) {
@@ -162,6 +208,7 @@ impl Downloads {
         root_id: String,
         request: InstallRequest,
         project: PathBuf,
+        before_start: impl FnOnce() -> Result<(), String> + Send + 'static,
         on_complete: impl FnOnce(&InstallResult) -> Result<(), String> + Send + 'static,
     ) -> Result<String, String> {
         if !root.is_absolute() {
@@ -169,15 +216,15 @@ impl Downloads {
         }
         request.validate()?;
         let id = request.name.clone();
-        // Admission and the busy check share one service lock. No terminal task
-        // can be mistaken for an occupied writer between these two decisions.
-        let task = self.tasks.admit(
+        let scope = TaskScope::root(&root)?;
+        let task = self.tasks.admit_queued(
             TaskTarget {
                 root_id,
                 root_path: root.to_string_lossy().into_owned(),
                 instance_id: Some(id.clone()),
             },
             TaskKind::Install,
+            scope,
         )?;
         let task_id = task.id().to_owned();
         *self.current.lock().unwrap() = Some(task_id.clone());
@@ -190,6 +237,22 @@ impl Downloads {
             .name(format!("pcl-install-{task_id}"))
             .spawn(move || {
                 let cancel = task.cancellation_token();
+                // Queuing owns the captured target but permits no installer
+                // side effects. Recheck application binding/recovery after the
+                // scope turn, with no operations lock held while waiting.
+                let gate = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    task.wait_turn()?;
+                    before_start()
+                }))
+                .unwrap_or_else(|_| Err("安装开始前的目标检查意外退出".into()));
+                if let Err(error) = gate {
+                    task.finish(if error == crate::tasks::CANCELLED {
+                        TaskOutcome::Failed(error)
+                    } else {
+                        TaskOutcome::Error(error)
+                    });
+                    return;
+                }
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     Installer::new().and_then(|installer| {
                         installer
@@ -282,6 +345,10 @@ impl Downloads {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "downloads/scheduling_tests.rs"]
+mod scheduling_tests;
 
 #[cfg(test)]
 mod tests {
@@ -408,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn download_cancel_rejects_resource_task() {
+    fn download_cancel_waits_for_the_exact_resource_operation_cleanup() {
         let tasks = Arc::new(Tasks::new());
         let downloads = Downloads::new(tasks.clone());
         let task = tasks
@@ -421,10 +488,19 @@ mod tests {
                 TaskKind::ResourceOperation,
             )
             .unwrap();
-        assert!(downloads.cancel_and_wait(Some(task.id())).is_err());
-        assert!(!task
-            .cancellation_token()
-            .load(std::sync::atomic::Ordering::SeqCst));
+        let id = task.id().to_owned();
+        let cancel = task.cancellation_token();
+        let worker = std::thread::spawn(move || {
+            while !cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+            task.finish(TaskOutcome::Failed("Fixture cleanup complete".into()));
+        });
+        let response = downloads.cancel_and_wait(Some(&id)).unwrap();
+        worker.join().unwrap();
+        assert_eq!(response.task_id.as_deref(), Some(id.as_str()));
+        assert_eq!(response.kind, Some(TaskKind::ResourceOperation));
+        assert_eq!(response.stage, "cancelled");
     }
 
     #[test]

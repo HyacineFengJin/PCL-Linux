@@ -131,13 +131,22 @@ pub async fn download_request_with_policy(
             .load(std::sync::atomic::Ordering::Relaxed),
     });
     let current = current?;
-    if current.revision != revision {
-        return Err("资源文件或必需依赖已变化，请重新检查后下载".into());
-    }
+    require_confirmed_plan(&current, revision)?;
     // Presentation receives only the fresh, confirmed plan. The instance ID
     // remains the target identity even when its resource title is displayed.
     on_plan(&current);
     transfer::download(&provider, current, cancel, report).await
+}
+
+/// A queued request retains its confirmation. Replanning may observe a new
+/// profile, inventory or publisher file, but must never reinterpret that old
+/// confirmation as permission for the newly observed artifact/target.
+fn require_confirmed_plan(current: &InstallPlan, revision: &str) -> Result<()> {
+    if current.revision != revision {
+        Err("资源文件或必需依赖已变化，请重新检查后下载".into())
+    } else {
+        Ok(())
+    }
 }
 
 /// Network staging is anonymous, so cleanup is descriptor ownership. Named
