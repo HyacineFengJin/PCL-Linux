@@ -1,3 +1,4 @@
+import { CeSelect } from "./CeSelect";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
 import { Collapse } from "./Collapse";
@@ -105,7 +106,7 @@ export function LauncherSelect<T extends string>({
   onChange: (value: T) => void;
 }) {
   return (
-    <select
+    <CeSelect
       className="ce-field"
       aria-label={label}
       value={value}
@@ -124,7 +125,7 @@ export function LauncherSelect<T extends string>({
           {o.label}
         </option>
       ))}
-    </select>
+    </CeSelect>
   );
 }
 export function LauncherRadios<T extends string>({

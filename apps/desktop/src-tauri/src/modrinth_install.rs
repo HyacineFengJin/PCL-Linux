@@ -110,6 +110,7 @@ pub async fn download_request_with_policy(
     revision: &str,
     scheduler: std::sync::Arc<pcl_network::DownloadScheduler>,
     cancel: &AtomicBool,
+    on_plan: impl Fn(&InstallPlan),
     report: impl Fn(DownloadProgress),
 ) -> Result<VerifiedBatch> {
     request.validate()?;
@@ -133,6 +134,9 @@ pub async fn download_request_with_policy(
     if current.revision != revision {
         return Err("资源文件或必需依赖已变化，请重新检查后下载".into());
     }
+    // Presentation receives only the fresh, confirmed plan. The instance ID
+    // remains the target identity even when its resource title is displayed.
+    on_plan(&current);
     transfer::download(&provider, current, cancel, report).await
 }
 

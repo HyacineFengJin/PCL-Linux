@@ -1,3 +1,4 @@
+import { CeSelect } from "./CeSelect";
 import {
   t,
   formatNumber,
@@ -30,6 +31,7 @@ import type { ResourceSummary } from "./ResourceDetails";
 import type { ResourceBrowseRequest } from "./resourceBrowse";
 import grassIcon from "./assets/game-icons/grass.png";
 import commandIcon from "./assets/game-icons/command.png";
+import "./community-loading.css";
 
 export type DownloadStep = {
   id: string;
@@ -64,6 +66,7 @@ export type DownloadStatus = {
   phase?: string;
   message: string;
   version: string | null;
+  display_name?: string | null;
   completed: number;
   total: number;
   bytes_done: number;
@@ -798,7 +801,7 @@ function CommunityCatalog({
       <section className="ce-card ce-community-filters">
         <label className="ce-filter-field">
           {t("ui.source")}
-          <select
+          <CeSelect
             className="ce-field"
             value={source}
             onChange={(e) => setSource(e.target.value)}
@@ -810,11 +813,11 @@ function CommunityCatalog({
                   : filterLabel(v)}
               </option>
             ))}
-          </select>
+          </CeSelect>
         </label>
         <label className="ce-filter-field">
           {t("ui.tags")}
-          <select
+          <CeSelect
             className="ce-field"
             value={tag}
             onChange={(e) => setTag(e.target.value)}
@@ -825,11 +828,11 @@ function CommunityCatalog({
                 {categoryNames[value] || value}
               </option>
             ))}
-          </select>
+          </CeSelect>
         </label>
         <label className="ce-filter-field">
           {t("ui.sort")}
-          <select
+          <CeSelect
             className="ce-field"
             value={sort}
             onChange={(e) => setSort(e.target.value)}
@@ -839,7 +842,7 @@ function CommunityCatalog({
                 {filterLabel(v)}
               </option>
             ))}
-          </select>
+          </CeSelect>
         </label>
         <button
           className="icon-button ce-filter-reset"
@@ -858,7 +861,7 @@ function CommunityCatalog({
         </button>
         <label className="ce-filter-field">
           {t("ui.version")}
-          <select
+          <CeSelect
             className="ce-field"
             value={version}
             onChange={(e) => setVersion(e.target.value)}
@@ -867,11 +870,11 @@ function CommunityCatalog({
             {availableVersions.map((value) => (
               <option key={value}>{value}</option>
             ))}
-          </select>
+          </CeSelect>
         </label>
         <label className="ce-filter-field">
           {t("ui.loader")}
-          <select
+          <CeSelect
             className="ce-field"
             value={loader}
             onChange={(e) => setLoader(e.target.value)}
@@ -881,7 +884,7 @@ function CommunityCatalog({
                 {filterLabel(v)}
               </option>
             ))}
-          </select>
+          </CeSelect>
         </label>
       </section>
       <section
@@ -892,8 +895,13 @@ function CommunityCatalog({
       >
         {loading ? (
           <div className="ce-card ce-community-loading-box" role="status">
-            <Pickaxe size={38} strokeWidth={1.5} />
-            <i />
+            <Pickaxe
+              size={38}
+              strokeWidth={1.5}
+              className="ce-community-loading-pickaxe"
+              aria-hidden="true"
+            />
+            <i aria-hidden="true" />
             <p>{t("download.loadingType", { type: displayLabel })}</p>
           </div>
         ) : error ? (

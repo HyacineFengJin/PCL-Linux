@@ -1,3 +1,4 @@
+import { CeSelect } from "./CeSelect";
 import { createContext, useContext, useEffect, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import type { LauncherPreferencePanelProps } from "./launcherTypes";
@@ -58,13 +59,13 @@ function Field({
         (plain ? (
           <span className="extra-muted">{value}</span>
         ) : (
-          <select
+          <CeSelect
             className="ce-field"
             disabled
             title={reason || tr.t("common.unavailable")}
           >
             <option>{value}</option>
-          </select>
+          </CeSelect>
         ))}
     </label>
   );

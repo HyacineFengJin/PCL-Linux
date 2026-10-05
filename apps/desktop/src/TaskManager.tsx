@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import type { DownloadStatus, DownloadStep } from "./DownloadPanel";
 import type { Api } from "./types";
+import { taskDisplayName } from "./taskLifecycle";
 import "./task-manager.css";
 export function instanceTaskAction(kind: DownloadStatus["kind"]) {
   return kind === "toolbox_download"
@@ -376,7 +377,7 @@ export function TaskManager({
               : undefined
           }
         >
-          {status.version} {action}
+          {taskDisplayName(status)} {action}
         </strong>
         <button
           className="icon-button"

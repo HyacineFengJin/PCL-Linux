@@ -1,0 +1,45 @@
+/* Preserve the CE pickaxe/underline cue. CSS animations join the existing
+   animateLauncher cadence and speed controller; no separate timer is needed. */
+.ce-community-loading-pickaxe {
+  transform-origin: 68% 76%;
+  animation: ce-community-mining 1450ms ease-in-out infinite;
+}
+.ce-community-loading-box > i {
+  transform-origin: center;
+  animation: ce-community-mining-line 1450ms ease-in-out infinite;
+}
+.ce-community-loading-box > i[aria-hidden] {
+  background: currentColor;
+}
+@keyframes ce-community-mining {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  30% {
+    transform: rotate(-12deg);
+  }
+  48% {
+    transform: rotate(5deg);
+  }
+  68% {
+    transform: rotate(-2deg);
+  }
+}
+@keyframes ce-community-mining-line {
+  0%,
+  100% {
+    transform: scaleX(0.78);
+    opacity: 0.55;
+  }
+  48% {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ce-community-loading-pickaxe,
+  .ce-community-loading-box > i {
+    animation: none;
+  }
+}

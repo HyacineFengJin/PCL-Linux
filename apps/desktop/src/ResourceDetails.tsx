@@ -250,6 +250,7 @@ export function ResourceDetails({
   native,
   disabled,
   onTaskStart,
+  onResourceDetails,
 }: {
   api: Api;
   resource: ResourceSummary;
@@ -259,6 +260,7 @@ export function ResourceDetails({
   native: boolean;
   disabled: boolean;
   onTaskStart: (id: string) => void;
+  onResourceDetails: (resource: ResourceSummary) => void;
 }) {
   const saveAvailable = useContext(
     LauncherNavigationContext,
@@ -638,28 +640,51 @@ export function ResourceDetails({
               </button>
               <Collapse open={open}>
                 {entries.map((dependency, index) => (
-                  <div
+                  <button
+                    type="button"
                     className="rd-dependency-row"
                     key={`${dependency.project_id ?? dependency.version_id ?? dependency.file_name}:${index}`}
+                    disabled={!dependency.project?.project_id}
+                    onClick={() => {
+                      const project = dependency.project;
+                      if (!project?.project_id) return;
+                      // Browsing uses the resolved provider identity. It is
+                      // independent of required/optional installation choices.
+                      onResourceDetails({
+                        project_id: project.project_id,
+                        title: project.title,
+                        description: project.description,
+                        icon_url: project.icon_url,
+                        categories: project.categories,
+                        display_categories: project.display_categories,
+                        versions: project.game_versions,
+                        downloads: project.downloads,
+                        date_modified: project.date_modified,
+                        project_type: project.project_type,
+                        source: "Modrinth",
+                      });
+                    }}
+                    aria-label={t("ui.viewDetails", {
+                      name:
+                        dependency.project?.title ??
+                        dependency.file_name ??
+                        dependency.project_id ??
+                        dependency.version_id ??
+                        t("resource.unnamedDependency"),
+                    })}
                   >
                     <ProjectIcon url={dependency.project?.icon_url} />
-                    <div className="rd-dependency-copy">
-                      <button
-                        className="rd-dependency-name"
-                        disabled={!dependency.project}
-                        onClick={() =>
-                          void openLink(dependency.project?.url ?? "")
-                        }
-                      >
+                    <span className="rd-dependency-copy">
+                      <span className="rd-dependency-name">
                         {dependency.project?.title ??
                           dependency.file_name ??
                           dependency.project_id ??
                           dependency.version_id ??
                           t("resource.unnamedDependency")}
-                      </button>
+                      </span>
                       {dependency.project ? (
                         <>
-                          <div className="rd-description">
+                          <span className="rd-description">
                             {dependency.project.display_categories
                               .filter((category) => !isLoader(category))
                               .map((category) => (
@@ -670,8 +695,8 @@ export function ResourceDetails({
                                 </span>
                               ))}
                             {dependency.project.description}
-                          </div>
-                          <div className="rd-dependency-meta">
+                          </span>
+                          <span className="rd-dependency-meta">
                             <span>
                               <Download size={12} />
                               {count(dependency.project.downloads)}
@@ -684,17 +709,17 @@ export function ResourceDetails({
                               <Globe size={12} />
                               Modrinth
                             </span>
-                          </div>
+                          </span>
                         </>
                       ) : (
-                        <div className="rd-description">
+                        <span className="rd-description">
                           {state?.loading
                             ? t("resource.readingDependency")
                             : t("resource.dependencyUnavailable")}
-                        </div>
+                        </span>
                       )}
-                    </div>
-                  </div>
+                    </span>
+                  </button>
                 ))}
               </Collapse>
             </section>

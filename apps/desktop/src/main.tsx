@@ -80,6 +80,11 @@ import {
   InstanceIcon,
 } from "./InstancesPanel";
 import { ResourceDetails, type ResourceSummary } from "./ResourceDetails";
+import {
+  TaskPageOwner,
+  taskHasFloatingEntry,
+  taskIdentity,
+} from "./taskLifecycle";
 import { InstanceImport } from "./InstanceImport";
 import { InstanceTrash } from "./InstanceTrash";
 import {
@@ -832,6 +837,8 @@ function App() {
   const [downloadStatus, setDownloadStatus] =
     useState<DownloadStatus>(idleDownload);
   const downloadSnapshot = React.useRef<DownloadStatus>(idleDownload);
+  const taskPageOwner = React.useRef(new TaskPageOwner());
+  if (screen !== "tasks") taskPageOwner.current.leave();
   const previousDownloadTasks = React.useRef(new Set<string>());
   const acceptDownloadStatus = React.useCallback((next: DownloadStatus) => {
     const old = downloadSnapshot.current;
@@ -996,16 +1003,27 @@ function App() {
     setScreen("resource");
   }
   function showTasks() {
-    if (screen !== "tasks") setTaskOrigin(screen);
+    if (!taskPageOwner.current.open(downloadSnapshot.current)) return;
+    const currentScreen = viewContext.current.screen;
+    if (currentScreen !== "tasks") setTaskOrigin(currentScreen);
     setScreen("tasks");
   }
   async function showInstanceTask(id: string) {
     const capturedRoot = contextKey.current;
     const capturedNavigation = taskNavigation.current.epoch;
+    const capturedTask = downloadSnapshot.current.task_id;
     setDownloadBusy(true);
     try {
       const next = await api<DownloadStatus>("download_status");
-      if (next.task_id !== id) return;
+      const currentTask = downloadSnapshot.current.task_id;
+      // The first status read can finish after a newer submitted task was
+      // observed. Its ID might never have appeared in the previous-task set,
+      // so do not adopt that old response or acquire the newer page's lease.
+      if (
+        next.task_id !== id ||
+        (currentTask && currentTask !== id && currentTask !== capturedTask)
+      )
+        return;
       acceptDownloadStatus(next);
       setDownloadBusy(
         ["preparing", "downloading", "processing"].includes(
@@ -1213,6 +1231,27 @@ function App() {
     setToast(text);
     window.setTimeout(() => setToast(""), 4500);
   };
+  useEffect(() => {
+    if (
+      screen !== "tasks" ||
+      taskIdentity(downloadSnapshot.current) !== taskIdentity(downloadStatus) ||
+      downloadSnapshot.current.stage !== "complete" ||
+      !taskPageOwner.current.takeCompletion(downloadStatus)
+    )
+      return;
+    const completedTask = taskIdentity(downloadStatus);
+    // Consumption belongs to this navigation, not the retained task record.
+    // Recheck the latest projection inside the state update: another task or
+    // explicit navigation can be queued before this effect is applied.
+    setScreen((current) =>
+      current === "tasks" &&
+      taskIdentity(downloadSnapshot.current) === completedTask &&
+      downloadSnapshot.current.stage === "complete"
+        ? taskOrigin
+        : current,
+    );
+    if (downloadStatus.message) notify(downloadStatus.message);
+  }, [downloadStatus, screen, taskOrigin]);
   const launcher = useLauncherPreferences(api, native, notify);
   configureLocale(launcher.prefs.localization);
   const launcherMedia = useLauncherAssets(api, native, launcher, notify);
@@ -2456,6 +2495,9 @@ function App() {
                         instanceRecoveryBlocked
                       }
                       onTaskStart={showInstanceTask}
+                      onResourceDetails={(next) =>
+                        showResource(next, resourceOrigin)
+                      }
                     />
                   ) : screen === "tasks" ? (
                     <TaskManager
@@ -2676,17 +2718,16 @@ function App() {
               </main>
             </div>
           )}
-          {!["idle", "cancelled"].includes(downloadStatus.stage) &&
-            screen !== "tasks" && (
-              <button
-                className="ce-task-entry"
-                title={t("main.tasks")}
-                aria-label={t("main.tasks")}
-                onClick={showTasks}
-              >
-                <Download size={23} />
-              </button>
-            )}
+          {taskHasFloatingEntry(downloadStatus) && screen !== "tasks" && (
+            <button
+              className="ce-task-entry"
+              title={t("main.tasks")}
+              aria-label={t("main.tasks")}
+              onClick={showTasks}
+            >
+              <Download size={23} />
+            </button>
+          )}
           {data &&
             instanceImport &&
             instanceImport.rootKey === rootKey &&

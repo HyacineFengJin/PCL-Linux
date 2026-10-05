@@ -1,6 +1,5 @@
-import { MessageKey } from "./i18n";
+import { resolveLanguage, type MessageKey } from "./i18n";
 import { Fragment, useState } from "react";
-import { Earth, GitPullRequest, Globe } from "lucide-react";
 import type { Api } from "./types";
 import type {
   LauncherMenuId,
@@ -503,8 +502,9 @@ export function LauncherLanguage(
     reason,
     patch,
   } = useLauncherPreferenceEditor(props);
+  // Resolve legacy system preferences for display without rewriting storage.
+  const interfaceLanguage = resolveLanguage(p.localization.language);
   const languages = [
-    { value: "system" as const, label: tr.t("language.system") },
     { value: "zh-CN" as const, label: tr.t("language.zhCN") },
     { value: "en-US" as const, label: tr.t("language.enUS") },
   ];
@@ -515,7 +515,7 @@ export function LauncherLanguage(
           <Field label={tr.t("language.interface")}>
             <Select
               label={tr.t("language.interface")}
-              value={p.localization.language}
+              value={interfaceLanguage}
               options={languages}
               disabled={disabled("localization")}
               reason={reason("localization", tr.t("language.unavailable"))}
@@ -528,13 +528,10 @@ export function LauncherLanguage(
             <Select
               label={tr.t("language.region")}
               value={p.localization.region}
-              options={languages.map((o) => ({
-                ...o,
-                label:
-                  o.value === "system"
-                    ? tr.t("language.systemRegion")
-                    : o.label,
-              }))}
+              options={[
+                { value: "system", label: tr.t("language.systemRegion") },
+                ...languages,
+              ]}
               disabled={disabled("localization")}
               reason={reason(
                 "localization",
@@ -545,47 +542,6 @@ export function LauncherLanguage(
               }
             />
           </Field>
-        </div>
-        <div className="extra-language-banner">
-          <Earth className="extra-language-globe" />
-          <h3>
-            {tr.t("language.bannerLead")}
-            <br />
-            <strong>PCL Linux</strong>
-            <br />
-            {tr.t("language.bannerEnd")}
-          </h3>
-          <p>{tr.t("language.maintained")}</p>
-          <p>{tr.t("language.contribute")}</p>
-          <p>{tr.t("language.thanks")}</p>
-        </div>
-        <div className="extra-language-links">
-          <button
-            className="ce-text-button"
-            onClick={() =>
-              void props
-                .api("ui_open_link", {
-                  url: "https://github.com/HyacineFengJin/PCL-Linux/issues",
-                })
-                .catch((e) => props.onNotify(tr.serviceError(e)))
-            }
-          >
-            <Globe size={16} />
-            {tr.t("language.feedback")}
-          </button>
-          <button
-            className="ce-text-button"
-            onClick={() =>
-              void props
-                .api("ui_open_link", {
-                  url: "https://github.com/HyacineFengJin/PCL-Linux/pulls",
-                })
-                .catch((e) => props.onNotify(tr.serviceError(e)))
-            }
-          >
-            <GitPullRequest size={16} />
-            {tr.t("language.pullRequest")}
-          </button>
         </div>
       </Card>
     </div>

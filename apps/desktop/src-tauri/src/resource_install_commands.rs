@@ -143,6 +143,7 @@ fn install_with_policy(
     download_policy: Arc<pcl_network::DownloadScheduler>,
 ) -> Result<Value> {
     let cancel = task.cancellation_token();
+    let project_id = request.project_id.clone();
     task.update(tasks::TaskProgress {
         stage: tasks::TaskStage::Preparing,
         phase: "resource-metadata".into(),
@@ -163,6 +164,11 @@ fn install_with_policy(
         revision,
         download_policy,
         &cancel,
+        |plan| {
+            if let Some(file) = plan.files.iter().find(|file| file.project_id == project_id) {
+                task.set_resource_name(&file.title);
+            }
+        },
         |p| transfer_progress(task, p),
     ))?;
     let modrinth_install::VerifiedBatch {

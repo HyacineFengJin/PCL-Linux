@@ -1,3 +1,4 @@
+import { CeSelect } from "./CeSelect";
 import { useContext, useEffect, useRef, useState } from "react";
 import { Box, Settings, Heart } from "lucide-react";
 import {
@@ -52,6 +53,10 @@ export function Favorites() {
   }, [folders, folderId]);
   const entries =
     view?.entries.filter((entry) => entry.folderId === folderId) || [];
+  const showingList =
+    !controller?.loading &&
+    !(controller?.error && !view?.revision) &&
+    entries.length > 0;
   const blocked =
     !controller?.native ||
     !view?.revision ||
@@ -115,9 +120,11 @@ export function Favorites() {
     }
   }
   return (
-    <div className="ce-state-stage ce-favorites-empty ce-favorites-page">
+    <div
+      className={`ce-favorites-page ${showingList ? "ce-favorites-populated" : "ce-state-stage ce-favorites-empty"}`}
+    >
       <div className="ce-card ce-favorites-toolbar">
-        <select
+        <CeSelect
           className="ce-field"
           aria-label={t("favorites.folder")}
           value={folderId}
@@ -129,7 +136,7 @@ export function Favorites() {
               {favoriteFolderName(folder)}
             </option>
           ))}
-        </select>
+        </CeSelect>
         <button
           className="icon-button"
           disabled={!view?.revision || controller?.loading}
@@ -230,7 +237,7 @@ export function Favorites() {
         >
           <label className="ce-row">
             <span>{t("favorites.folder")}</span>
-            <select
+            <CeSelect
               className="ce-field"
               value={folderId}
               disabled={controller?.busy}
@@ -245,7 +252,7 @@ export function Favorites() {
                   {favoriteFolderName(folder)}
                 </option>
               ))}
-            </select>
+            </CeSelect>
           </label>
           <div className="ce-actions">
             <button
@@ -448,7 +455,7 @@ export function ResourceFavorite({
           )}
           <label className="ce-row">
             <span>{t("favorites.folder")}</span>
-            <select
+            <CeSelect
               className="ce-field"
               value={visible.folderId}
               disabled={controller?.busy}
@@ -462,7 +469,7 @@ export function ResourceFavorite({
                   {favoriteFolderName(folder)}
                 </option>
               ))}
-            </select>
+            </CeSelect>
           </label>
           {entry && !projectIds && (
             <button

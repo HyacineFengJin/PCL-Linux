@@ -255,7 +255,7 @@
 .ce-java-select-control {
   min-width: 0;
 }
-.ce-java-select-control select {
+.ce-java-select-control .ce-select {
   width: 100%;
 }
 .ce-java-select-control .ce-java-status {

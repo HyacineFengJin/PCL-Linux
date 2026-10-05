@@ -73,6 +73,8 @@ pub struct TaskSnapshot {
     pub root_id: String,
     pub root_path: String,
     pub instance_id: Option<String>,
+    /// Provider-verified resource title, separate from the captured instance ID.
+    pub display_name: Option<String>,
     pub kind: TaskKind,
     pub stage: TaskStage,
     pub phase: String,
@@ -243,6 +245,7 @@ impl Tasks {
                 root_id: target.root_id,
                 root_path: target.root_path,
                 instance_id: target.instance_id,
+                display_name: None,
                 kind,
                 stage: TaskStage::Preparing,
                 phase: match kind {
@@ -560,6 +563,36 @@ impl TaskHandle {
 
     pub fn update(&self, progress: TaskProgress) -> Option<TaskSnapshot> {
         self.tasks.update(&self.id, progress)
+    }
+
+    /// The resource worker supplies the root project's title only after its
+    /// official plan matches the confirmed revision. A finished worker cannot
+    /// rename a newer task, and a dependency cannot replace this one-time name.
+    pub fn set_resource_name(&self, name: &str) {
+        if name.is_empty() || name.len() > 2048 {
+            return;
+        }
+        let change = {
+            let mut inner = self.tasks.inner.lock().unwrap();
+            if inner.active_id.as_deref() != Some(&self.id) {
+                return;
+            }
+            let Some(record) = inner
+                .history
+                .iter_mut()
+                .find(|record| record.snapshot.id == self.id)
+            else {
+                return;
+            };
+            if record.snapshot.kind != TaskKind::ResourceDownload
+                || record.snapshot.display_name.is_some()
+            {
+                return;
+            }
+            record.snapshot.display_name = Some(name.into());
+            (record.snapshot.clone(), inner.listener.clone())
+        };
+        publish(change.1, change.0);
     }
 
     pub fn begin_finishing(&self) {

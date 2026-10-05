@@ -18,6 +18,7 @@ pub struct DownloadStatus {
     pub phase: String,
     pub message: String,
     pub version: Option<String>,
+    pub display_name: Option<String>,
     pub progress: f64,
     pub completed: u64,
     pub total: u64,
@@ -41,6 +42,7 @@ impl Default for DownloadStatus {
             phase: "idle".into(),
             message: "选择一个版本开始安装".into(),
             version: None,
+            display_name: None,
             progress: 0.0,
             completed: 0,
             total: 0,
@@ -88,6 +90,7 @@ impl Downloads {
             phase: snapshot.phase,
             message: snapshot.message,
             version: snapshot.instance_id,
+            display_name: snapshot.display_name,
             progress: snapshot.progress,
             completed: snapshot.completed,
             total: snapshot.total,
@@ -283,6 +286,61 @@ impl Downloads {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_name_keeps_target_identity_and_terminal_history_ownership() {
+        let tasks = Arc::new(Tasks::new());
+        let downloads = Downloads::new(tasks.clone());
+        let target = |root: &str| TaskTarget {
+            root_id: root.into(),
+            root_path: format!("/fixture/{root}"),
+            instance_id: Some("Example instance".into()),
+        };
+        let first = tasks
+            .admit(target("a"), TaskKind::ResourceDownload)
+            .unwrap();
+        downloads.track(&first);
+        first.set_resource_name("");
+        first.set_resource_name(&"x".repeat(2049));
+        assert!(downloads.snapshot().display_name.is_none());
+        first.set_resource_name("Actual root resource");
+        first.set_resource_name("Required dependency");
+        let named = downloads.snapshot();
+        assert_eq!(named.display_name.as_deref(), Some("Actual root resource"));
+        assert_eq!(named.version.as_deref(), Some("Example instance"));
+        assert_eq!(named.root_id.as_deref(), Some("a"));
+        first.finish(TaskOutcome::Complete {
+            result: None,
+            message: "资源安装完成".into(),
+            error: None,
+        });
+        let second = tasks
+            .admit(target("b"), TaskKind::ResourceDownload)
+            .unwrap();
+        downloads.track(&second);
+        second.set_resource_name("Next resource");
+        first.set_resource_name("Late old callback");
+        let old = downloads.cancel_and_wait(Some(first.id())).unwrap();
+        assert_eq!(old.stage, "complete");
+        assert_eq!(old.display_name.as_deref(), Some("Actual root resource"));
+        assert_eq!(
+            downloads.snapshot().display_name.as_deref(),
+            Some("Next resource")
+        );
+        assert_eq!(tasks.list().len(), 2);
+        assert!(!second
+            .cancellation_token()
+            .load(std::sync::atomic::Ordering::SeqCst));
+        second.finish(TaskOutcome::Complete {
+            result: None,
+            message: "完成".into(),
+            error: None,
+        });
+        let install = tasks.admit(target("c"), TaskKind::Install).unwrap();
+        downloads.track(&install);
+        install.set_resource_name("Must not rename an instance install");
+        assert!(downloads.snapshot().display_name.is_none());
+    }
 
     #[test]
     fn instance_job_projection_and_cancel_target_are_scoped() {

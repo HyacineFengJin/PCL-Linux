@@ -1,3 +1,4 @@
+import { CeSelect } from "./CeSelect";
 import { t, formatNumber, type MessageKey } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -743,7 +744,7 @@ export function InstancePanel({
           <div className="instance-personalization">
             <label className="ce-row">
               <span>{t("instance.icon")}</span>
-              <select
+              <CeSelect
                 className="ce-field"
                 aria-label={t("instance.iconLabel")}
                 value={metadata.icon}
@@ -762,11 +763,11 @@ export function InstancePanel({
                 <option value="neoforge">NeoForge</option>
                 <option value="command">{t("instance.command")}</option>
                 <option value="steve">Steve</option>
-              </select>
+              </CeSelect>
             </label>
             <label className="ce-row">
               <span>{t("instance.category")}</span>
-              <select
+              <CeSelect
                 className="ce-field"
                 aria-label={t("instance.categoryLabel")}
                 value={metadata.category}
@@ -788,7 +789,7 @@ export function InstancePanel({
                 <option value="neoforge">NeoForge</option>
                 <option value="fabric">Fabric</option>
                 <option value="quilt">Quilt</option>
-              </select>
+              </CeSelect>
             </label>
             <div className="ce-actions">
               <button
@@ -1236,7 +1237,7 @@ export function InstancePanel({
           <div className="instance-launch-fields">
             <label className="ce-row">
               <span>{t("instance.isolation")}</span>
-              <select
+              <CeSelect
                 className="ce-field"
                 value={instance.isolated ? t("ui.on") : t("ui.off")}
                 disabled
@@ -1244,17 +1245,17 @@ export function InstancePanel({
               >
                 <option value="on">{t("ui.on")}</option>
                 <option value="off">{t("ui.off")}</option>
-              </select>
+              </CeSelect>
             </label>
             <label className="ce-row">
               <span>{t("instance.windowTitle")}</span>
-              <select
+              <CeSelect
                 className="ce-field"
                 disabled
                 title={t("common.unavailable")}
               >
                 <option>{t("ui.followGlobal")}</option>
-              </select>
+              </CeSelect>
             </label>
             <label className="ce-check">
               <input type="checkbox" disabled title={t("common.unavailable")} />
@@ -1379,13 +1380,13 @@ export function InstancePanel({
           <div className="instance-launch-fields">
             <label className="ce-row">
               <span>{t("instance.authentication")}</span>
-              <select
+              <CeSelect
                 className="ce-field"
                 disabled
                 title={t("common.unavailable")}
               >
                 <option>{t("ui.unrestricted")}</option>
-              </select>
+              </CeSelect>
             </label>
             <label className="ce-row">
               <span>{t("instance.autoServer")}</span>

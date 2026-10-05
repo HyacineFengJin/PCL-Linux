@@ -1,3 +1,4 @@
+import { CeSelect } from "./CeSelect";
 import { t, formatNumber } from "./i18n";
 import { useEffect, useState } from "react";
 import { ArrowRight, ChevronDown } from "lucide-react";
@@ -156,7 +157,7 @@ export function SettingsPanel({
           <Field label={t("settings.customInfo")} value="PCL CE" />
           <label className="ce-settings-row">
             <span>{t("settings.visibility")}</span>
-            <select
+            <CeSelect
               className="ce-field"
               value={
                 launcherPreferences?.preferences.launch_visibility || "always"
@@ -185,7 +186,7 @@ export function SettingsPanel({
               >
                 {t("settings.exitAfterLaunch")}
               </option>
-            </select>
+            </CeSelect>
           </label>
           <Field
             dropdown

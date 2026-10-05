@@ -1,3 +1,4 @@
+import { CeSelect } from "./CeSelect";
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import type { Api } from "./types";
@@ -337,7 +338,7 @@ export function ToolboxGenerators({
           >
             <label className="ce-row">
               <span>{t("toolbox.avatarSize")}</span>
-              <select
+              <CeSelect
                 className="ce-field"
                 value={size}
                 disabled={busy}
@@ -352,7 +353,7 @@ export function ToolboxGenerators({
                     {value}x{value}
                   </option>
                 ))}
-              </select>
+              </CeSelect>
             </label>
             <div className="toolbox-generator-actions toolbox-avatar-actions">
               <button

@@ -131,16 +131,6 @@ const messages = {
   "language.systemRegion": "Follow system regional format",
   "language.regionUnavailable":
     "Regional date and number formatting is not connected",
-  "language.bannerLead": "Bring",
-  "language.bannerEnd": "to the world.",
-  "language.maintained":
-    "PCL Linux translations are maintained with the project source.",
-  "language.contribute":
-    "Help improve the Simplified Chinese and English interfaces and regional date and number formats on GitHub.",
-  "language.thanks":
-    "Thanks to everyone who translates, reviews, and improves the interface.",
-  "language.feedback": "Report a translation issue",
-  "language.pullRequest": "Submit a pull request",
   "misc.system": "System",
   "misc.announcements": "Launcher announcements",
   "misc.announcementsAll": "Show all announcements",

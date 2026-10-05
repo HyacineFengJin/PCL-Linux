@@ -1,3 +1,4 @@
+import { CeSelect } from "./CeSelect";
 import { t, formatNumber } from "./i18n";
 import type { Api, Instance, JavaRuntime, Settings } from "./types";
 import { useJavaAction, useJavaCatalog } from "./javaManagement";
@@ -79,7 +80,7 @@ export function JavaSelect({
     <label className="ce-row">
       <span>{t("java.game")}</span>
       <div className="ce-java-select-control">
-        <select
+        <CeSelect
           className="ce-field"
           value={value}
           disabled={action.disabled}
@@ -126,7 +127,7 @@ export function JavaSelect({
               {java.path}
             </option>
           ))}
-        </select>
+        </CeSelect>
         {(selectionError || error) && (
           <small className="ce-java-status" role="alert">
             {selectionError || error}

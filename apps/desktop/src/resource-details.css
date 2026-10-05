@@ -276,11 +276,34 @@ button.rd-version-row:hover,
   font-weight: 600;
 }
 .rd-dependency-row {
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 8px 12px;
+  padding: 0 7px 11px;
   min-height: 62px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease;
+}
+.rd-dependency-row:not(:disabled):is(:hover, :focus-visible) {
+  border-color: var(--ce-link, #2078da);
+  background: var(--ce-tinted-surface, #edf5ff);
+  outline: none;
+}
+.rd-dependency-row:disabled {
+  cursor: default;
+  opacity: 1;
+}
+.rd-dependency-copy,
+.rd-dependency-copy > .rd-description {
+  display: block;
 }
 .rd-dependency-name {
   display: block;
@@ -295,10 +318,6 @@ button.rd-version-row:hover,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.rd-dependency-name:not(:disabled):hover {
-  color: var(--ce-link, #2078da);
-  text-decoration: underline;
 }
 .rd-dependency-meta {
   display: grid;
@@ -450,7 +469,8 @@ button.rd-version-row:hover,
 }
 @media (prefers-reduced-motion: reduce) {
   .rd-group-toggle svg,
-  .rd-dependency-toggle svg {
+  .rd-dependency-toggle svg,
+  .rd-dependency-row {
     transition: none;
   }
 }

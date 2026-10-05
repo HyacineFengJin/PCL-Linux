@@ -1,12 +1,24 @@
-/* Retain the screenshot's floating folder selector and reuse resource rows. */
+/* Center state cards in the whole available content area. The native titlebar
+   is 48px and main has 24px padding on both edges (20px in the narrow layout).
+   Keep list flow separate from state centering so real rows start below the
+   page-owned toolbar, rather than around the middle of the window. */
 .ce-favorites-page {
   position: relative;
-  min-height: 290px;
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 96px);
+}
+.ce-favorites-populated {
+  align-items: stretch;
+  justify-content: flex-start;
 }
 .ce-favorites-page .ce-favorites-toolbar {
-  max-width: calc(100% - 20px);
+  top: 0;
+  right: 0;
+  max-width: 100%;
+  margin: 0;
 }
-.ce-favorites-page .ce-favorites-toolbar select {
+.ce-favorites-page .ce-favorites-toolbar .ce-select {
   width: 140px;
   min-width: 0;
 }
@@ -32,4 +44,10 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .ce-favorites-page {
+    min-height: calc(100vh - 88px);
+  }
 }
