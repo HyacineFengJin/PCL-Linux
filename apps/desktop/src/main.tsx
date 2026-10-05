@@ -95,9 +95,14 @@ import {
   LauncherNavigationContext,
 } from "./useLauncherPreferences";
 import type { LauncherMenuId } from "./launcherTypes";
+import type { ResourceBrowseRequest } from "./resourceBrowse";
 import { useLauncherLocal } from "./useLauncherLocal";
 import { useLauncherUpdates } from "./useLauncherUpdates";
 import { useLauncherDiscovery } from "./useLauncherDiscovery";
+import {
+  useLauncherFavorites,
+  LauncherFavoritesContext,
+} from "./useLauncherFavorites";
 import { useLauncherAssets, mediaUrl } from "./useLauncherAssets";
 import { configureLocale, t, formatNumber } from "./i18n";
 import type {
@@ -198,6 +203,7 @@ const rootCommands = new Set([
   "inspect_instance",
   "open_folder",
   "instance_resources",
+  "local_resource_info_export",
   "instance_servers",
   "launcher_logs",
   "launcher_read_log",
@@ -1145,6 +1151,7 @@ function App() {
       "resource_update_restore",
       "resource_save",
       "launcher_logs",
+      "toolbox_download",
     ].includes(next.kind || "");
     notify(
       t("main.cancelled", {
@@ -1164,6 +1171,9 @@ function App() {
   const [instancePage, setInstancePage] = useState("overview");
   const [settingsPage, setSettingsPage] = useState("launch");
   const [downloadPage, setDownloadPage] = useState("minecraft");
+  const [resourceBrowse, setResourceBrowse] = useState<
+    (ResourceBrowseRequest & { sequence: number }) | undefined
+  >();
   const taskNavigation = React.useRef({ key: "", epoch: 0 });
   const resourceNavigation =
     screen === "resource"
@@ -1206,6 +1216,7 @@ function App() {
   configureLocale(launcher.prefs.localization);
   const launcherMedia = useLauncherAssets(api, native, launcher, notify);
   const launcherLocal = useLauncherLocal(api, native, launcher, notify);
+  const launcherFavorites = useLauncherFavorites(api, native, notify);
   const launcherUpdates = useLauncherUpdates(api, native, launcher, notify);
   const launcherDiscovery = useLauncherDiscovery({
     api,
@@ -1769,295 +1780,307 @@ function App() {
     ));
   }
   return (
-    <LauncherNavigationContext.Provider
+    <LauncherFavoritesContext.Provider
       value={{
-        isHidden: launcher.isHidden,
-        modDisplayStyle: launcher.prefs.management.mod_display_style,
-        standaloneSaveAvailable: launcher.effects.includes("save_policy"),
+        ...launcherFavorites,
+        open: (entry) =>
+          showResource(
+            {
+              project_id: entry.projectId,
+              title: entry.title,
+              description: entry.summary,
+              icon_url: entry.iconUrl,
+              categories: [],
+              display_categories: [],
+              versions: [],
+              project_type: entry.projectType,
+              source: "Modrinth",
+            },
+            "home",
+          ),
       }}
     >
-      <div
-        data-advanced-materials={launcher.prefs.appearance.advanced_materials}
-        data-has-background={!!launcherMedia.background}
-        data-background-overlay={launcher.prefs.background.color_overlay}
-        className={
-          "app-shell ce-shell " +
-          (screen !== "home"
-            ? screen === "versions"
-              ? "selection-shell"
-              : screen === "resource"
-                ? "resource-shell"
-                : screen === "tasks"
-                  ? "tasks-shell"
-                  : "instance-shell"
-            : `${tab}-shell`)
-        }
+      <LauncherNavigationContext.Provider
+        value={{
+          isHidden: launcher.isHidden,
+          modDisplayStyle: launcher.prefs.management.mod_display_style,
+          standaloneSaveAvailable: launcher.effects.includes("save_policy"),
+          browseResources: (request) => {
+            setResourceBrowse((previous) => ({
+              ...request,
+              sequence: (previous?.sequence || 0) + 1,
+            }));
+            setDownloadPage(request.section);
+            setTab("download");
+            setScreen("home");
+          },
+        }}
       >
-        {launcherMedia.backgroundUi}
-        {launcherMedia.musicUi}
-        <header
-          className="titlebar"
-          data-tauri-drag-region
-          onDoubleClick={(e) => {
-            if (
-              native &&
-              !launcher.prefs.appearance.lock_window_size &&
-              (e.target as HTMLElement).hasAttribute("data-tauri-drag-region")
-            )
-              getCurrentWindow().toggleMaximize();
-          }}
+        <div
+          data-advanced-materials={launcher.prefs.appearance.advanced_materials}
+          data-has-background={!!launcherMedia.background}
+          data-background-overlay={launcher.prefs.background.color_overlay}
+          className={
+            "app-shell ce-shell " +
+            (screen !== "home"
+              ? screen === "versions"
+                ? "selection-shell"
+                : screen === "resource"
+                  ? "resource-shell"
+                  : screen === "tasks"
+                    ? "tasks-shell"
+                    : "instance-shell"
+              : `${tab}-shell`)
+          }
         >
-          {screen === "home" ? (
-            <>
-              <div className="brand" data-tauri-drag-region>
-                {launcher.prefs.title.mode === "none" ? null : launcher.prefs
-                    .title.mode === "text" ? (
-                  <span className="wordmark">{launcher.prefs.title.text}</span>
-                ) : launcher.prefs.title.mode === "image" &&
-                  launcherMedia.title ? (
-                  <img
-                    className="launcher-title-image"
-                    src={mediaUrl("titles", launcherMedia.title.id)}
-                    alt=""
-                  />
-                ) : (
-                  <>
-                    <span className="wordmark">PCL</span>
-                    <span className="ce-badge">CE</span>
-                  </>
-                )}
-              </div>
-              <nav aria-label={t("main.navigation")}>
-                {[
-                  { id: "launch", text: t("nav.launch"), icon: Play },
-                  { id: "download", text: t("nav.download"), icon: Download },
-                  {
-                    id: "settings",
-                    text: t("nav.settings"),
-                    icon: SettingsIcon,
-                  },
-                  { id: "tools", text: t("nav.tools"), icon: Wrench },
-                ]
-                  .filter(
-                    (n) =>
-                      n.id === "launch" ||
-                      !launcher.isHidden(`main.${n.id}` as LauncherMenuId),
-                  )
-                  .map((n) => (
-                    <button
-                      key={n.id}
-                      className={tab === n.id ? "active" : ""}
-                      onClick={() => {
-                        setTab(n.id);
-                        if (n.id === "settings" && data)
-                          setDraft(data.settings);
-                      }}
-                    >
-                      <n.icon size={17} />
-                      {n.text}
-                    </button>
-                  ))}
-              </nav>
-            </>
-          ) : (
-            <button
-              className="back-heading"
-              onClick={() =>
-                setScreen(
-                  screen === "resource"
-                    ? resourceOrigin
-                    : screen === "tasks"
-                      ? taskOrigin
-                      : "home",
-                )
-              }
-            >
-              <ArrowLeft size={20} />
-              <span>
-                {screen === "versions"
-                  ? t("main.instanceSelection")
-                  : screen === "resource"
-                    ? t("main.resourceHeading", {
-                        title: resource?.title || "",
-                      })
-                    : screen === "tasks"
-                      ? t("main.tasks")
-                      : t("main.instanceHeading", { id: selected?.id || "" })}
-              </span>
-            </button>
-          )}
-          <div className="window-buttons">
-            <button
-              title={t("main.minimize")}
-              aria-label={t("main.minimize")}
-              onClick={() => native && getCurrentWindow().minimize()}
-            >
-              <Minus size={18} />
-            </button>
-            <button
-              title={t("main.close")}
-              aria-label={t("main.close")}
-              onClick={() => native && getCurrentWindow().close()}
-            >
-              <X size={18} />
-            </button>
-          </div>
-        </header>
-        {error ? (
-          <div className="initial-error">
-            <TriangleAlert />
-            <h2>{t("main.readError")}</h2>
-            <p>{error}</p>
-            <button className="ce-button" onClick={load}>
-              {t("main.reload")}
-            </button>
-          </div>
-        ) : !data ? (
-          <div className="loading">
-            {launcher.view.revision && launcher.prefs.appearance.show_logo && (
-              <span className="wordmark">PCL Linux</span>
-            )}
-            <LoaderCircle className="spin" />
-            {t("main.loading")}
-          </div>
-        ) : (
-          <div className="body-layout">
-            <aside
-              className={
-                screen === "home" && tab === "launch"
-                  ? "launch-sidebar"
-                  : "section-sidebar"
-              }
-            >
-              {screen === "tasks" ? (
-                <TaskStatistics status={downloadStatus} speed={speed} />
-              ) : screen === "resource" ? null : screen === "versions" ? (
-                <>
-                  <div className="section-label">{t("main.folders")}</div>
-                  {data.roots?.map((root) => (
-                    <div
-                      className="ce-root-entry"
-                      key={root.id}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        rootOptions(root.id, event.clientX, event.clientY);
-                      }}
-                    >
+          {launcherMedia.backgroundUi}
+          {launcherMedia.musicUi}
+          <header
+            className="titlebar"
+            data-tauri-drag-region
+            onDoubleClick={(e) => {
+              if (
+                native &&
+                !launcher.prefs.appearance.lock_window_size &&
+                (e.target as HTMLElement).hasAttribute("data-tauri-drag-region")
+              )
+                getCurrentWindow().toggleMaximize();
+            }}
+          >
+            {screen === "home" ? (
+              <>
+                <div className="brand" data-tauri-drag-region>
+                  {launcher.prefs.title.mode === "none" ? null : launcher.prefs
+                      .title.mode === "text" ? (
+                    <span className="wordmark">
+                      {launcher.prefs.title.text}
+                    </span>
+                  ) : launcher.prefs.title.mode === "image" &&
+                    launcherMedia.title ? (
+                    <img
+                      className="launcher-title-image"
+                      src={mediaUrl("titles", launcherMedia.title.id)}
+                      alt=""
+                    />
+                  ) : (
+                    <>
+                      <span className="wordmark">PCL</span>
+                      <span className="ce-badge">CE</span>
+                    </>
+                  )}
+                </div>
+                <nav aria-label={t("main.navigation")}>
+                  {[
+                    { id: "launch", text: t("nav.launch"), icon: Play },
+                    { id: "download", text: t("nav.download"), icon: Download },
+                    {
+                      id: "settings",
+                      text: t("nav.settings"),
+                      icon: SettingsIcon,
+                    },
+                    { id: "tools", text: t("nav.tools"), icon: Wrench },
+                  ]
+                    .filter(
+                      (n) =>
+                        n.id === "launch" ||
+                        !launcher.isHidden(`main.${n.id}` as LauncherMenuId),
+                    )
+                    .map((n) => (
                       <button
-                        className={`folder-entry ${root.id === rootId ? "selected" : ""} ${root.available ? "" : "unavailable"}`}
-                        title={
-                          root.error ? `${root.path}\n${root.error}` : root.path
-                        }
-                        aria-pressed={root.id === rootId}
-                        disabled={rootWorking}
-                        onClick={() =>
-                          void rootAction("root_select", { id: root.id })
-                        }
-                      >
-                        <strong>{root.name}</strong>
-                        <small>{root.path}</small>
-                        {!root.available && (
-                          <small>{t("main.unavailable")}</small>
-                        )}
-                      </button>
-                      <button
-                        className="icon-button ce-root-options"
-                        aria-label={t("folders.manageNamed", {
-                          name: root.name,
-                        })}
-                        title={t("main.manageFolder")}
-                        disabled={rootWorking}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          const rect =
-                            event.currentTarget.getBoundingClientRect();
-                          rootOptions(root.id, rect.right, rect.top);
-                        }}
-                      >
-                        <MoreHorizontal size={17} />
-                      </button>
-                    </div>
-                  ))}
-                  <div className="section-label folder-label">
-                    {t("main.addImport")}
-                  </div>
-                  <button
-                    className="side-item"
-                    disabled={rootWorking}
-                    onClick={() => void addRoot()}
-                  >
-                    <FolderInput size={19} />
-                    <span>{t("main.addFolder")}</span>
-                  </button>
-                  <button
-                    className="side-item"
-                    disabled={
-                      !native ||
-                      archiveAdmission.current.blocked ||
-                      !archiveAdmission.current.rootAvailable ||
-                      !!instanceImport
-                    }
-                    title={
-                      !native ? t("main.importDesktop") : t("main.importOwnZip")
-                    }
-                    onClick={openInstanceImport}
-                  >
-                    <PackagePlus size={19} />
-                    <span>{t("main.importPack")}</span>
-                  </button>
-                </>
-              ) : screen === "instance" ? (
-                menu(
-                  instancePages.map((p) => ({
-                    ...p,
-                    label: t(p.labelKey),
-                    group: p.groupKey ? t(p.groupKey) : undefined,
-                    icon:
-                      p.id === "settings"
-                        ? SettingsIcon
-                        : p.id === "modify"
-                          ? Wrench
-                          : p.icon || Box,
-                    disabled: p.unavailable && p.id !== "server",
-                  })),
-                  instancePage,
-                  setInstancePage,
-                  "instance",
-                )
-              ) : tab === "launch" ? (
-                <>
-                  {profileList ? (
-                    <div className="ce-profile-list">
-                      <button
-                        className="ce-profile-list-row"
-                        disabled={!!busy}
+                        key={n.id}
+                        className={tab === n.id ? "active" : ""}
                         onClick={() => {
-                          if (native)
-                            void authAction("auth_select", { id: null });
-                          setProfileList(false);
+                          setTab(n.id);
+                          if (n.id === "settings" && data)
+                            setDraft(data.settings);
                         }}
                       >
-                        <span
-                          className="ce-profile-list-avatar"
-                          style={{
-                            backgroundImage: `url(${defaultSkin}),url(${defaultSkin})`,
-                          }}
-                        />
-                        <span>
-                          <strong>{data.settings.player}</strong>
-                          <small>{t("accounts.offlineAuth")}</small>
-                        </span>
+                        <n.icon size={17} />
+                        {n.text}
                       </button>
-                      {data.auth.accounts.map((account) => (
+                    ))}
+                </nav>
+              </>
+            ) : (
+              <button
+                className="back-heading"
+                onClick={() =>
+                  setScreen(
+                    screen === "resource"
+                      ? resourceOrigin
+                      : screen === "tasks"
+                        ? taskOrigin
+                        : "home",
+                  )
+                }
+              >
+                <ArrowLeft size={20} />
+                <span>
+                  {screen === "versions"
+                    ? t("main.instanceSelection")
+                    : screen === "resource"
+                      ? t("main.resourceHeading", {
+                          title: resource?.title || "",
+                        })
+                      : screen === "tasks"
+                        ? t("main.tasks")
+                        : t("main.instanceHeading", { id: selected?.id || "" })}
+                </span>
+              </button>
+            )}
+            <div className="window-buttons">
+              <button
+                title={t("main.minimize")}
+                aria-label={t("main.minimize")}
+                onClick={() => native && getCurrentWindow().minimize()}
+              >
+                <Minus size={18} />
+              </button>
+              <button
+                title={t("main.close")}
+                aria-label={t("main.close")}
+                onClick={() => native && getCurrentWindow().close()}
+              >
+                <X size={18} />
+              </button>
+            </div>
+          </header>
+          {error ? (
+            <div className="initial-error">
+              <TriangleAlert />
+              <h2>{t("main.readError")}</h2>
+              <p>{error}</p>
+              <button className="ce-button" onClick={load}>
+                {t("main.reload")}
+              </button>
+            </div>
+          ) : !data ? (
+            <div className="loading">
+              {launcher.view.revision &&
+                launcher.prefs.appearance.show_logo && (
+                  <span className="wordmark">PCL Linux</span>
+                )}
+              <LoaderCircle className="spin" />
+              {t("main.loading")}
+            </div>
+          ) : (
+            <div className="body-layout">
+              <aside
+                className={
+                  screen === "home" && tab === "launch"
+                    ? "launch-sidebar"
+                    : "section-sidebar"
+                }
+              >
+                {screen === "tasks" ? (
+                  <TaskStatistics status={downloadStatus} speed={speed} />
+                ) : screen === "resource" ? null : screen === "versions" ? (
+                  <>
+                    <div className="section-label">{t("main.folders")}</div>
+                    {data.roots?.map((root) => (
+                      <div
+                        className="ce-root-entry"
+                        key={root.id}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          rootOptions(root.id, event.clientX, event.clientY);
+                        }}
+                      >
                         <button
-                          key={account.profile.id}
+                          className={`folder-entry ${root.id === rootId ? "selected" : ""} ${root.available ? "" : "unavailable"}`}
+                          title={
+                            root.error
+                              ? `${root.path}\n${root.error}`
+                              : root.path
+                          }
+                          aria-pressed={root.id === rootId}
+                          disabled={rootWorking}
+                          onClick={() =>
+                            void rootAction("root_select", { id: root.id })
+                          }
+                        >
+                          <strong>{root.name}</strong>
+                          <small>{root.path}</small>
+                          {!root.available && (
+                            <small>{t("main.unavailable")}</small>
+                          )}
+                        </button>
+                        <button
+                          className="icon-button ce-root-options"
+                          aria-label={t("folders.manageNamed", {
+                            name: root.name,
+                          })}
+                          title={t("main.manageFolder")}
+                          disabled={rootWorking}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            const rect =
+                              event.currentTarget.getBoundingClientRect();
+                            rootOptions(root.id, rect.right, rect.top);
+                          }}
+                        >
+                          <MoreHorizontal size={17} />
+                        </button>
+                      </div>
+                    ))}
+                    <div className="section-label folder-label">
+                      {t("main.addImport")}
+                    </div>
+                    <button
+                      className="side-item"
+                      disabled={rootWorking}
+                      onClick={() => void addRoot()}
+                    >
+                      <FolderInput size={19} />
+                      <span>{t("main.addFolder")}</span>
+                    </button>
+                    <button
+                      className="side-item"
+                      disabled={
+                        !native ||
+                        archiveAdmission.current.blocked ||
+                        !archiveAdmission.current.rootAvailable ||
+                        !!instanceImport
+                      }
+                      title={
+                        !native
+                          ? t("main.importDesktop")
+                          : t("main.importOwnZip")
+                      }
+                      onClick={openInstanceImport}
+                    >
+                      <PackagePlus size={19} />
+                      <span>{t("main.importPack")}</span>
+                    </button>
+                  </>
+                ) : screen === "instance" ? (
+                  menu(
+                    instancePages.map((p) => ({
+                      ...p,
+                      label: t(p.labelKey),
+                      group: p.groupKey ? t(p.groupKey) : undefined,
+                      icon:
+                        p.id === "settings"
+                          ? SettingsIcon
+                          : p.id === "modify"
+                            ? Wrench
+                            : p.icon || Box,
+                      disabled: p.unavailable && p.id !== "server",
+                    })),
+                    instancePage,
+                    setInstancePage,
+                    "instance",
+                  )
+                ) : tab === "launch" ? (
+                  <>
+                    {profileList ? (
+                      <div className="ce-profile-list">
+                        <button
                           className="ce-profile-list-row"
                           disabled={!!busy}
                           onClick={() => {
                             if (native)
-                              void authAction("auth_select", {
-                                id: account.profile.id,
-                              });
+                              void authAction("auth_select", { id: null });
                             setProfileList(false);
                           }}
                         >
@@ -2068,1087 +2091,1127 @@ function App() {
                             }}
                           />
                           <span>
-                            <strong>{account.profile.name}</strong>
-                            <small>{t("accounts.microsoftAuth")}</small>
+                            <strong>{data.settings.player}</strong>
+                            <small>{t("accounts.offlineAuth")}</small>
                           </span>
                         </button>
-                      ))}
-                      <button
-                        className="ce-button ce-profile-create"
-                        title={t("accounts.newProfile")}
-                        aria-label={t("accounts.newProfile")}
-                        onClick={() => {
-                          setAccountType("");
-                          setDialog("account-type");
-                        }}
-                      >
-                        <UserPlus size={16} />
-                      </button>
-                    </div>
-                  ) : data.status.stage !== "preparing" || !boundGame ? (
-                    <div className="ce-profile-current">
-                      <button
-                        className="account-panel"
-                        onClick={() => setDialog("accounts")}
-                        aria-label={t("accounts.manage")}
-                      >
-                        <span
-                          className="avatar"
-                          aria-hidden="true"
-                          style={{
-                            backgroundImage: `url(${defaultSkin}),url(${defaultSkin})`,
+                        {data.auth.accounts.map((account) => (
+                          <button
+                            key={account.profile.id}
+                            className="ce-profile-list-row"
+                            disabled={!!busy}
+                            onClick={() => {
+                              if (native)
+                                void authAction("auth_select", {
+                                  id: account.profile.id,
+                                });
+                              setProfileList(false);
+                            }}
+                          >
+                            <span
+                              className="ce-profile-list-avatar"
+                              style={{
+                                backgroundImage: `url(${defaultSkin}),url(${defaultSkin})`,
+                              }}
+                            />
+                            <span>
+                              <strong>{account.profile.name}</strong>
+                              <small>{t("accounts.microsoftAuth")}</small>
+                            </span>
+                          </button>
+                        ))}
+                        <button
+                          className="ce-button ce-profile-create"
+                          title={t("accounts.newProfile")}
+                          aria-label={t("accounts.newProfile")}
+                          onClick={() => {
+                            setAccountType("");
+                            setDialog("account-type");
                           }}
-                        />
-                        <span className="account-heading">
-                          {activeAccount?.profile.name || data.settings.player}
-                        </span>
-                        <span className="account-kind">
+                        >
+                          <UserPlus size={16} />
+                        </button>
+                      </div>
+                    ) : data.status.stage !== "preparing" || !boundGame ? (
+                      <div className="ce-profile-current">
+                        <button
+                          className="account-panel"
+                          onClick={() => setDialog("accounts")}
+                          aria-label={t("accounts.manage")}
+                        >
+                          <span
+                            className="avatar"
+                            aria-hidden="true"
+                            style={{
+                              backgroundImage: `url(${defaultSkin}),url(${defaultSkin})`,
+                            }}
+                          />
+                          <span className="account-heading">
+                            {activeAccount?.profile.name ||
+                              data.settings.player}
+                          </span>
+                          <span className="account-kind">
+                            {activeAccount
+                              ? t("accounts.microsoftAuth")
+                              : t("accounts.offlineLogin")}
+                          </span>
+                        </button>
+                        <div className="ce-profile-actions">
+                          <button
+                            className="icon-button"
+                            title={t("accounts.skinUnavailable")}
+                            aria-label={t("accounts.skin")}
+                            disabled
+                          >
+                            <Shirt size={17} />
+                          </button>
+                          <button
+                            className="icon-button"
+                            title={t("accounts.edit")}
+                            aria-label={t("accounts.edit")}
+                            onClick={() => setDialog("accounts")}
+                          >
+                            <Pencil size={17} />
+                          </button>
+                          <button
+                            className="icon-button"
+                            title={t("accounts.selectProfile")}
+                            aria-label={t("accounts.selectProfile")}
+                            onClick={() => setProfileList(true)}
+                          >
+                            <Users size={17} />
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                    {data.status.stage === "preparing" && boundGame && (
+                      <div className="ce-launch-preparing">
+                        <Pickaxe size={30} />
+                        <h2>{t("main.launching")}</h2>
+                        <p>{data.status.message}</p>
+                        <small>
+                          {t("main.authMethod")}
                           {activeAccount
                             ? t("accounts.microsoftAuth")
-                            : t("accounts.offlineLogin")}
+                            : t("accounts.offlineAuth")}
+                        </small>
+                        {launcher.prefs.appearance.launch_tips && (
+                          <p className="launcher-tip">{t("main.launchTip")}</p>
+                        )}
+                        <div className="download-progress indeterminate">
+                          <i />
+                        </div>
+                      </div>
+                    )}
+                    <div className="launch-controls">
+                      <button
+                        className="launch-button"
+                        disabled={
+                          !native ||
+                          (!boundGame &&
+                            (!selected ||
+                              downloadBusy ||
+                              resourceBusy ||
+                              checking ||
+                              rootWorking ||
+                              !rootAvailable ||
+                              instanceRecoveryBlocked ||
+                              !!busy))
+                        }
+                        onClick={() =>
+                          boundGame
+                            ? api("stop_game").catch((e) => notify(String(e)))
+                            : launch()
+                        }
+                      >
+                        <span>
+                          {boundGame
+                            ? data.status.stage === "preparing"
+                              ? t("common.cancel")
+                              : t("main.stopGame")
+                            : t("main.launchGame")}
                         </span>
+                        <small>
+                          {boundGame
+                            ? data.status.message
+                            : busy
+                              ? t("main.otherGame")
+                              : selected?.id || t("main.selectGame")}
+                        </small>
                       </button>
-                      <div className="ce-profile-actions">
-                        <button
-                          className="icon-button"
-                          title={t("accounts.skinUnavailable")}
-                          aria-label={t("accounts.skin")}
-                          disabled
-                        >
-                          <Shirt size={17} />
-                        </button>
-                        <button
-                          className="icon-button"
-                          title={t("accounts.edit")}
-                          aria-label={t("accounts.edit")}
-                          onClick={() => setDialog("accounts")}
-                        >
-                          <Pencil size={17} />
-                        </button>
-                        <button
-                          className="icon-button"
-                          title={t("accounts.selectProfile")}
-                          aria-label={t("accounts.selectProfile")}
-                          onClick={() => setProfileList(true)}
-                        >
-                          <Users size={17} />
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
-                  {data.status.stage === "preparing" && boundGame && (
-                    <div className="ce-launch-preparing">
-                      <Pickaxe size={30} />
-                      <h2>{t("main.launching")}</h2>
-                      <p>{data.status.message}</p>
-                      <small>
-                        {t("main.authMethod")}
-                        {activeAccount
-                          ? t("accounts.microsoftAuth")
-                          : t("accounts.offlineAuth")}
-                      </small>
-                      {launcher.prefs.appearance.launch_tips && (
-                        <p className="launcher-tip">{t("main.launchTip")}</p>
+                      {!launcher.isHidden("feature.instance_management") && (
+                        <div className="launch-secondary">
+                          <button
+                            className="ce-button"
+                            disabled={rootWorking}
+                            onClick={() => {
+                              setQuery("");
+                              setScreen("versions");
+                            }}
+                          >
+                            {t("main.instanceSelection")}
+                          </button>
+                          <button
+                            className="ce-button"
+                            disabled={!selected || rootWorking}
+                            onClick={instanceSettings}
+                          >
+                            {t("main.instanceSettings")}
+                          </button>
+                        </div>
                       )}
-                      <div className="download-progress indeterminate">
-                        <i />
-                      </div>
                     </div>
-                  )}
-                  <div className="launch-controls">
+                  </>
+                ) : tab === "download" ? (
+                  menu(downloadItems, downloadPage, setDownloadPage)
+                ) : tab === "settings" ? (
+                  menu(
+                    settingsItems,
+                    settingsPage,
+                    (id) => {
+                      setSettingsPage(id);
+                    },
+                    "settings",
+                  )
+                ) : (
+                  <>
+                    {!launcher.isHidden("tools.network") && (
+                      <>
+                        <div className="section-label">{t("nav.network")}</div>
+                        <button
+                          className="side-item"
+                          disabled
+                          title={t("main.networkUnavailable")}
+                        >
+                          <Link2 size={19} />
+                          <span>{t("main.lobby")}</span>
+                        </button>
+                      </>
+                    )}
+                    <div className="section-label">{t("main.smallTools")}</div>
                     <button
-                      className="launch-button"
+                      className="side-item selected"
+                      title={t("nav.toolbox")}
+                    >
+                      <Gift size={19} />
+                      <span>{t("nav.toolbox")}</span>
+                    </button>
+                  </>
+                )}
+              </aside>
+              <main className="content" ref={contentRef}>
+                {data.import_recovery_error && screen !== "tasks" && (
+                  <section className="error-banner" role="alert">
+                    <TriangleAlert size={17} />
+                    <span>{data.import_recovery_error}</span>
+                    <button
+                      className="ce-button"
                       disabled={
                         !native ||
-                        (!boundGame &&
-                          (!selected ||
-                            downloadBusy ||
-                            resourceBusy ||
-                            checking ||
-                            rootWorking ||
-                            !rootAvailable ||
-                            instanceRecoveryBlocked ||
-                            !!busy))
+                        archiveAdmission.current.blocked ||
+                        !rootAvailable
                       }
-                      onClick={() =>
-                        boundGame
-                          ? api("stop_game").catch((e) => notify(String(e)))
-                          : launch()
-                      }
+                      onClick={() => void recoverInstanceArchives("import")}
                     >
-                      <span>
-                        {boundGame
-                          ? data.status.stage === "preparing"
-                            ? t("common.cancel")
-                            : t("main.stopGame")
-                          : t("main.launchGame")}
-                      </span>
-                      <small>
-                        {boundGame
-                          ? data.status.message
-                          : busy
-                            ? t("main.otherGame")
-                            : selected?.id || t("main.selectGame")}
-                      </small>
+                      {t("main.recoverImport")}
                     </button>
-                    {!launcher.isHidden("feature.instance_management") && (
-                      <div className="launch-secondary">
-                        <button
-                          className="ce-button"
-                          disabled={rootWorking}
-                          onClick={() => {
-                            setQuery("");
-                            setScreen("versions");
-                          }}
-                        >
-                          {t("main.instanceSelection")}
-                        </button>
-                        <button
-                          className="ce-button"
-                          disabled={!selected || rootWorking}
-                          onClick={instanceSettings}
-                        >
-                          {t("main.instanceSettings")}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </>
-              ) : tab === "download" ? (
-                menu(downloadItems, downloadPage, setDownloadPage)
-              ) : tab === "settings" ? (
-                menu(
-                  settingsItems,
-                  settingsPage,
-                  (id) => {
-                    setSettingsPage(id);
-                  },
-                  "settings",
-                )
-              ) : (
-                <>
-                  {!launcher.isHidden("tools.network") && (
-                    <>
-                      <div className="section-label">{t("nav.network")}</div>
-                      <button
-                        className="side-item"
-                        disabled
-                        title={t("main.networkUnavailable")}
-                      >
-                        <Link2 size={19} />
-                        <span>{t("main.lobby")}</span>
-                      </button>
-                    </>
-                  )}
-                  <div className="section-label">{t("main.smallTools")}</div>
-                  <button
-                    className="side-item selected"
-                    title={t("nav.toolbox")}
-                  >
-                    <Gift size={19} />
-                    <span>{t("nav.toolbox")}</span>
-                  </button>
-                </>
-              )}
-            </aside>
-            <main className="content" ref={contentRef}>
-              {data.import_recovery_error && screen !== "tasks" && (
-                <section className="error-banner" role="alert">
-                  <TriangleAlert size={17} />
-                  <span>{data.import_recovery_error}</span>
-                  <button
-                    className="ce-button"
-                    disabled={
-                      !native ||
-                      archiveAdmission.current.blocked ||
-                      !rootAvailable
-                    }
-                    onClick={() => void recoverInstanceArchives("import")}
-                  >
-                    {t("main.recoverImport")}
-                  </button>
-                </section>
-              )}
-              {data.delete_recovery_error && screen !== "tasks" && (
-                <section className="error-banner" role="alert">
-                  <TriangleAlert size={17} />
-                  <span>{data.delete_recovery_error}</span>
-                  <button
-                    className="ce-button"
-                    title={
-                      data.roots?.find(
-                        (root) => root.id === data.delete_recovery_root_id,
-                      )?.path
-                    }
-                    disabled={
-                      !native ||
-                      archiveAdmission.current.blocked ||
-                      !data.delete_recovery_root_id ||
-                      !data.roots?.some(
-                        (root) =>
-                          root.id === data.delete_recovery_root_id &&
-                          root.available,
-                      )
-                    }
-                    onClick={() => void recoverInstanceArchives("delete")}
-                  >
-                    {t("main.recoverDelete")}
-                  </button>
-                </section>
-              )}
-              {data.rename_recovery_error && screen !== "tasks" && (
-                <section className="error-banner" role="alert">
-                  <TriangleAlert size={17} />
-                  <span>{data.rename_recovery_error}</span>
-                  <button
-                    className="ce-button"
-                    title={
-                      data.roots?.find(
-                        (root) => root.id === data.rename_recovery_root_id,
-                      )?.path
-                    }
-                    disabled={
-                      !native ||
-                      !!busy ||
-                      downloadBusy ||
-                      resourceBusy ||
-                      !data.rename_recovery_root_id ||
-                      !data.roots?.some(
-                        (root) =>
-                          root.id === data.rename_recovery_root_id &&
-                          root.available,
-                      )
-                    }
-                    onClick={() => void recoverInstanceRename()}
-                  >
-                    {t("main.recoverRename")}
-                  </button>
-                </section>
-              )}
-              {data.resource_install_recovery_error && screen !== "tasks" && (
-                <section className="error-banner" role="alert">
-                  <TriangleAlert size={17} />
-                  <span>{data.resource_install_recovery_error}</span>
-                  <button
-                    className="ce-button"
-                    disabled={
-                      !native ||
-                      archiveAdmission.current.blocked ||
-                      !rootAvailable
-                    }
-                    onClick={() => void recoverResourceInstall()}
-                  >
-                    {t("main.recoverResource")}
-                  </button>
-                </section>
-              )}
-              {data.reset_recovery_error && screen !== "tasks" && (
-                <section className="error-banner" role="alert">
-                  <TriangleAlert size={17} />
-                  <span>{data.reset_recovery_error}</span>
-                  <button
-                    className="ce-button"
-                    disabled={
-                      !native ||
-                      !!busy ||
-                      downloadBusy ||
-                      resourceBusy ||
-                      !rootAvailable
-                    }
-                    onClick={() => void recoverInstanceReset()}
-                  >
-                    {t("main.recoverReset")}
-                  </button>
-                </section>
-              )}
-              <div hidden={screen !== "home" || tab !== "download"}>
-                <DownloadPanel
-                  visible={screen === "home" && tab === "download"}
-                  section={downloadPage}
-                  api={api}
-                  rootId={rootId}
-                  rootAvailable={rootAvailable && !rootWorking}
-                  native={native}
-                  installed={data.instances}
-                  gameBusy={!!busy || resourceBusy || instanceRecoveryBlocked}
-                  onInstalled={load}
-                  onBusyChange={setDownloadBusy}
-                  onStatusChange={acceptDownloadStatus}
-                  onResourceDetails={showResource}
-                  onTaskStart={showTasks}
-                />
-              </div>
-              <div
-                key={`${rootKey}:${screen}:${tab}:${instancePage}:${settingsPage}`}
-                className="ce-page-enter ce-main-page"
-              >
-                {screen === "resource" && resource ? (
-                  <ResourceDetails
-                    key={`${rootKey}:${resource.source}:${resource.project_id || resource.local_path}`}
-                    api={rootApi}
-                    resource={resource}
-                    onNotify={notify}
-                    scopeKey={rootId || ""}
-                    selectedInstance={selected || null}
+                  </section>
+                )}
+                {data.delete_recovery_error && screen !== "tasks" && (
+                  <section className="error-banner" role="alert">
+                    <TriangleAlert size={17} />
+                    <span>{data.delete_recovery_error}</span>
+                    <button
+                      className="ce-button"
+                      title={
+                        data.roots?.find(
+                          (root) => root.id === data.delete_recovery_root_id,
+                        )?.path
+                      }
+                      disabled={
+                        !native ||
+                        archiveAdmission.current.blocked ||
+                        !data.delete_recovery_root_id ||
+                        !data.roots?.some(
+                          (root) =>
+                            root.id === data.delete_recovery_root_id &&
+                            root.available,
+                        )
+                      }
+                      onClick={() => void recoverInstanceArchives("delete")}
+                    >
+                      {t("main.recoverDelete")}
+                    </button>
+                  </section>
+                )}
+                {data.rename_recovery_error && screen !== "tasks" && (
+                  <section className="error-banner" role="alert">
+                    <TriangleAlert size={17} />
+                    <span>{data.rename_recovery_error}</span>
+                    <button
+                      className="ce-button"
+                      title={
+                        data.roots?.find(
+                          (root) => root.id === data.rename_recovery_root_id,
+                        )?.path
+                      }
+                      disabled={
+                        !native ||
+                        !!busy ||
+                        downloadBusy ||
+                        resourceBusy ||
+                        !data.rename_recovery_root_id ||
+                        !data.roots?.some(
+                          (root) =>
+                            root.id === data.rename_recovery_root_id &&
+                            root.available,
+                        )
+                      }
+                      onClick={() => void recoverInstanceRename()}
+                    >
+                      {t("main.recoverRename")}
+                    </button>
+                  </section>
+                )}
+                {data.resource_install_recovery_error && screen !== "tasks" && (
+                  <section className="error-banner" role="alert">
+                    <TriangleAlert size={17} />
+                    <span>{data.resource_install_recovery_error}</span>
+                    <button
+                      className="ce-button"
+                      disabled={
+                        !native ||
+                        archiveAdmission.current.blocked ||
+                        !rootAvailable
+                      }
+                      onClick={() => void recoverResourceInstall()}
+                    >
+                      {t("main.recoverResource")}
+                    </button>
+                  </section>
+                )}
+                {data.reset_recovery_error && screen !== "tasks" && (
+                  <section className="error-banner" role="alert">
+                    <TriangleAlert size={17} />
+                    <span>{data.reset_recovery_error}</span>
+                    <button
+                      className="ce-button"
+                      disabled={
+                        !native ||
+                        !!busy ||
+                        downloadBusy ||
+                        resourceBusy ||
+                        !rootAvailable
+                      }
+                      onClick={() => void recoverInstanceReset()}
+                    >
+                      {t("main.recoverReset")}
+                    </button>
+                  </section>
+                )}
+                <div hidden={screen !== "home" || tab !== "download"}>
+                  <DownloadPanel
+                    visible={screen === "home" && tab === "download"}
+                    section={downloadPage}
+                    compatibility={resourceBrowse}
+                    api={api}
+                    rootId={rootId}
+                    rootAvailable={rootAvailable && !rootWorking}
                     native={native}
-                    disabled={
-                      !!busy ||
-                      downloadBusy ||
-                      resourceBusy ||
-                      rootWorking ||
-                      !rootAvailable ||
-                      instanceRecoveryBlocked
-                    }
-                    onTaskStart={showInstanceTask}
-                  />
-                ) : screen === "tasks" ? (
-                  <TaskManager
-                    key={downloadStatus.task_id || "legacy-task"}
-                    api={taskApi}
-                    status={downloadStatus}
-                    native={native}
-                    onNotify={notify}
+                    installed={data.instances}
+                    gameBusy={!!busy || resourceBusy || instanceRecoveryBlocked}
+                    onInstalled={load}
+                    onBusyChange={setDownloadBusy}
                     onStatusChange={acceptDownloadStatus}
-                    onCancelled={finishTaskCancellation}
+                    onResourceDetails={showResource}
+                    onTaskStart={showTasks}
                   />
-                ) : screen === "versions" ? (
-                  <>
-                    <InstanceTrash
+                </div>
+                <div
+                  key={`${rootKey}:${screen}:${tab}:${instancePage}:${settingsPage}`}
+                  className="ce-page-enter ce-main-page"
+                >
+                  {screen === "resource" && resource ? (
+                    <ResourceDetails
+                      key={`${rootKey}:${resource.source}:${resource.project_id || resource.local_path}`}
                       api={rootApi}
-                      scopeKey={rootId || data.settings.root}
+                      resource={resource}
+                      onNotify={notify}
+                      scopeKey={rootId || ""}
+                      selectedInstance={selected || null}
                       native={native}
                       disabled={
-                        archiveAdmission.current.blocked ||
-                        !archiveAdmission.current.rootAvailable
+                        !!busy ||
+                        downloadBusy ||
+                        resourceBusy ||
+                        rootWorking ||
+                        !rootAvailable ||
+                        instanceRecoveryBlocked
                       }
                       onTaskStart={showInstanceTask}
-                      refreshKey={`${data.settings.revision || ""}:${downloadStatus.task_id || ""}:${downloadStatus.stage}`}
                     />
-                    {data.config_warning && (
-                      <div className="error-banner" role="alert">
-                        <TriangleAlert size={17} />
-                        <span>{data.config_warning}</span>
-                      </div>
-                    )}
-                    {(data.scan_error || selectedRoot?.error) && (
-                      <div className="error-banner" role="alert">
-                        <TriangleAlert size={17} />
-                        <span>{data.scan_error || selectedRoot?.error}</span>
-                      </div>
-                    )}
-                    {!!data.scan_issues?.length && (
-                      <div className="auth-notice" role="status">
-                        <p>{t("main.partialScan")}</p>
-                        {data.scan_issues.map((issue, index) => (
-                          <p key={`${issue.id}:${index}`}>
-                            {issue.id}：{issue.message}
-                          </p>
-                        ))}
-                      </div>
-                    )}
-                    <InstanceSelection
-                      key={rootKey}
-                      instances={data.instances}
-                      query={query}
-                      setQuery={setQuery}
-                      disabled={rootWorking}
-                      onPick={pick}
+                  ) : screen === "tasks" ? (
+                    <TaskManager
+                      key={downloadStatus.task_id || "legacy-task"}
+                      api={taskApi}
+                      status={downloadStatus}
+                      native={native}
+                      onNotify={notify}
+                      onStatusChange={acceptDownloadStatus}
+                      onCancelled={finishTaskCancellation}
                     />
-                  </>
-                ) : screen === "instance" && selected ? (
-                  <InstancePanel
-                    key={`${rootKey}:${selected.id}`}
-                    instance={selected}
-                    section={instancePage}
-                    settings={data.settings}
-                    api={rootApi}
-                    native={native}
-                    onTaskStart={showInstanceTask}
-                    occupiedNames={data.instances.map(
-                      (instance) => instance.id,
-                    )}
-                    onSave={save}
-                    onOpen={open}
-                    onInspect={launch}
-                    onNotify={notify}
-                    onMetadataChange={(id: string, meta: MetaView) => {
-                      if (contextKey.current !== rootKey) return;
-                      setData((current) => {
-                        if (
-                          !current ||
-                          `${current.settings.root_id || ""}:${current.settings.root}` !==
-                            rootKey
-                        )
-                          return current;
-                        const { revision, ...metadata } = meta;
-                        return {
-                          ...current,
-                          instances: current.instances.map((instance) =>
-                            instance.id === id
-                              ? {
-                                  ...instance,
-                                  metadata,
-                                  metadata_revision: revision,
-                                }
-                              : instance,
-                          ),
-                        };
-                      });
-                    }}
-                    onResourceDetails={(r) =>
-                      showResource(
-                        {
-                          project_id: "",
-                          title: r.name,
-                          description: r.description || "",
-                          icon_url: r.icon || null,
-                          categories: [],
-                          display_categories: [],
-                          versions: [selected.minecraft_version],
-                          source: "local",
-                          file_name: r.file_name,
-                          local_path: r.path,
-                          local_version: r.version,
-                          enabled: r.enabled,
-                          local_minecraft_version: selected.minecraft_version,
-                          local_loader: selected.loader,
-                          project_type: r.kind === "mods" ? "mod" : r.kind,
-                        },
-                        "instance",
-                      )
-                    }
-                    disabled={rootOccupied || rootWorking}
-                    mutationDisabled={
-                      !!busy ||
-                      downloadBusy ||
-                      resourceBusy ||
-                      rootWorking ||
-                      !rootAvailable ||
-                      instanceRecoveryBlocked
-                    }
-                  />
-                ) : screen === "home" ? (
-                  <>
-                    {tab === "launch" &&
-                      processInRoot &&
-                      data.status.stage === "error" && (
-                        <button
-                          className="error-banner"
-                          onClick={() => {
-                            setTab("settings");
-                            setSettingsPage("logs");
-                          }}
-                        >
-                          <TriangleAlert size={18} />
-                          <span>{data.status.message}</span>
-                          <ChevronRight size={18} />
-                        </button>
-                      )}
-                    {tab === "launch" && launcherMedia.homeUi}
-                    {tab === "launch" && launcherDiscovery.announcementUi}
-                    {tab === "settings" &&
-                      (["launch", "java"].includes(settingsPage) ? (
-                        <SettingsPanel
-                          section={settingsPage}
-                          settings={data.settings}
-                          key={rootKey}
-                          api={rootApi}
-                          native={native}
-                          onSave={save}
-                          onRefresh={load}
-                          disabled={
-                            !!busy ||
-                            downloadBusy ||
-                            resourceBusy ||
-                            rootWorking ||
-                            instanceRecoveryBlocked
-                          }
-                          onInstances={instanceSettings}
-                          showInstanceSettings={
-                            !launcher.isHidden("feature.instance_management")
-                          }
-                          launcherPreferences={launcher.view}
-                          onLauncherPatch={launcher.patch}
-                          launcherBusy={launcher.busy}
-                          exitAfterLaunchAvailable={native}
-                          onNotify={notify}
-                        />
-                      ) : (
-                        <ExtraSettings
-                          key={`${rootKey}:${settingsPage}`}
-                          section={settingsPage}
-                          settings={data.settings}
-                          api={rootApi}
-                          onOpen={open}
-                          onNotify={notify}
-                          preferences={launcher.view}
-                          onPatch={launcher.patch}
-                          preferenceBusy={launcher.busy}
-                          supportedEffects={[
-                            ...launcher.effects,
-                            ...launcherMedia.effects,
-                            ...launcherLocal.effects,
-                            ...launcherUpdates.effects,
-                            ...launcherDiscovery.effects,
-                          ]}
-                          onLauncherAction={(action) =>
-                            launcherMedia.handles(action)
-                              ? launcherMedia.action(action)
-                              : launcherLocal.handles(action)
-                                ? launcherLocal.action(action)
-                                : launcher.action(action)
-                          }
-                          revealHidden={launcher.revealed}
-                          fontFamilies={launcherMedia.fonts}
-                          native={native}
-                        />
-                      ))}
-                    {tab === "tools" && (
-                      <Toolbox
-                        onOpen={open}
-                        root={data.settings.root}
+                  ) : screen === "versions" ? (
+                    <>
+                      <InstanceTrash
+                        api={rootApi}
+                        scopeKey={rootId || data.settings.root}
                         native={native}
-                        busy={launcher.busy}
-                        onTool={launcherLocal.tool}
+                        disabled={
+                          archiveAdmission.current.blocked ||
+                          !archiveAdmission.current.rootAvailable
+                        }
+                        onTaskStart={showInstanceTask}
+                        refreshKey={`${data.settings.revision || ""}:${downloadStatus.task_id || ""}:${downloadStatus.stage}`}
                       />
-                    )}
-                  </>
-                ) : null}
-              </div>
-            </main>
-          </div>
-        )}
-        {!["idle", "cancelled"].includes(downloadStatus.stage) &&
-          screen !== "tasks" && (
-            <button
-              className="ce-task-entry"
-              title={t("main.tasks")}
-              aria-label={t("main.tasks")}
-              onClick={showTasks}
-            >
-              <Download size={23} />
-            </button>
-          )}
-        {data &&
-          instanceImport &&
-          instanceImport.rootKey === rootKey &&
-          screen === "versions" &&
-          instanceImport.epoch === taskNavigation.current.epoch && (
-            <InstanceImport
-              key={`${instanceImport.rootKey}:${instanceImport.epoch}`}
-              api={rootApi}
-              scopeKey={rootId || data.settings.root}
-              native={native}
-              disabled={
-                archiveAdmission.current.blocked ||
-                !archiveAdmission.current.rootAvailable
-              }
-              occupiedNames={data.instances.map((instance) => instance.id)}
-              onTaskStart={showInstanceTask}
-              onNotify={notify}
-              onClose={() =>
-                setInstanceImport((current) =>
-                  current === instanceImport ? null : current,
-                )
-              }
-            />
-          )}
-        {rootMenu && menuRoot && (
-          <div
-            className="ce-root-menu"
-            role="menu"
-            aria-label={t("folders.manageNamed", { name: menuRoot.name })}
-            style={{ left: rootMenu.x, top: rootMenu.y }}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <button
-              role="menuitem"
-              onClick={() => editRoot(menuRoot, "rename")}
-            >
-              <Pencil size={16} />
-              {t("folders.rename")}
-            </button>
-            <button
-              role="menuitem"
-              disabled={rootWorking || menuRootIndex <= 0}
-              onClick={() =>
-                void rootAction("root_update", {
-                  id: menuRoot.id,
-                  position: menuRootIndex - 1,
-                })
-              }
-            >
-              <ArrowUp size={16} />
-              {t("folders.up")}
-            </button>
-            <button
-              role="menuitem"
-              disabled={
-                rootWorking || menuRootIndex >= (data?.roots?.length || 0) - 1
-              }
-              onClick={() =>
-                void rootAction("root_update", {
-                  id: menuRoot.id,
-                  position: menuRootIndex + 1,
-                })
-              }
-            >
-              <ArrowDown size={16} />
-              {t("folders.down")}
-            </button>
-            <button
-              role="menuitem"
-              disabled={
-                rootWorking ||
-                (data?.roots?.length || 0) <= 1 ||
-                menuRootOccupied
-              }
-              title={menuRootOccupied ? t("folders.occupied") : undefined}
-              onClick={() => editRoot(menuRoot, "remove")}
-            >
-              <X size={16} />
-              {t("folders.remove")}
-            </button>
-          </div>
-        )}
-        {rootDialog && (
-          <div
-            className="modal-shade rd-name-shade"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget && !rootWorking)
-                setRootDialog(null);
-            }}
-          >
-            <form
-              className="rd-name-dialog ce-root-dialog"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="ce-root-dialog-title"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (rootDialog.mode === "rename" && !rootName.trim()) {
-                  setRootError(t("folders.nameRequired"));
-                  return;
-                }
-                void rootAction(
-                  rootDialog.mode === "rename" ? "root_update" : "root_remove",
-                  rootDialog.mode === "rename"
-                    ? { id: rootDialog.root.id, name: rootName.trim() }
-                    : { id: rootDialog.root.id },
-                );
-              }}
-            >
-              <h2 id="ce-root-dialog-title">
-                {rootDialog.mode === "rename"
-                  ? t("folders.renameFolder")
-                  : t("folders.remove")}
-              </h2>
-              {rootDialog.mode === "rename" ? (
-                <input
-                  className="ce-field"
-                  aria-label={t("folders.name")}
-                  value={rootName}
-                  maxLength={128}
-                  disabled={rootWorking}
-                  onChange={(event) => setRootName(event.target.value)}
-                />
-              ) : (
-                <p>{t("folders.removeHelp", { name: rootDialog.root.name })}</p>
-              )}
-              {rootError && (
-                <p className="rd-name-error" role="alert">
-                  {rootError}
-                </p>
-              )}
-              <div className="rd-name-actions">
-                <button
-                  className="ce-button"
-                  type="submit"
-                  disabled={rootWorking}
-                >
-                  {rootWorking
-                    ? t("main.saving")
-                    : rootDialog.mode === "rename"
-                      ? t("main.confirm")
-                      : t("main.remove")}
-                </button>
-                <button
-                  className="ce-button"
-                  type="button"
-                  disabled={rootWorking}
-                  onClick={() => setRootDialog(null)}
-                >
-                  {t("common.cancel")}
-                </button>
-              </div>
-            </form>
-          </div>
-        )}
-        {dialog === "account-type" && (
-          <div
-            className="modal-shade"
-            onMouseDown={(e) => {
-              if (e.target === e.currentTarget) setDialog(null);
-            }}
-          >
-            <section
-              className="ce-account-type-modal"
-              role="dialog"
-              aria-modal="true"
-              aria-label={t("accounts.chooseType")}
-            >
-              <h2>{t("accounts.chooseType")}</h2>
-              <div className="ce-account-types">
-                {[
-                  {
-                    id: "premium",
-                    name: t("accounts.microsoftAuth"),
-                    icon: ShieldCheck,
-                  },
-                  {
-                    id: "third-party",
-                    name: t("accounts.thirdParty"),
-                    icon: Network,
-                  },
-                  {
-                    id: "offline",
-                    name: t("accounts.offlineAuth"),
-                    icon: Unplug,
-                  },
-                ].map((item) => (
-                  <button
-                    key={item.id}
-                    className={accountType === item.id ? "selected" : ""}
-                    disabled={item.id === "third-party"}
-                    title={
-                      item.id === "third-party"
-                        ? t("accounts.thirdPartyUnavailable")
-                        : undefined
-                    }
-                    onClick={() => setAccountType(item.id)}
-                  >
-                    <item.icon size={24} />
-                    <span>{item.name}</span>
-                  </button>
-                ))}
-              </div>
-              <div className="ce-account-type-footer">
-                <button
-                  className="ce-button"
-                  disabled={!accountType}
-                  onClick={() => setDialog("accounts")}
-                >
-                  {t("main.continue")}
-                </button>
-                <button className="ce-button" onClick={() => setDialog(null)}>
-                  {t("common.cancel")}
-                </button>
-              </div>
-            </section>
-          </div>
-        )}
-        {dialog === "accounts" && data && (
-          <div
-            className="modal-shade"
-            onMouseDown={(e) => {
-              if (e.target === e.currentTarget) setDialog(null);
-            }}
-          >
-            <section
-              className="modal"
-              role="dialog"
-              aria-modal="true"
-              aria-label={t("accounts.manage")}
-            >
-              <div className="modal-heading">
-                <h2>{t("accounts.manage")}</h2>
-                <button
-                  aria-label={t("main.closeDialog")}
-                  className="icon-button"
-                  onClick={() => setDialog(null)}
-                >
-                  <X size={20} />
-                </button>
-              </div>
-              {dialog === "accounts" ? (
-                <div className="account-dialog">
-                  <p className="muted">{t("accounts.chooseIdentity")}</p>
-                  <label className="ce-row">
-                    <span>{t("accounts.offlineName")}</span>
-                    <input
-                      className="ce-field"
-                      value={data.settings.player}
-                      disabled={!!busy}
-                      onChange={(e) => setPlayer(e.target.value)}
-                      onBlur={() =>
-                        save(data.settings).catch((e) => notify(String(e)))
+                      {data.config_warning && (
+                        <div className="error-banner" role="alert">
+                          <TriangleAlert size={17} />
+                          <span>{data.config_warning}</span>
+                        </div>
+                      )}
+                      {(data.scan_error || selectedRoot?.error) && (
+                        <div className="error-banner" role="alert">
+                          <TriangleAlert size={17} />
+                          <span>{data.scan_error || selectedRoot?.error}</span>
+                        </div>
+                      )}
+                      {!!data.scan_issues?.length && (
+                        <div className="auth-notice" role="status">
+                          <p>{t("main.partialScan")}</p>
+                          {data.scan_issues.map((issue, index) => (
+                            <p key={`${issue.id}:${index}`}>
+                              {issue.id}：{issue.message}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                      <InstanceSelection
+                        key={rootKey}
+                        instances={data.instances}
+                        query={query}
+                        setQuery={setQuery}
+                        disabled={rootWorking}
+                        onPick={pick}
+                      />
+                    </>
+                  ) : screen === "instance" && selected ? (
+                    <InstancePanel
+                      key={`${rootKey}:${selected.id}`}
+                      instance={selected}
+                      section={instancePage}
+                      settings={data.settings}
+                      api={rootApi}
+                      native={native}
+                      onTaskStart={showInstanceTask}
+                      occupiedNames={data.instances.map(
+                        (instance) => instance.id,
+                      )}
+                      onSave={save}
+                      onOpen={open}
+                      onInspect={launch}
+                      onNotify={notify}
+                      onMetadataChange={(id: string, meta: MetaView) => {
+                        if (contextKey.current !== rootKey) return;
+                        setData((current) => {
+                          if (
+                            !current ||
+                            `${current.settings.root_id || ""}:${current.settings.root}` !==
+                              rootKey
+                          )
+                            return current;
+                          const { revision, ...metadata } = meta;
+                          return {
+                            ...current,
+                            instances: current.instances.map((instance) =>
+                              instance.id === id
+                                ? {
+                                    ...instance,
+                                    metadata,
+                                    metadata_revision: revision,
+                                  }
+                                : instance,
+                            ),
+                          };
+                        });
+                      }}
+                      onResourceDetails={(r) =>
+                        showResource(
+                          {
+                            project_id: "",
+                            title: r.name,
+                            description: r.description || "",
+                            icon_url: r.icon || null,
+                            categories: [],
+                            display_categories: [],
+                            versions: [selected.minecraft_version],
+                            source: "local",
+                            file_name: r.file_name,
+                            local_path: r.path,
+                            local_version: r.version,
+                            enabled: r.enabled,
+                            local_minecraft_version: selected.minecraft_version,
+                            local_loader: selected.loader,
+                            project_type: r.kind === "mods" ? "mod" : r.kind,
+                          },
+                          "instance",
+                        )
+                      }
+                      disabled={rootOccupied || rootWorking}
+                      mutationDisabled={
+                        !!busy ||
+                        downloadBusy ||
+                        resourceBusy ||
+                        rootWorking ||
+                        !rootAvailable ||
+                        instanceRecoveryBlocked
                       }
                     />
-                  </label>
-                  {busy && (
-                    <div className="auth-notice" role="status">
-                      {t("accounts.busy")}
-                    </div>
-                  )}
-                  <button
-                    className={
-                      "version-row " + (!data.auth.selected ? "chosen" : "")
-                    }
-                    disabled={!native || authWorking || authenticating || busy}
-                    onClick={() => authAction("auth_select", { id: null })}
-                  >
-                    <UserRound size={23} />
-                    <div>
-                      <strong>
-                        {t("accounts.offlinePrefix")}
-                        {data.settings.player}
-                      </strong>
-                      <small>{t("accounts.offlineServers")}</small>
-                    </div>
-                    {!data.auth.selected && <Check size={18} />}
-                  </button>
-                  {data.auth.accounts.map((a) => (
-                    <div className="saved-account" key={a.profile.id}>
-                      <button
-                        className={
-                          "version-row " +
-                          (a.profile.id === data.auth.selected ? "chosen" : "")
-                        }
-                        disabled={
-                          !native || authWorking || authenticating || busy
-                        }
-                        onClick={() =>
-                          authAction("auth_select", { id: a.profile.id })
-                        }
-                      >
-                        <UserRound size={23} />
-                        <div>
-                          <strong>
-                            {a.profile.name}{" "}
-                            <span className="small-badge premium-badge">
-                              {t("accounts.premium")}
-                            </span>
-                          </strong>
-                          <small>
-                            Microsoft ·{" "}
-                            {a.remembered
-                              ? t("accounts.remembered")
-                              : t("accounts.session")}
-                          </small>
-                        </div>
-                        {a.profile.id === data.auth.selected && (
-                          <Check size={18} />
+                  ) : screen === "home" ? (
+                    <>
+                      {tab === "launch" &&
+                        processInRoot &&
+                        data.status.stage === "error" && (
+                          <button
+                            className="error-banner"
+                            onClick={() => {
+                              setTab("settings");
+                              setSettingsPage("logs");
+                            }}
+                          >
+                            <TriangleAlert size={18} />
+                            <span>{data.status.message}</span>
+                            <ChevronRight size={18} />
+                          </button>
                         )}
-                      </button>
-                      <button
-                        className="icon-button"
-                        title={t("accounts.remove")}
-                        aria-label={t("accounts.remove") + " " + a.profile.name}
-                        disabled={
-                          !native || authWorking || authenticating || busy
-                        }
-                        onClick={() =>
-                          authAction("auth_remove", { id: a.profile.id })
-                        }
-                      >
-                        <X size={17} />
-                      </button>
-                    </div>
+                      {tab === "launch" && launcherMedia.homeUi}
+                      {tab === "launch" && launcherDiscovery.announcementUi}
+                      {tab === "settings" &&
+                        (["launch", "java"].includes(settingsPage) ? (
+                          <SettingsPanel
+                            section={settingsPage}
+                            settings={data.settings}
+                            key={rootKey}
+                            api={rootApi}
+                            native={native}
+                            onSave={save}
+                            onRefresh={load}
+                            disabled={
+                              !!busy ||
+                              downloadBusy ||
+                              resourceBusy ||
+                              rootWorking ||
+                              instanceRecoveryBlocked
+                            }
+                            onInstances={instanceSettings}
+                            showInstanceSettings={
+                              !launcher.isHidden("feature.instance_management")
+                            }
+                            launcherPreferences={launcher.view}
+                            onLauncherPatch={launcher.patch}
+                            launcherBusy={launcher.busy}
+                            exitAfterLaunchAvailable={native}
+                            onNotify={notify}
+                          />
+                        ) : (
+                          <ExtraSettings
+                            key={`${rootKey}:${settingsPage}`}
+                            section={settingsPage}
+                            settings={data.settings}
+                            api={rootApi}
+                            onOpen={open}
+                            onNotify={notify}
+                            preferences={launcher.view}
+                            onPatch={launcher.patch}
+                            preferenceBusy={launcher.busy}
+                            supportedEffects={[
+                              ...launcher.effects,
+                              ...launcherMedia.effects,
+                              ...launcherLocal.effects,
+                              ...launcherUpdates.effects,
+                              ...launcherDiscovery.effects,
+                            ]}
+                            onLauncherAction={(action) =>
+                              launcherMedia.handles(action)
+                                ? launcherMedia.action(action)
+                                : launcherLocal.handles(action)
+                                  ? launcherLocal.action(action)
+                                  : launcher.action(action)
+                            }
+                            revealHidden={launcher.revealed}
+                            fontFamilies={launcherMedia.fonts}
+                            native={native}
+                          />
+                        ))}
+                      {tab === "tools" && (
+                        <Toolbox
+                          onOpen={open}
+                          api={api}
+                          onTaskStart={showInstanceTask}
+                          native={native}
+                          busy={launcher.busy}
+                          onTool={launcherLocal.tool}
+                        />
+                      )}
+                    </>
+                  ) : null}
+                </div>
+              </main>
+            </div>
+          )}
+          {!["idle", "cancelled"].includes(downloadStatus.stage) &&
+            screen !== "tasks" && (
+              <button
+                className="ce-task-entry"
+                title={t("main.tasks")}
+                aria-label={t("main.tasks")}
+                onClick={showTasks}
+              >
+                <Download size={23} />
+              </button>
+            )}
+          {data &&
+            instanceImport &&
+            instanceImport.rootKey === rootKey &&
+            screen === "versions" &&
+            instanceImport.epoch === taskNavigation.current.epoch && (
+              <InstanceImport
+                key={`${instanceImport.rootKey}:${instanceImport.epoch}`}
+                api={rootApi}
+                scopeKey={rootId || data.settings.root}
+                native={native}
+                disabled={
+                  archiveAdmission.current.blocked ||
+                  !archiveAdmission.current.rootAvailable
+                }
+                occupiedNames={data.instances.map((instance) => instance.id)}
+                onTaskStart={showInstanceTask}
+                onNotify={notify}
+                onClose={() =>
+                  setInstanceImport((current) =>
+                    current === instanceImport ? null : current,
+                  )
+                }
+              />
+            )}
+          {rootMenu && menuRoot && (
+            <div
+              className="ce-root-menu"
+              role="menu"
+              aria-label={t("folders.manageNamed", { name: menuRoot.name })}
+              style={{ left: rootMenu.x, top: rootMenu.y }}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <button
+                role="menuitem"
+                onClick={() => editRoot(menuRoot, "rename")}
+              >
+                <Pencil size={16} />
+                {t("folders.rename")}
+              </button>
+              <button
+                role="menuitem"
+                disabled={rootWorking || menuRootIndex <= 0}
+                onClick={() =>
+                  void rootAction("root_update", {
+                    id: menuRoot.id,
+                    position: menuRootIndex - 1,
+                  })
+                }
+              >
+                <ArrowUp size={16} />
+                {t("folders.up")}
+              </button>
+              <button
+                role="menuitem"
+                disabled={
+                  rootWorking || menuRootIndex >= (data?.roots?.length || 0) - 1
+                }
+                onClick={() =>
+                  void rootAction("root_update", {
+                    id: menuRoot.id,
+                    position: menuRootIndex + 1,
+                  })
+                }
+              >
+                <ArrowDown size={16} />
+                {t("folders.down")}
+              </button>
+              <button
+                role="menuitem"
+                disabled={
+                  rootWorking ||
+                  (data?.roots?.length || 0) <= 1 ||
+                  menuRootOccupied
+                }
+                title={menuRootOccupied ? t("folders.occupied") : undefined}
+                onClick={() => editRoot(menuRoot, "remove")}
+              >
+                <X size={16} />
+                {t("folders.remove")}
+              </button>
+            </div>
+          )}
+          {rootDialog && (
+            <div
+              className="modal-shade rd-name-shade"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget && !rootWorking)
+                  setRootDialog(null);
+              }}
+            >
+              <form
+                className="rd-name-dialog ce-root-dialog"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="ce-root-dialog-title"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (rootDialog.mode === "rename" && !rootName.trim()) {
+                    setRootError(t("folders.nameRequired"));
+                    return;
+                  }
+                  void rootAction(
+                    rootDialog.mode === "rename"
+                      ? "root_update"
+                      : "root_remove",
+                    rootDialog.mode === "rename"
+                      ? { id: rootDialog.root.id, name: rootName.trim() }
+                      : { id: rootDialog.root.id },
+                  );
+                }}
+              >
+                <h2 id="ce-root-dialog-title">
+                  {rootDialog.mode === "rename"
+                    ? t("folders.renameFolder")
+                    : t("folders.remove")}
+                </h2>
+                {rootDialog.mode === "rename" ? (
+                  <input
+                    className="ce-field"
+                    aria-label={t("folders.name")}
+                    value={rootName}
+                    maxLength={128}
+                    disabled={rootWorking}
+                    onChange={(event) => setRootName(event.target.value)}
+                  />
+                ) : (
+                  <p>
+                    {t("folders.removeHelp", { name: rootDialog.root.name })}
+                  </p>
+                )}
+                {rootError && (
+                  <p className="rd-name-error" role="alert">
+                    {rootError}
+                  </p>
+                )}
+                <div className="rd-name-actions">
+                  <button
+                    className="ce-button"
+                    type="submit"
+                    disabled={rootWorking}
+                  >
+                    {rootWorking
+                      ? t("main.saving")
+                      : rootDialog.mode === "rename"
+                        ? t("main.confirm")
+                        : t("main.remove")}
+                  </button>
+                  <button
+                    className="ce-button"
+                    type="button"
+                    disabled={rootWorking}
+                    onClick={() => setRootDialog(null)}
+                  >
+                    {t("common.cancel")}
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+          {dialog === "account-type" && (
+            <div
+              className="modal-shade"
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget) setDialog(null);
+              }}
+            >
+              <section
+                className="ce-account-type-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-label={t("accounts.chooseType")}
+              >
+                <h2>{t("accounts.chooseType")}</h2>
+                <div className="ce-account-types">
+                  {[
+                    {
+                      id: "premium",
+                      name: t("accounts.microsoftAuth"),
+                      icon: ShieldCheck,
+                    },
+                    {
+                      id: "third-party",
+                      name: t("accounts.thirdParty"),
+                      icon: Network,
+                    },
+                    {
+                      id: "offline",
+                      name: t("accounts.offlineAuth"),
+                      icon: Unplug,
+                    },
+                  ].map((item) => (
+                    <button
+                      key={item.id}
+                      className={accountType === item.id ? "selected" : ""}
+                      disabled={item.id === "third-party"}
+                      title={
+                        item.id === "third-party"
+                          ? t("accounts.thirdPartyUnavailable")
+                          : undefined
+                      }
+                      onClick={() => setAccountType(item.id)}
+                    >
+                      <item.icon size={24} />
+                      <span>{item.name}</span>
+                    </button>
                   ))}
-                  <div className="auth-section">
-                    <h3>{t("accounts.addMicrosoft")}</h3>
-                    <p className="muted">{t("accounts.microsoftHelp")}</p>
-                    {!data.auth.client_id && (
-                      <div className="auth-notice">
-                        {t("accounts.unconfigured")}
+                </div>
+                <div className="ce-account-type-footer">
+                  <button
+                    className="ce-button"
+                    disabled={!accountType}
+                    onClick={() => setDialog("accounts")}
+                  >
+                    {t("main.continue")}
+                  </button>
+                  <button className="ce-button" onClick={() => setDialog(null)}>
+                    {t("common.cancel")}
+                  </button>
+                </div>
+              </section>
+            </div>
+          )}
+          {dialog === "accounts" && data && (
+            <div
+              className="modal-shade"
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget) setDialog(null);
+              }}
+            >
+              <section
+                className="modal"
+                role="dialog"
+                aria-modal="true"
+                aria-label={t("accounts.manage")}
+              >
+                <div className="modal-heading">
+                  <h2>{t("accounts.manage")}</h2>
+                  <button
+                    aria-label={t("main.closeDialog")}
+                    className="icon-button"
+                    onClick={() => setDialog(null)}
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+                {dialog === "accounts" ? (
+                  <div className="account-dialog">
+                    <p className="muted">{t("accounts.chooseIdentity")}</p>
+                    <label className="ce-row">
+                      <span>{t("accounts.offlineName")}</span>
+                      <input
+                        className="ce-field"
+                        value={data.settings.player}
+                        disabled={!!busy}
+                        onChange={(e) => setPlayer(e.target.value)}
+                        onBlur={() =>
+                          save(data.settings).catch((e) => notify(String(e)))
+                        }
+                      />
+                    </label>
+                    {busy && (
+                      <div className="auth-notice" role="status">
+                        {t("accounts.busy")}
                       </div>
                     )}
-                    <label className="remember-login">
-                      <input
-                        type="checkbox"
-                        checked={remember}
-                        onChange={(e) => setRemember(e.target.checked)}
-                        disabled={authWorking || authenticating}
-                      />
-                      {t("accounts.remember")}
-                    </label>
-                    {data.auth.challenge ? (
-                      <div className="device-login">
-                        <span>{t("accounts.deviceCode")}</span>
-                        <strong className="device-code">
-                          {data.auth.challenge.user_code}
+                    <button
+                      className={
+                        "version-row " + (!data.auth.selected ? "chosen" : "")
+                      }
+                      disabled={
+                        !native || authWorking || authenticating || busy
+                      }
+                      onClick={() => authAction("auth_select", { id: null })}
+                    >
+                      <UserRound size={23} />
+                      <div>
+                        <strong>
+                          {t("accounts.offlinePrefix")}
+                          {data.settings.player}
                         </strong>
-                        <p>
-                          {t("accounts.codeExpiry", {
-                            minutes: formatNumber(
-                              Math.ceil(data.auth.challenge.expires_in / 60),
-                            ),
-                          })}
-                        </p>
+                        <small>{t("accounts.offlineServers")}</small>
+                      </div>
+                      {!data.auth.selected && <Check size={18} />}
+                    </button>
+                    {data.auth.accounts.map((a) => (
+                      <div className="saved-account" key={a.profile.id}>
+                        <button
+                          className={
+                            "version-row " +
+                            (a.profile.id === data.auth.selected
+                              ? "chosen"
+                              : "")
+                          }
+                          disabled={
+                            !native || authWorking || authenticating || busy
+                          }
+                          onClick={() =>
+                            authAction("auth_select", { id: a.profile.id })
+                          }
+                        >
+                          <UserRound size={23} />
+                          <div>
+                            <strong>
+                              {a.profile.name}{" "}
+                              <span className="small-badge premium-badge">
+                                {t("accounts.premium")}
+                              </span>
+                            </strong>
+                            <small>
+                              Microsoft ·{" "}
+                              {a.remembered
+                                ? t("accounts.remembered")
+                                : t("accounts.session")}
+                            </small>
+                          </div>
+                          {a.profile.id === data.auth.selected && (
+                            <Check size={18} />
+                          )}
+                        </button>
+                        <button
+                          className="icon-button"
+                          title={t("accounts.remove")}
+                          aria-label={
+                            t("accounts.remove") + " " + a.profile.name
+                          }
+                          disabled={
+                            !native || authWorking || authenticating || busy
+                          }
+                          onClick={() =>
+                            authAction("auth_remove", { id: a.profile.id })
+                          }
+                        >
+                          <X size={17} />
+                        </button>
+                      </div>
+                    ))}
+                    <div className="auth-section">
+                      <h3>{t("accounts.addMicrosoft")}</h3>
+                      <p className="muted">{t("accounts.microsoftHelp")}</p>
+                      {!data.auth.client_id && (
+                        <div className="auth-notice">
+                          {t("accounts.unconfigured")}
+                        </div>
+                      )}
+                      <label className="remember-login">
+                        <input
+                          type="checkbox"
+                          checked={remember}
+                          onChange={(e) => setRemember(e.target.checked)}
+                          disabled={authWorking || authenticating}
+                        />
+                        {t("accounts.remember")}
+                      </label>
+                      {data.auth.challenge ? (
+                        <div className="device-login">
+                          <span>{t("accounts.deviceCode")}</span>
+                          <strong className="device-code">
+                            {data.auth.challenge.user_code}
+                          </strong>
+                          <p>
+                            {t("accounts.codeExpiry", {
+                              minutes: formatNumber(
+                                Math.ceil(data.auth.challenge.expires_in / 60),
+                              ),
+                            })}
+                          </p>
+                          <div className="toolbar">
+                            <button
+                              className="btn primary"
+                              disabled={!native || authWorking}
+                              onClick={() => authAction("auth_open_browser")}
+                            >
+                              <ExternalLink size={15} />
+                              {t("accounts.browser")}
+                            </button>
+                            <button
+                              className="btn"
+                              disabled={!native || authWorking}
+                              onClick={() => authAction("auth_cancel")}
+                            >
+                              {t("accounts.cancel")}
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
                         <div className="toolbar">
                           <button
                             className="btn primary"
-                            disabled={!native || authWorking}
-                            onClick={() => authAction("auth_open_browser")}
+                            disabled={
+                              !native ||
+                              !data.auth.client_id ||
+                              authWorking ||
+                              authenticating ||
+                              busy
+                            }
+                            onClick={() =>
+                              authAction("auth_start", { remember })
+                            }
                           >
-                            <ExternalLink size={15} />
-                            {t("accounts.browser")}
+                            {authenticating || authWorking ? (
+                              <LoaderCircle size={15} className="spin" />
+                            ) : (
+                              <UserRound size={15} />
+                            )}
+                            {t("accounts.signIn")}
                           </button>
-                          <button
-                            className="btn"
-                            disabled={!native || authWorking}
-                            onClick={() => authAction("auth_cancel")}
-                          >
-                            {t("accounts.cancel")}
-                          </button>
+                          {authenticating && (
+                            <button
+                              className="btn"
+                              disabled={!native || authWorking}
+                              onClick={() => authAction("auth_cancel")}
+                            >
+                              {t("accounts.cancel")}
+                            </button>
+                          )}
                         </div>
-                      </div>
-                    ) : (
+                      )}
+                      {data.auth.message && (
+                        <div
+                          role="status"
+                          className={
+                            "auth-progress " +
+                            (data.auth.stage === "error" ? "auth-error" : "")
+                          }
+                        >
+                          {authenticating && (
+                            <LoaderCircle size={15} className="spin" />
+                          )}
+                          {data.auth.message}
+                        </div>
+                      )}
+                      {data.auth.warning && (
+                        <div className="auth-notice" role="status">
+                          {data.auth.warning}
+                        </div>
+                      )}
+                      {authError && (
+                        <p className="auth-error" role="alert">
+                          {authError}
+                        </p>
+                      )}
+                      {!native && (
+                        <p className="muted">{t("accounts.preview")}</p>
+                      )}
+                    </div>
+                    <details className="auth-settings">
+                      <summary>{t("accounts.appRegistration")}</summary>
+                      <p className="muted">{t("accounts.clientHelp")}</p>
+                      <label className="field-label" htmlFor="auth-client-id">
+                        {t("accounts.clientId")}
+                      </label>
+                      <input
+                        id="auth-client-id"
+                        className="field"
+                        value={clientId}
+                        onChange={(e) => setClientId(e.target.value)}
+                        placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                        spellCheck={false}
+                        disabled={authWorking || authenticating}
+                      />
                       <div className="toolbar">
                         <button
-                          className="btn primary"
+                          className="btn compact primary"
                           disabled={
                             !native ||
-                            !data.auth.client_id ||
                             authWorking ||
                             authenticating ||
-                            busy
+                            busy ||
+                            !clientId.trim()
                           }
-                          onClick={() => authAction("auth_start", { remember })}
+                          onClick={() =>
+                            authAction("auth_configure", {
+                              clientId: clientId.trim(),
+                            })
+                          }
                         >
-                          {authenticating || authWorking ? (
-                            <LoaderCircle size={15} className="spin" />
-                          ) : (
-                            <UserRound size={15} />
-                          )}
-                          {t("accounts.signIn")}
+                          <Check size={14} />
+                          {t("accounts.saveClient")}
                         </button>
-                        {authenticating && (
-                          <button
-                            className="btn"
-                            disabled={!native || authWorking}
-                            onClick={() => authAction("auth_cancel")}
-                          >
-                            {t("accounts.cancel")}
-                          </button>
-                        )}
+                        <button
+                          className="btn compact"
+                          disabled={!native}
+                          onClick={() =>
+                            authAction("auth_open_help", { kind: "register" })
+                          }
+                        >
+                          <ExternalLink size={14} />
+                          {t("accounts.register")}
+                        </button>
+                        <button
+                          className="btn compact"
+                          disabled={!native}
+                          onClick={() =>
+                            authAction("auth_open_help", { kind: "tenant" })
+                          }
+                        >
+                          <ExternalLink size={14} />
+                          {t("accounts.azure")}
+                        </button>
+                        <button
+                          className="btn compact"
+                          disabled={!native}
+                          onClick={() =>
+                            authAction("auth_open_help", { kind: "review" })
+                          }
+                        >
+                          <ExternalLink size={14} />
+                          {t("accounts.review")}
+                        </button>
                       </div>
-                    )}
-                    {data.auth.message && (
-                      <div
-                        role="status"
-                        className={
-                          "auth-progress " +
-                          (data.auth.stage === "error" ? "auth-error" : "")
-                        }
-                      >
-                        {authenticating && (
-                          <LoaderCircle size={15} className="spin" />
-                        )}
-                        {data.auth.message}
-                      </div>
-                    )}
-                    {data.auth.warning && (
-                      <div className="auth-notice" role="status">
-                        {data.auth.warning}
-                      </div>
-                    )}
-                    {authError && (
-                      <p className="auth-error" role="alert">
-                        {authError}
-                      </p>
-                    )}
-                    {!native && (
-                      <p className="muted">{t("accounts.preview")}</p>
-                    )}
+                    </details>
                   </div>
-                  <details className="auth-settings">
-                    <summary>{t("accounts.appRegistration")}</summary>
-                    <p className="muted">{t("accounts.clientHelp")}</p>
-                    <label className="field-label" htmlFor="auth-client-id">
-                      {t("accounts.clientId")}
-                    </label>
-                    <input
-                      id="auth-client-id"
-                      className="field"
-                      value={clientId}
-                      onChange={(e) => setClientId(e.target.value)}
-                      placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                      spellCheck={false}
-                      disabled={authWorking || authenticating}
-                    />
-                    <div className="toolbar">
-                      <button
-                        className="btn compact primary"
-                        disabled={
-                          !native ||
-                          authWorking ||
-                          authenticating ||
-                          busy ||
-                          !clientId.trim()
-                        }
-                        onClick={() =>
-                          authAction("auth_configure", {
-                            clientId: clientId.trim(),
-                          })
-                        }
-                      >
-                        <Check size={14} />
-                        {t("accounts.saveClient")}
-                      </button>
-                      <button
-                        className="btn compact"
-                        disabled={!native}
-                        onClick={() =>
-                          authAction("auth_open_help", { kind: "register" })
-                        }
-                      >
-                        <ExternalLink size={14} />
-                        {t("accounts.register")}
-                      </button>
-                      <button
-                        className="btn compact"
-                        disabled={!native}
-                        onClick={() =>
-                          authAction("auth_open_help", { kind: "tenant" })
-                        }
-                      >
-                        <ExternalLink size={14} />
-                        {t("accounts.azure")}
-                      </button>
-                      <button
-                        className="btn compact"
-                        disabled={!native}
-                        onClick={() =>
-                          authAction("auth_open_help", { kind: "review" })
-                        }
-                      >
-                        <ExternalLink size={14} />
-                        {t("accounts.review")}
-                      </button>
-                    </div>
-                  </details>
-                </div>
-              ) : null}
-            </section>
-          </div>
-        )}
-        {launcher.confirmationUi}
-        {launcherLocal.ui}
-        {toast && (
-          <div className="toast" role="status">
-            <Info size={17} />
-            <span>{toast}</span>
-            <button
-              aria-label={t("ui.closeNotice")}
-              onClick={() => setToast("")}
-            >
-              <X size={15} />
-            </button>
-          </div>
-        )}
-      </div>
-    </LauncherNavigationContext.Provider>
+                ) : null}
+              </section>
+            </div>
+          )}
+          {launcher.confirmationUi}
+          {launcherLocal.ui}
+          {toast && (
+            <div className="toast" role="status">
+              <Info size={17} />
+              <span>{toast}</span>
+              <button
+                aria-label={t("ui.closeNotice")}
+                onClick={() => setToast("")}
+              >
+                <X size={15} />
+              </button>
+            </div>
+          )}
+        </div>
+      </LauncherNavigationContext.Provider>
+    </LauncherFavoritesContext.Provider>
   );
 }
 createRoot(document.getElementById("root")!).render(<App />);

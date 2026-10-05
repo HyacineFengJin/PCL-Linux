@@ -381,3 +381,121 @@ fn oversized_or_unknown_wire_requests_exit_without_creating_marker() {
         assert!(!f.0.join("project/.pcl-rust").exists());
     }
 }
+
+#[test]
+fn marker_phase_exchange_during_fd_capture_and_final_recheck_reads_fresh_state() {
+    use std::os::unix::process::CommandExt;
+    for point in [state::ReadPoint::Opened, state::ReadPoint::BeforeRecheck] {
+        let f = Fixture::new();
+        let project = f.0.join("project");
+        let root = f.0.join("root");
+        let mut session = state::Session::start(
+            &project,
+            "root-generic".into(),
+            root.clone(),
+            root.join(".pcl-linux/logs/generic.log"),
+        )
+        .unwrap();
+        // Only an independent process identity is needed here. A stable system
+        // executable avoids ETXTBSY when parallel forks inherit a fixture writer
+        // FD while another test creates its temporary script.
+        let mut child = std::process::Command::new("/usr/bin/sleep")
+            .arg("3")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        session.spawned(child.id()).unwrap();
+        let running = read_status(&project).unwrap().unwrap();
+        let mut exchanged = false;
+        let ended = state::read_status_observed(&project, &mut |reached| {
+            if reached == point && !exchanged {
+                exchanged = true;
+                process::kill_owned(&mut child);
+                session.finished(true, Some(0)).unwrap();
+            }
+        })
+        .unwrap()
+        .unwrap();
+        assert!(exchanged);
+        assert_eq!(ended.phase, "exited");
+        assert_eq!(ended.exit_code, Some(0));
+        assert_eq!(ended.session_id, running.session_id);
+        assert_eq!(ended.pid, running.pid);
+        assert_eq!(ended.root_id, running.root_id);
+        assert_eq!(ended.log_path, running.log_path);
+        assert_ne!(ended.revision, running.revision);
+        assert!(!ended.game_running);
+    }
+}
+
+#[test]
+fn marker_retry_does_not_hide_inplace_unknown_different_session_or_binding_edits() {
+    use std::os::unix::process::CommandExt;
+    for case in 0..5 {
+        let f = Fixture::new();
+        let project = f.0.join("project");
+        let root = f.0.join("root");
+        let _session = state::Session::start(
+            &project,
+            "root-generic".into(),
+            root.clone(),
+            root.join(".pcl-linux/logs/generic.log"),
+        )
+        .unwrap();
+        let path = project.join(".pcl-rust/game-monitor/active.json");
+        let mut replacement: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        replacement["phase"] = "failed".into();
+        let mut other = std::process::Command::new("/usr/bin/sleep")
+            .arg("3")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        if case == 2 {
+            replacement["monitor"] =
+                serde_json::to_value(process::identity(other.id()).unwrap().unwrap()).unwrap();
+        }
+        if case == 3 {
+            replacement["root_id"] = "different-root".into();
+        }
+        if case == 4 {
+            replacement["phase"] = "starting".into();
+        }
+        let bytes = if case == 1 {
+            b"unknown retained content".to_vec()
+        } else {
+            serde_json::to_vec(&replacement).unwrap()
+        };
+        let mut changed = false;
+        let result = state::read_status_observed(&project, &mut |point| {
+            if point == state::ReadPoint::BeforeRecheck && !changed {
+                changed = true;
+                if case == 0 {
+                    // Same-inode edits can resemble a valid phase transition;
+                    // only the helper's fresh-inode publication may be retried.
+                    fs::write(&path, &bytes).unwrap();
+                } else {
+                    let stage = path.with_file_name("foreign-stage.json");
+                    fs::write(&stage, &bytes).unwrap();
+                    fs::rename(stage, &path).unwrap();
+                }
+            }
+        });
+        process::kill_owned(&mut other);
+        assert!(changed && result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn marker_absence_under_owned_lifetime_lock_stays_conservatively_busy() {
+    let f = Fixture::new();
+    let project = f.0.join("project");
+    let scope = crate::launcher_local::filesystem::Scope::create(&project, "game-monitor").unwrap();
+    let folder = scope.folder.as_ref().unwrap();
+    let guard = folder.lock(".monitor.lock").unwrap();
+    assert!(read_status(&project).is_err());
+    assert!(!scope.path().join("active.json").exists());
+    drop(guard);
+    assert!(read_status(&project).unwrap().is_none());
+}

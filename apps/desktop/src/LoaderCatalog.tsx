@@ -6,40 +6,13 @@ import {
   FlaskConical,
   Gauge,
   ScrollText,
-  Settings,
 } from "lucide-react";
 import type { Api } from "./types";
 import { Collapse } from "./Collapse";
 import forge from "./assets/game-icons/forge.png";
 import grass from "./assets/game-icons/grass.png";
 import neoForge from "./assets/game-icons/neoforge.png";
-export function Favorites() {
-  return (
-    <div className="ce-state-stage ce-favorites-empty">
-      <div className="ce-card ce-favorites-toolbar">
-        <select
-          className="ce-field"
-          disabled
-          title={t("favorites.unavailable")}
-        >
-          <option>{t("common.default")}</option>
-        </select>
-        <button
-          className="icon-button"
-          disabled
-          title={t("favorites.unavailable")}
-          aria-label={t("favorites.settings")}
-        >
-          <Settings size={16} />
-        </button>
-      </div>
-      <section className="ce-card ce-state-box">
-        <h2>{t("favorites.empty")}</h2>
-        <p>{t("favorites.help")}</p>
-      </section>
-    </div>
-  );
-}
+export { Favorites } from "./LauncherFavorites";
 type Group = { minecraft: string; versions: string[]; labelKey?: MessageKey };
 type VersionEntry = { id: string; kind: string; release_time: string };
 export const installerPages = [

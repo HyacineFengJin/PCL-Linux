@@ -1,6 +1,7 @@
 import { t, formatNumber } from "./i18n";
 import { createContext, useEffect, useRef, useState } from "react";
 import type { Api } from "./types";
+import type { ResourceBrowseRequest } from "./resourceBrowse";
 import {
   defaultLauncherPreferenceView,
   type LauncherPreferenceView,
@@ -17,6 +18,7 @@ export const LauncherNavigationContext = createContext({
   isHidden: (_id: LauncherMenuId): boolean => false,
   modDisplayStyle: "metadata" as "metadata" | "file_name",
   standaloneSaveAvailable: false,
+  browseResources: null as ((request: ResourceBrowseRequest) => void) | null,
 });
 const effects: readonly LauncherEffect[] = [
   "appearance",

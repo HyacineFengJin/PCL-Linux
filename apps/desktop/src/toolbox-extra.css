@@ -61,3 +61,18 @@
     grid-template-columns: 96px minmax(0, 1fr);
   }
 }
+
+.toolbox-image-preview {
+  margin: 12px 0;
+  text-align: center;
+}
+.toolbox-image-preview img {
+  max-width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+}
+.toolbox-image-preview figcaption {
+  margin-top: 8px;
+  color: var(--ce-muted-text);
+  font-size: 12px;
+}

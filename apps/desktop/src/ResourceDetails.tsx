@@ -17,6 +17,7 @@ import { Collapse } from "./Collapse";
 import type { Api, Instance } from "./types";
 import { ResourceInstall } from "./ResourceInstall";
 import { ResourceSave } from "./ResourceSave";
+import { ResourceFavorite } from "./LauncherFavorites";
 import { LauncherNavigationContext } from "./useLauncherPreferences";
 import type { ResourceInstallRequest } from "./resourceInstallPlan";
 import "./resource-details.css";
@@ -787,10 +788,16 @@ export function ResourceDetails({
             <Languages size={15} />
             {t("resource.translate")}
           </button>
-          <button onClick={() => onNotify(t("resource.favoriteUnavailable"))}>
-            <Heart size={15} />
-            {t("resource.favorite")}
-          </button>
+          <ResourceFavorite
+            projectId={project?.project_id || resource.project_id}
+            supported={
+              modrinth &&
+              ["mod", "resourcepack", "shader", "modpack"].includes(
+                project?.project_type || resource.project_type || "",
+              )
+            }
+            contextKey={contextKey}
+          />
         </div>
       </section>
       {local ? (

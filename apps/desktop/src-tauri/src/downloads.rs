@@ -118,6 +118,7 @@ impl Downloads {
                 | TaskKind::InstanceRestore
                 | TaskKind::ResourceDownload
                 | TaskKind::ResourceSave
+                | TaskKind::ToolboxDownload
                 | TaskKind::ResourceUpdate
                 | TaskKind::ResourceUpdateRestore
                 | TaskKind::LauncherLogs
@@ -294,6 +295,7 @@ mod tests {
             TaskKind::InstanceRestore,
             TaskKind::ResourceDownload,
             TaskKind::ResourceSave,
+            TaskKind::ToolboxDownload,
             TaskKind::ResourceUpdate,
             TaskKind::ResourceUpdateRestore,
             TaskKind::LauncherLogs,

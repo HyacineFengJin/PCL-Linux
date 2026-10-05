@@ -2912,6 +2912,7 @@ dependencies = [
  "pcl-core",
  "pcl-install",
  "pcl-network",
+ "png 0.17.16",
  "reqwest 0.12.28",
  "semver",
  "serde",

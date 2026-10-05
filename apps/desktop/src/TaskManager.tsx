@@ -12,29 +12,31 @@ import type { DownloadStatus, DownloadStep } from "./DownloadPanel";
 import type { Api } from "./types";
 import "./task-manager.css";
 export function instanceTaskAction(kind: DownloadStatus["kind"]) {
-  return kind === "resource_save"
-    ? t("task.resourceSave")
-    : kind === "launcher_logs"
-      ? t("task.launcherLogs")
-      : kind === "instance_reset"
-        ? t("ui.reset")
-        : kind === "instance_export"
-          ? t("nav.export")
-          : kind === "instance_rename"
-            ? t("ui.rename")
-            : kind === "instance_import"
-              ? t("ui.import")
-              : kind === "instance_delete"
-                ? t("ui.delete")
-                : kind === "instance_restore"
-                  ? t("ui.restore")
-                  : kind === "resource_update_restore"
-                    ? t("task.modRestore")
-                    : kind === "resource_update"
-                      ? t("nav.modUpdates")
-                      : kind === "resource_download"
-                        ? t("task.resourceInstall")
-                        : t("ui.install");
+  return kind === "toolbox_download"
+    ? t("task.toolboxDownload")
+    : kind === "resource_save"
+      ? t("task.resourceSave")
+      : kind === "launcher_logs"
+        ? t("task.launcherLogs")
+        : kind === "instance_reset"
+          ? t("ui.reset")
+          : kind === "instance_export"
+            ? t("nav.export")
+            : kind === "instance_rename"
+              ? t("ui.rename")
+              : kind === "instance_import"
+                ? t("ui.import")
+                : kind === "instance_delete"
+                  ? t("ui.delete")
+                  : kind === "instance_restore"
+                    ? t("ui.restore")
+                    : kind === "resource_update_restore"
+                      ? t("task.modRestore")
+                      : kind === "resource_update"
+                        ? t("nav.modUpdates")
+                        : kind === "resource_download"
+                          ? t("task.resourceInstall")
+                          : t("ui.install");
 }
 export function useDownloadSpeed(status: DownloadStatus) {
   const sample = useRef<{
@@ -249,7 +251,7 @@ export function TaskManager({
           t("task.downloadVerify"),
           t("task.savePublish"),
         ]
-      : status.kind === "launcher_logs"
+      : status.kind === "launcher_logs" || status.kind === "toolbox_download"
         ? []
         : status.kind === "instance_import"
           ? [
@@ -368,7 +370,8 @@ export function TaskManager({
       <div className="ce-task-heading">
         <strong
           title={
-            status.root_path
+            status.root_path &&
+            !["resource_save", "toolbox_download"].includes(status.kind || "")
               ? t("task.root", { path: status.root_path })
               : undefined
           }

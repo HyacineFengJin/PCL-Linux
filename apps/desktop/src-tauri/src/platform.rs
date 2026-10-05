@@ -99,6 +99,15 @@ impl Desktop {
                 "",
             ),
             "home_file" => ("选择主页文件", false, "json", vec!["json"], ""),
+            "skin_file" => ("选择本地皮肤", false, "png", vec!["png"], ""),
+            "export_tool_image" => ("保存图片", true, "png", vec!["png"], "image.png"),
+            "export_resource_info" => (
+                "导出资源信息",
+                true,
+                "json",
+                vec!["json"],
+                "resource-info.json",
+            ),
             _ => return Err("未知启动器文件操作".into()),
         };
         if self.choosing.swap(true, Ordering::SeqCst) {
@@ -141,10 +150,11 @@ impl Desktop {
                         if save && path.extension().is_none() {
                             path.set_extension(extension);
                         }
-                        if !extensions
-                            .iter()
-                            .any(|ext| path.extension().and_then(|v| v.to_str()) == Some(*ext))
-                        {
+                        if !extensions.iter().any(|ext| {
+                            path.extension()
+                                .and_then(|v| v.to_str())
+                                .is_some_and(|value| value.eq_ignore_ascii_case(ext))
+                        }) {
                             return ResourceChoice::unavailable("请选择支持的文件格式");
                         }
                         ResourceChoice {
@@ -448,6 +458,53 @@ impl Desktop {
 }
 
 impl Desktop {
+    /// A selected download folder is independent of registered game roots.
+    /// The owning service captures its descriptor and validates its identity.
+    pub async fn choose_toolbox_directory(
+        self: &Arc<Self>,
+        window: tauri::WebviewWindow,
+        initial: PathBuf,
+    ) -> Result<ResourceChoice, String> {
+        if self.choosing.swap(true, Ordering::SeqCst) {
+            return Err("已有文件选择窗口，请先完成或取消选择".into());
+        }
+        let guard = ChoosingGuard(self.clone());
+        #[cfg(target_os = "linux")]
+        if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
+            return Ok(ResourceChoice::unavailable(
+                "无法连接桌面文件选择服务，请在桌面会话中运行启动器",
+            ));
+        }
+        let mut picker = window
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .set_title("选择下载保存文件夹");
+        if initial.is_dir() {
+            picker = picker.set_directory(initial);
+        }
+        Ok(tauri::async_runtime::spawn_blocking(move || {
+            let _guard = guard;
+            match picker.blocking_pick_folder() {
+                None => ResourceChoice {
+                    status: "cancelled",
+                    paths: Vec::new(),
+                    message: None,
+                },
+                Some(file) => match file.into_path() {
+                    Ok(path) if path.is_absolute() && path.to_str().is_some() => ResourceChoice {
+                        status: "selected",
+                        paths: vec![path],
+                        message: None,
+                    },
+                    _ => ResourceChoice::unavailable("请选择可访问的本地文件夹"),
+                },
+            }
+        })
+        .await
+        .unwrap_or_else(|_| ResourceChoice::unavailable("桌面文件夹选择服务未能完成请求")))
+    }
+
     /// Resource saves use their authoritative suggested filename. A picker
     /// result grants a proposed destination, not permission to overwrite it.
     pub async fn choose_resource_save(

@@ -303,7 +303,7 @@ const messages = {
   "updateValidation.planMissing": "更新计划缺少所选文件，请重新检查",
   "updateValidation.planSize": "更新计划的文件大小或复用状态无效，请重新检查",
   "manage.transferPolicyHelp":
-    "设置只应用于新下载任务，正在进行的任务保留原策略。速度上限为所有下载文件的总 MiB/s，0 表示不限速；HTTP 元数据不计入文件带宽。",
+    "设置只应用于新下载任务（含工具箱下载），正在进行的任务保留原策略。速度上限为所有下载文件的总 MiB/s，0 表示不限速；HTTP 元数据不计入文件带宽。",
   "discovery.announcements": "项目公告",
   "discovery.releaseHelp":
     "显示本项目公开发布信息；仅重要公告显示正式版。公告正文保留发布者原文。",
@@ -344,5 +344,62 @@ const messages = {
   "save.noOverwrite": "不会覆盖已有文件。取消此确认不会提交下载任务。",
   "save.selectionChanged": "保存计划与当前选中文件不一致，请重新选择。",
   "save.missingTask": "保存服务未返回任务编号",
+  "favorites.folder": "收藏夹",
+  "favorites.settings": "收藏夹设置",
+  "favorites.loading": "正在读取收藏…",
+  "favorites.empty": "收藏夹为空",
+  "favorites.help": "在社区资源详情页选择收藏，可保存到此列表。",
+  "favorites.type.mod": "模组",
+  "favorites.type.resourcepack": "资源包",
+  "favorites.type.shader": "光影",
+  "favorites.type.modpack": "整合包",
+  "favorites.renameFolder": "重命名收藏夹",
+  "favorites.createFolder": "新建收藏夹",
+  "favorites.removeFolder": "删除收藏夹",
+  "favorites.folderNotEmpty": "请先移动或移除收藏夹中的项目。",
+  "favorites.newName": "新名称",
+  "favorites.folderName": "收藏夹名称",
+  "favorites.createInstead": "改为新建收藏夹",
+  "favorites.changed": "收藏数据或操作上下文已变化，请重新打开。",
+  "favorites.unavailable":
+    "需要桌面应用、可写收藏数据及受支持的 Modrinth 项目。",
+  "favorites.move": "保存到所选收藏夹",
+  "favorites.save": "收藏",
+  "favorites.remove": "取消收藏",
+  "favorites.bulkCount":
+    "将 {count} 个已识别的社区项目保存到同一收藏夹；重复项目合并。",
+  "favorites.localUnidentified":
+    "仅支持已通过文件指纹识别的 Modrinth 模组；请等待识别完成。未知文件及其他类别暂不可收藏。",
+  "toolDownload.urlInvalid": "请输入不含账号密码的 HTTP 或 HTTPS 链接。",
+  "toolDownload.fileInvalid":
+    "请输入 1–240 字节的单个文件名，不可包含路径分隔符或控制字符。",
+  "toolDownload.changed": "下载目标已变化或确认数据无效，请重新准备。",
+  "toolDownload.chooseFirst": "请先选择保存目录",
+  "toolDownload.preparing": "正在准备…",
+  "toolDownload.reviewHelp":
+    "这是自定义链接下载，没有官方预期哈希担保；完成后计算 SHA256。确认后最多下载 2 GiB，现有文件不会覆盖。",
+  "task.toolboxDownload": "自定义链接下载",
+  "local.infoExported": "已导出 {count} 个资源的信息：{path}",
+  "local.infoUnavailable": "当前选择不支持导出信息。",
+  "local.infoExportWarning": "信息已保存至 {path}；服务提示：{warning}",
+  "local.infoExportHelp":
+    "导出所选项目；未选择时导出当前筛选结果。支持有指纹的模组 JAR、资源包和光影 ZIP（最多 128 项、总读取 512 MiB），不修改原文件。",
+  "images.itemUnsupported":
+    "当前仅支持 minecraft:grass_block、minecraft:command_block、minecraft:redstone_lamp。",
+  "images.textRequired": "请填写成就名和第一行描述。",
+  "images.englishOnly": "成就图片目前仅支持可打印英文字符。",
+  "images.assetUnavailable": "无法读取内置物品图片。",
+  "images.canvasUnavailable": "当前渲染环境无法生成 PNG 图片。",
+  "images.textTooLong": "文字过长，请缩短以适应图片宽度。",
+  "images.invalidPreview": "皮肤服务返回了无效的预览数据。",
+  "images.exportWarning": "图片已保存至 {path}；服务提示：{warning}",
+  "images.exported": "图片已保存至 {path}",
+  "images.supportedItems":
+    "使用仓库内已有的真实物品图片，仅支持草方块、命令方块和红石灯。支持上述命名空间 ID 或其短名称。",
+  "images.avatarPreview": "所选本地皮肤的头像预览",
+  "images.localSkinHelp":
+    "由本地皮肤的头部和帽子层生成；不上传皮肤、不修改原文件。",
+  "images.achievementPreview": "输入文字和物品图标生成的成就图片",
+  "local.infoKinds": "仅支持模组、资源包和光影的社区下载入口。",
 } as const;
 export default messages;

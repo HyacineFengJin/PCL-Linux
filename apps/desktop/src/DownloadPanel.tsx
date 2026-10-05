@@ -27,6 +27,7 @@ import { Collapse } from "./Collapse";
 import { InstallSelection, installNameError } from "./InstallSelection";
 import type { InstallOptions } from "./InstallSelection";
 import type { ResourceSummary } from "./ResourceDetails";
+import type { ResourceBrowseRequest } from "./resourceBrowse";
 import grassIcon from "./assets/game-icons/grass.png";
 import commandIcon from "./assets/game-icons/command.png";
 
@@ -50,6 +51,7 @@ export type DownloadStatus = {
     | "resource_update_restore"
     | "resource_save"
     | "launcher_logs"
+    | "toolbox_download"
     | null;
   stage:
     | "idle"
@@ -114,12 +116,14 @@ export function DownloadPanel({
   onTaskStart,
   visible = true,
   section = "minecraft",
+  compatibility,
 }: {
   api: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
   native: boolean;
   rootId: string | null;
   rootAvailable?: boolean;
   section?: string;
+  compatibility?: ResourceBrowseRequest & { sequence: number };
   installed: { id: string }[];
   gameBusy: boolean;
   onInstalled: () => Promise<void>;
@@ -240,6 +244,7 @@ export function DownloadPanel({
               ].includes(next.kind || ""))) &&
           next.kind !== "resource_save" &&
           next.kind !== "launcher_logs" &&
+          next.kind !== "toolbox_download" &&
           next.version &&
           completed.current !==
             (next.task_id ||
@@ -514,7 +519,10 @@ export function DownloadPanel({
           ) : community ? (
             <CommunityCatalog
               api={api}
-              key={section}
+              key={`${section}:${compatibility?.section === section ? compatibility.sequence : "default"}`}
+              compatibility={
+                compatibility?.section === section ? compatibility : undefined
+              }
               label={community}
               query={query}
               setQuery={setQuery}
@@ -636,9 +644,11 @@ function CommunityCatalog({
   query,
   setQuery,
   onResourceDetails,
+  compatibility,
 }: {
   api: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
   label: string;
+  compatibility?: ResourceBrowseRequest;
   query: string;
   setQuery: (value: string) => void;
   onResourceDetails: (resource: ResourceSummary) => void;
@@ -647,10 +657,21 @@ function CommunityCatalog({
   const [source, setSource] = useState("全部");
   const [tag, setTag] = useState("全部");
   const [sort, setSort] = useState("默认");
-  const [version, setVersion] = useState("任意");
-  const [loader, setLoader] = useState("任意");
+  const [version, setVersion] = useState(compatibility?.version || "任意");
+  const [loader, setLoader] = useState(
+    compatibility?.loader
+      ? {
+          fabric: "Fabric",
+          forge: "Forge",
+          neoforge: "NeoForge",
+          quilt: "Quilt",
+        }[compatibility.loader] || "任意"
+      : "任意",
+  );
   const [request, setRequest] = useState<Record<string, unknown>>({
     query,
+    version: compatibility?.version,
+    loader: compatibility?.loader,
     sort: query.trim() ? "relevance" : "downloads",
   });
   const [hits, setHits] = useState<ModrinthHit[]>([]);
@@ -705,9 +726,14 @@ function CommunityCatalog({
       tag: tag === "全部" ? undefined : tag,
     });
   }
-  const availableVersions = [...new Set(hits.flatMap((hit) => hit.versions))]
-    .filter((value) => /^\d+\.\d+(\.\d+)?$/.test(value))
-    .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+  const availableVersions = [
+    ...new Set([
+      ...hits
+        .flatMap((hit) => hit.versions)
+        .filter((value) => /^\d+\.\d+(\.\d+)?$/.test(value)),
+      ...(compatibility?.version ? [compatibility.version] : []),
+    ]),
+  ].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
   const loaderNames: Record<string, string> = {
     fabric: "Fabric",
     forge: "Forge",
@@ -793,7 +819,7 @@ function CommunityCatalog({
             value={tag}
             onChange={(e) => setTag(e.target.value)}
           >
-            <option>{t("ui.all")}</option>
+            <option value="全部">{t("ui.all")}</option>
             {tags.map((value) => (
               <option key={value} value={value}>
                 {categoryNames[value] || value}
@@ -837,7 +863,7 @@ function CommunityCatalog({
             value={version}
             onChange={(e) => setVersion(e.target.value)}
           >
-            <option>{t("ui.any")}</option>
+            <option value="任意">{t("ui.any")}</option>
             {availableVersions.map((value) => (
               <option key={value}>{value}</option>
             ))}

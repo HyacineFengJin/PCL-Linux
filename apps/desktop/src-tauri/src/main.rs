@@ -19,6 +19,9 @@ mod launcher_commands;
 mod launcher_delay;
 mod launcher_discovery;
 mod launcher_discovery_commands;
+mod launcher_document;
+mod launcher_favorite_commands;
+mod launcher_favorites;
 mod launcher_game_monitor;
 mod launcher_local;
 mod launcher_local_commands;
@@ -30,6 +33,9 @@ mod launcher_runtime;
 mod launcher_update_commands;
 mod launcher_updates;
 mod launcher_visibility;
+#[path = "local_resource_info/mod.rs"]
+mod local_resource_info;
+mod local_resource_info_commands;
 mod modrinth_install;
 mod platform;
 mod resource_details;
@@ -39,6 +45,11 @@ mod resource_save;
 mod resource_save_commands;
 mod resource_update_commands;
 mod tasks;
+mod toolbox_download;
+mod toolbox_download_commands;
+mod toolbox_image_commands;
+#[path = "toolbox_images/mod.rs"]
+mod toolbox_images;
 mod ui_catalog;
 mod ui_data;
 use config::{ConfigStore, GameRoot, RootSummary, Settings};
@@ -77,6 +88,7 @@ struct Shared {
     launcher_local: launcher_runtime::LocalRuntime,
     launcher_updates: launcher_update_commands::Updater,
     launcher_announcements: launcher_discovery::AnnouncementStore,
+    launcher_favorites: launcher_favorites::FavoriteStore,
     desktop: Arc<platform::Desktop>,
     operations: Mutex<()>,
     status: Mutex<RunStatus>,
@@ -84,6 +96,8 @@ struct Shared {
     closing: AtomicBool,
     monitor: launcher_monitor_runtime::MonitorRuntime,
     resource_save: resource_save_commands::SaveSession,
+    toolbox_download: toolbox_download::DownloadSession,
+    toolbox_images: toolbox_images::ImageSession,
     log: Mutex<Option<PathBuf>>,
 }
 impl Shared {
@@ -91,6 +105,27 @@ impl Shared {
         let mut view = self.launcher_preferences.snapshot();
         view.runtime_warning = self.launcher_local.warnings.message();
         view
+    }
+}
+
+struct CloseDecision {
+    active_task_id: Option<String>,
+    wait_for_workers: bool,
+    first_request: bool,
+}
+
+fn begin_launcher_close(state: &Shared) -> CloseDecision {
+    // Closing participates in the same admission gate as short document commits
+    // and task reservations. Even an idle close must refuse subsequent work;
+    // checking for a worker before entering this gate leaves a shutdown race.
+    let _operation = state.operations.lock().unwrap();
+    let first_request = !state.closing.swap(true, Ordering::SeqCst);
+    let active_task_id = state.tasks.active().map(|task| task.id);
+    let wait_for_workers = active_task_id.is_some() || state.launcher_updates.busy();
+    CloseDecision {
+        active_task_id,
+        wait_for_workers,
+        first_request,
     }
 }
 #[derive(Serialize)]
@@ -1747,6 +1782,7 @@ fn main() {
         launcher_local,
         launcher_updates,
         launcher_announcements: launcher_discovery::AnnouncementStore::default(),
+        launcher_favorites: launcher_favorites::FavoriteStore::load(&project),
         desktop: Arc::new(platform::Desktop::default()),
         operations: Mutex::new(()),
         project,
@@ -1759,6 +1795,8 @@ fn main() {
         closing: AtomicBool::new(false),
         monitor: launcher_monitor_runtime::MonitorRuntime::default(),
         resource_save: resource_save_commands::SaveSession::default(),
+        toolbox_download: toolbox_download::DownloadSession::default(),
+        toolbox_images: toolbox_images::ImageSession::default(),
         log: Mutex::new(None),
     });
     let _ = launcher_monitor_runtime::refresh(&state);
@@ -1794,13 +1832,14 @@ fn main() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<Arc<Shared>>();
-                if state.tasks.active().is_some() || state.launcher_updates.busy() {
+                let decision = begin_launcher_close(&state);
+                if decision.wait_for_workers {
                     api.prevent_close();
-                    if let Some(task) = state.tasks.active() {
-                        let _ = state.tasks.cancel(&task.id);
+                    if let Some(id) = decision.active_task_id {
+                        let _ = state.tasks.cancel(&id);
                     }
                     state.launcher_updates.service.cancel();
-                    if !state.closing.swap(true, Ordering::SeqCst) {
+                    if decision.first_request {
                         let shared = state.inner().clone();
                         let window = window.clone();
                         std::thread::spawn(move || {
@@ -1867,6 +1906,17 @@ fn main() {
             launcher_commands::launcher_network_status,
             launcher_discovery_commands::launcher_announcements,
             launcher_discovery_commands::launcher_clipboard_link,
+            launcher_favorite_commands::launcher_favorites_read,
+            launcher_favorite_commands::launcher_favorites_patch,
+            toolbox_image_commands::toolbox_skin_pick,
+            toolbox_image_commands::toolbox_avatar_render,
+            toolbox_image_commands::toolbox_avatar_export,
+            toolbox_image_commands::toolbox_png_export,
+            toolbox_download_commands::toolbox_download_choose,
+            toolbox_download_commands::toolbox_download_prepare,
+            toolbox_download_commands::toolbox_download_start,
+            toolbox_download_commands::toolbox_download_open_directory,
+            local_resource_info_commands::local_resource_info_export,
             launcher_local_commands::launcher_statistics,
             launcher_local_commands::launcher_shortcut_plan,
             launcher_local_commands::launcher_shortcut_apply,
@@ -1979,6 +2029,7 @@ mod integration_tests {
                 launcher_import: launcher_commands::ImportSession::default(),
                 launcher_assets: launcher_assets::AssetStore::new(self.0.clone()),
                 launcher_announcements: launcher_discovery::AnnouncementStore::default(),
+                launcher_favorites: launcher_favorites::FavoriteStore::load(&self.0),
                 launcher_updates: launcher_update_commands::Updater::new(
                     &self.0,
                     launcher_update_commands::current_build(&self.0),
@@ -1999,6 +2050,8 @@ mod integration_tests {
                 closing: AtomicBool::new(false),
                 monitor: launcher_monitor_runtime::MonitorRuntime::default(),
                 resource_save: resource_save_commands::SaveSession::default(),
+                toolbox_download: toolbox_download::DownloadSession::default(),
+                toolbox_images: toolbox_images::ImageSession::default(),
                 log: Mutex::new(None),
             }
         }
@@ -2014,6 +2067,63 @@ mod integration_tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn idle_close_refuses_later_admission_and_is_idempotent() {
+        let fixture = Fixture::new();
+        let shared = fixture.shared();
+        let decision = begin_launcher_close(&shared);
+        assert!(decision.first_request);
+        assert!(!decision.wait_for_workers);
+        assert!(decision.active_task_id.is_none());
+        assert!(require_instance_job(&shared).is_err());
+        assert!(with_account_write(&shared, || -> Result<(), String> {
+            panic!("closed admission")
+        })
+        .is_err());
+        assert!(!begin_launcher_close(&shared).first_request);
+    }
+
+    #[test]
+    fn close_waits_for_admission_then_captures_the_admitted_worker() {
+        let fixture = Fixture::new();
+        let shared = Arc::new(fixture.shared());
+        let operation = shared.operations.lock().unwrap();
+        let (entered, started) = std::sync::mpsc::channel();
+        let (finished, decision) = std::sync::mpsc::channel();
+        let closing = shared.clone();
+        let closer = thread::spawn(move || {
+            entered.send(()).unwrap();
+            finished.send(begin_launcher_close(&closing)).unwrap();
+        });
+        started.recv().unwrap();
+        assert!(decision.recv_timeout(Duration::from_millis(30)).is_err());
+        assert!(!shared.closing.load(Ordering::SeqCst));
+        let root = shared.config.resolve(None).unwrap();
+        let task = shared
+            .tasks
+            .admit(
+                TaskTarget {
+                    root_id: root.id,
+                    root_path: root.path,
+                    instance_id: None,
+                },
+                TaskKind::ToolboxDownload,
+            )
+            .unwrap();
+        let id = task.id().to_owned();
+        drop(operation);
+        let decision = decision.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(decision.first_request && decision.wait_for_workers);
+        assert_eq!(decision.active_task_id.as_deref(), Some(id.as_str()));
+        assert!(require_instance_job(&shared).is_err());
+        task.finish(TaskOutcome::Failed(
+            "finished isolated close fixture".into(),
+        ));
+        closer.join().unwrap();
+        let final_close = begin_launcher_close(&shared);
+        assert!(!final_close.first_request && !final_close.wait_for_workers);
     }
 
     #[test]

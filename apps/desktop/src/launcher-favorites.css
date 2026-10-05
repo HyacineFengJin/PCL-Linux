@@ -1,0 +1,35 @@
+/* Retain the screenshot's floating folder selector and reuse resource rows. */
+.ce-favorites-page {
+  position: relative;
+  min-height: 290px;
+}
+.ce-favorites-page .ce-favorites-toolbar {
+  max-width: calc(100% - 20px);
+}
+.ce-favorites-page .ce-favorites-toolbar select {
+  width: 140px;
+  min-width: 0;
+}
+.ce-favorites-list {
+  width: 100%;
+  margin-top: 55px;
+  padding: 0;
+}
+.ce-favorite-row {
+  width: 100%;
+  border: 0;
+  text-align: left;
+  background: transparent;
+}
+.ce-favorite-text {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.ce-favorite-text strong,
+.ce-favorite-text small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

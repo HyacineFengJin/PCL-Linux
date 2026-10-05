@@ -110,7 +110,7 @@ impl LauncherPreferencesStore {
         let mut data = Persisted::default();
         let mut disk = io::Snapshot::default();
         let mut blocked = None;
-        let project = match io::Directory::open(project_path) {
+        let project = match io::Directory::open_preferences(project_path) {
             Ok(project) => Some(project),
             Err(error) => {
                 blocked = Some(retained_warning(error));
@@ -196,7 +196,9 @@ impl LauncherPreferencesStore {
         let mut state = self.lock();
         let result = (|| {
             let project = self.project.as_ref().ok_or("启动器设置项目目录不可用")?;
-            if io::Directory::open(&self.project_path)?.identity()? != project.identity()? {
+            if io::Directory::open_preferences(&self.project_path)?.identity()?
+                != project.identity()?
+            {
                 return Err("启动器项目目录已被替换，请重新打开启动器".into());
             }
             let (disk, bytes) = io::snapshot(project)?;

@@ -113,11 +113,11 @@ pub(super) fn parse_import(bytes: &[u8]) -> Result<LauncherPreferences, String> 
 /// limit as the parser. Import previews do not persist or resolve its contents.
 pub fn read_settings_file(path: &Path) -> Result<Vec<u8>, String> {
     let (parent_path, name) = split_target(path)?;
-    let parent = super::io::Directory::open(parent_path)?;
+    let parent = super::io::Directory::open_preferences(parent_path)?;
     let bytes = parent
         .read_bytes(name)?
         .ok_or("选择的设置备份文件已不存在")?;
-    if super::io::Directory::open(parent_path)?.identity()? != parent.identity()? {
+    if super::io::Directory::open_preferences(parent_path)?.identity()? != parent.identity()? {
         return Err("设置备份所在目录在读取期间已被替换".into());
     }
     Ok(bytes)
@@ -135,11 +135,15 @@ pub fn export_to_file(
     path: &Path,
 ) -> Result<(), String> {
     let (parent_path, name) = split_target(path)?;
-    if path.extension().and_then(|value| value.to_str()) != Some("json") {
+    if !path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+    {
         return Err("启动器设置只能导出为 .json 文件".into());
     }
     let bytes = store.export_settings(revision)?;
-    let parent = super::io::Directory::open(parent_path)?;
+    let parent = super::io::Directory::open_preferences(parent_path)?;
     parent.publish_anonymous(parent_path, name, &bytes)
 }
 

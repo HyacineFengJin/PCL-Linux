@@ -85,18 +85,41 @@ fn jar_entry<R: Read + std::io::Seek>(
     (bytes.len() as u64 <= limit).then_some(bytes)
 }
 
-fn mod_metadata<R: Read + std::io::Seek>(jar: &mut zip::ZipArchive<R>, row: &mut ResourceInfo) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MetadataPurpose {
+    Display,
+    Export,
+}
+impl MetadataPurpose {
+    fn text(self, value: &str) -> String {
+        match self {
+            Self::Display => capped_text(value),
+            Self::Export => value.to_owned(),
+        }
+    }
+}
+fn mod_metadata<R: Read + std::io::Seek>(
+    jar: &mut zip::ZipArchive<R>,
+    row: &mut ResourceInfo,
+    purpose: MetadataPurpose,
+) -> bool {
     let mut logo = None;
+    let mut available = false;
     if let Some(json) = jar_entry(jar, "fabric.mod.json", 262144)
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
     {
+        available = ["name", "id", "version", "description"]
+            .iter()
+            .any(|key| json[*key].is_string());
         row.name = json["name"]
             .as_str()
             .or_else(|| json["id"].as_str())
-            .map(capped_text)
+            .map(|value| purpose.text(value))
             .unwrap_or_else(|| row.name.clone());
-        row.version = json["version"].as_str().map(capped_text);
-        row.description = json["description"].as_str().map(capped_text);
+        row.version = json["version"].as_str().map(|value| purpose.text(value));
+        row.description = json["description"]
+            .as_str()
+            .map(|value| purpose.text(value));
         logo = json["icon"].as_str().map(str::to_owned).or_else(|| {
             json["icon"]
                 .as_object()?
@@ -120,20 +143,23 @@ fn mod_metadata<R: Read + std::io::Seek>(jar: &mut zip::ZipArchive<R>, row: &mut
             else {
                 continue;
             };
+            available = ["displayName", "modId", "version", "description"]
+                .iter()
+                .any(|key| info.get(*key).and_then(toml::Value::as_str).is_some());
             row.name = info
                 .get("displayName")
                 .or_else(|| info.get("modId"))
                 .and_then(toml::Value::as_str)
-                .map(capped_text)
+                .map(|value| purpose.text(value))
                 .unwrap_or_else(|| row.name.clone());
             row.version = info
                 .get("version")
                 .and_then(toml::Value::as_str)
-                .map(capped_text);
+                .map(|value| purpose.text(value));
             row.description = info
                 .get("description")
                 .and_then(toml::Value::as_str)
-                .map(capped_text);
+                .map(|value| purpose.text(value));
             logo = info
                 .get("logoFile")
                 .or_else(|| data.get("logoFile"))
@@ -142,10 +168,11 @@ fn mod_metadata<R: Read + std::io::Seek>(jar: &mut zip::ZipArchive<R>, row: &mut
             break;
         }
     }
-    if row
-        .version
-        .as_deref()
-        .is_some_and(|version| version.contains("${file.jarVersion}"))
+    if purpose == MetadataPurpose::Display
+        && row
+            .version
+            .as_deref()
+            .is_some_and(|version| version.contains("${file.jarVersion}"))
     {
         let manifest = jar_entry(jar, "META-INF/MANIFEST.MF", 65536)
             .and_then(|bytes| String::from_utf8(bytes).ok())
@@ -163,8 +190,13 @@ fn mod_metadata<R: Read + std::io::Seek>(jar: &mut zip::ZipArchive<R>, row: &mut
             )
         });
     }
-    if row.version.as_deref().is_some_and(|v| v.contains("${")) {
+    if purpose == MetadataPurpose::Display
+        && row.version.as_deref().is_some_and(|v| v.contains("${"))
+    {
         row.version = None;
+    }
+    if purpose == MetadataPurpose::Export {
+        return available;
     }
     if let Some(bytes) = logo.and_then(|name| jar_entry(jar, &name, 128 * 1024)) {
         let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -181,6 +213,53 @@ fn mod_metadata<R: Read + std::io::Seek>(jar: &mut zip::ZipArchive<R>, row: &mut
             ));
         }
     }
+    available
+}
+
+/// The export service supplies a verified, retained descriptor after its ZIP
+/// central-directory preflight. This adapter never reopens a UI path, extracts
+/// an archive member or includes an icon. Metadata inflation is separately
+/// capped by `jar_entry`, including malformed advertised uncompressed lengths.
+pub(crate) fn resource_metadata_from_file(
+    file: fs::File,
+    file_name: &str,
+    kind: &str,
+) -> Result<serde_json::Value, String> {
+    if !matches!(kind, "mods" | "resourcepacks" | "shaderpacks") {
+        return Err("不支持导出此资源类型信息".into());
+    }
+    let mut row = ResourceInfo {
+        name: file_name.into(),
+        file_name: file_name.into(),
+        path: String::new(),
+        enabled: !file_name.ends_with(".disabled"),
+        fingerprint: None,
+        version: None,
+        description: None,
+        icon: None,
+    };
+    let mut jar = zip::ZipArchive::new(file).map_err(|_| "资源压缩文件无法解析")?;
+    let mut description = serde_json::Value::Null;
+    let available = if kind == "mods" {
+        let available = mod_metadata(&mut jar, &mut row, MetadataPurpose::Export);
+        if let Some(value) = row.description {
+            description = serde_json::Value::String(value);
+        }
+        available
+    } else if let Some(pack) = jar_entry(&mut jar, "pack.mcmeta", 262144)
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+    {
+        // Minecraft text components remain structured JSON in the artifact;
+        // no translation, trimming or lossy plain-text conversion is applied.
+        description = pack["pack"].get("description").cloned().unwrap_or_default();
+        !description.is_null()
+    } else {
+        false
+    };
+    Ok(serde_json::json!({
+        "name": row.name, "file_name": row.file_name, "enabled": row.enabled,
+        "version": row.version, "description": description, "metadataAvailable": available,
+    }))
 }
 
 pub fn resource_dir(root: &Path, id: &str, kind: &str) -> Result<PathBuf, String> {
@@ -278,7 +357,7 @@ pub async fn instance_resources(
             {
                 if let Ok(file) = fs::File::open(&path) {
                     if let Ok(mut jar) = zip::ZipArchive::new(file) {
-                        mod_metadata(&mut jar, &mut row);
+                        mod_metadata(&mut jar, &mut row, MetadataPurpose::Display);
                     }
                 }
             }
@@ -314,7 +393,7 @@ mod tests {
             description: None,
             icon: None,
         };
-        mod_metadata(&mut archive, &mut row);
+        mod_metadata(&mut archive, &mut row, MetadataPurpose::Display);
         row
     }
     #[test]

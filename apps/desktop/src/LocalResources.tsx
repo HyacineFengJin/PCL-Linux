@@ -3,6 +3,9 @@ import { t, formatNumber } from "./i18n";
  * Update inspection/confirmation is owned by the separate update components. */
 import { useContext, useEffect, useRef, useState } from "react";
 import { LauncherNavigationContext } from "./useLauncherPreferences";
+import { resourceBrowseRequest } from "./resourceBrowse";
+import { ResourceFavorite } from "./LauncherFavorites";
+import { useResourceInfoExport } from "./useResourceInfoExport";
 import {
   Box,
   Search,
@@ -96,6 +99,11 @@ export function ResourcePanel({
   onTaskStart: (id: string) => void;
 }) {
   const navigation = useContext(LauncherNavigationContext);
+  const browseRequest = resourceBrowseRequest(
+    section,
+    instance.minecraft_version,
+    instance.loader,
+  );
   const hideUpdates = navigation.isHidden("feature.mod_updates");
   const [entries, setEntries] = useState<Resource[]>([]),
     [query, setQuery] = useState(""),
@@ -113,6 +121,14 @@ export function ResourcePanel({
     [removalChoice, setRemovalChoice] = useState<ResourceRemovalChoice | null>(
       null,
     );
+  const infoExport = useResourceInfoExport({
+    api,
+    contextKey: `${scopeKey}:${id}:${section}:${generation}:${resourceGeneration}`,
+    native,
+    id,
+    kind: section,
+    onNotify,
+  });
   useEffect(() => {
     if (hideUpdates) setFilter("all");
   }, [hideUpdates]);
@@ -256,6 +272,31 @@ export function ResourcePanel({
   const selectedEntries = entries.filter((entry) =>
     selected.includes(entry.path),
   );
+  // Bookmark identity is authoritative inspection data, independent of whether
+  // update actions are hidden. A filename alone never identifies a publisher.
+  const favoriteProjects = selectedEntries.map(
+    (resource) =>
+      updates.result?.entries.find(
+        (entry) =>
+          entry.file_name === resource.file_name &&
+          entry.fingerprint === resource.fingerprint,
+      )?.project_id,
+  );
+  const recognizedSelection =
+    section === "mods" &&
+    selectedEntries.length > 0 &&
+    favoriteProjects.every((id): id is string => !!id);
+  const favoriteContext = JSON.stringify([
+    scopeKey,
+    id,
+    section,
+    generation,
+    resourceGeneration,
+    selectedEntries.map((resource) => [
+      resource.file_name,
+      resource.fingerprint,
+    ]),
+  ]);
   const allVisibleSelected =
     filtered.length > 0 &&
     filtered.every((entry) => selected.includes(entry.path));
@@ -432,7 +473,15 @@ export function ResourcePanel({
         >
           {t("local.installFile")}
         </button>
-        <button className="ce-button" disabled title={t("common.unavailable")}>
+        <button
+          className="ce-button"
+          disabled={!browseRequest || !navigation.browseResources}
+          title={!browseRequest ? t("local.infoKinds") : undefined}
+          onClick={() => {
+            if (isCurrent(scopeGeneration.current) && browseRequest)
+              navigation.browseResources?.(browseRequest);
+          }}
+        >
           {t("local.downloadNew")}
         </button>
         <button
@@ -448,7 +497,28 @@ export function ResourcePanel({
         >
           {allVisibleSelected ? t("ui.deselectAll") : t("ui.selectAll")}
         </button>
-        <button className="ce-button" disabled title={t("common.unavailable")}>
+        <button
+          className="ce-button"
+          disabled={
+            !native ||
+            loading ||
+            !!error ||
+            infoExport.busy ||
+            !writableKind ||
+            !(selectedEntries.length ? selectedEntries : filtered).every(
+              writableResourceFile,
+            ) ||
+            !(selectedEntries.length ? selectedEntries : filtered).length
+          }
+          title={t("local.infoExportHelp")}
+          onClick={() => {
+            const files = filesFor(
+              selectedEntries.length ? selectedEntries : filtered,
+            );
+            if (isCurrent(scopeGeneration.current) && files)
+              void infoExport.exportInfo(files);
+          }}
+        >
           {t("local.exportInfo")}
         </button>
         {latestRemoval && writableKind && (
@@ -903,11 +973,30 @@ export function ResourcePanel({
               <CircleMinus size={16} />
               {t("ui.disable")}
             </button>
-            <button disabled title={t("common.unavailable")}>
-              <Heart size={16} />
-              {t("resource.favorite")}
-            </button>
-            <button disabled title={t("common.unavailable")}>
+            <ResourceFavorite
+              projectId={favoriteProjects[0] || ""}
+              projectIds={
+                recognizedSelection ? (favoriteProjects as string[]) : []
+              }
+              supported={
+                native &&
+                recognizedSelection &&
+                !loading &&
+                !error &&
+                !recoveryError
+              }
+              contextKey={favoriteContext}
+              unavailableKey="favorites.localUnidentified"
+            />
+            <button
+              disabled={!native || infoExport.busy || !selectedWritable}
+              title={t("local.infoExportHelp")}
+              onClick={() => {
+                const files = filesFor(selectedEntries);
+                if (isCurrent(scopeGeneration.current) && files)
+                  void infoExport.exportInfo(files);
+              }}
+            >
               <Share2 size={16} />
               {t("local.shareSelected")}
             </button>

@@ -128,6 +128,56 @@ fn normalize_project(project: ApiProject) -> ResourceProject {
     }
 }
 
+/// Bookmarks fetch only this project endpoint. The renderer supplies a stable
+/// identity; its display text, URLs and file metadata cannot enter the store.
+pub(crate) async fn project_for_favorite(
+    project_id: &str,
+) -> Result<crate::launcher_favorites::Entry, String> {
+    if !valid_id(project_id) {
+        return Err("无效的 Modrinth 项目 ID".into());
+    }
+    let project: ApiProject = get(&client()?, &format!("project/{project_id}"), &[]).await?;
+    if project.id != project_id {
+        return Err("收藏资源项目 ID 不匹配".into());
+    }
+    favorite_entry(project)
+}
+
+fn favorite_entry(project: ApiProject) -> Result<crate::launcher_favorites::Entry, String> {
+    let project = normalize_project(project);
+    let entry = crate::launcher_favorites::Entry {
+        provider: "modrinth".into(),
+        project_id: project.project_id,
+        folder_id: "default".into(),
+        title: project.title,
+        project_type: project.project_type,
+        icon_url: project.icon_url,
+        summary: project.description,
+    };
+    entry.validate()?;
+    Ok(entry)
+}
+
+pub(crate) async fn projects_for_favorites(
+    ids: &[String],
+) -> Result<Vec<crate::launcher_favorites::Entry>, String> {
+    crate::launcher_favorites::validate_projects(ids)?;
+    let query = serde_json::to_string(ids).map_err(|_| "收藏项目标识无法编码")?;
+    let projects: Vec<ApiProject> = get(&client()?, "projects", &[("ids", query)]).await?;
+    let mut seen = std::collections::BTreeSet::new();
+    if projects.len() != ids.len() {
+        return Err("提供方未返回全部收藏项目，未保存任何项目".into());
+    }
+    let mut entries = Vec::new();
+    for project in projects {
+        if !ids.contains(&project.id) || !seen.insert(project.id.clone()) {
+            return Err("提供方返回了重复或无关收藏项目".into());
+        }
+        entries.push(favorite_entry(project)?);
+    }
+    Ok(entries)
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 pub struct VersionDependency {
     #[serde(default)]

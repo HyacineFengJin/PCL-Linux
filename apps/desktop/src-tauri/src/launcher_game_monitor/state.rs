@@ -3,18 +3,23 @@
 //! error so admission can conservatively block launch and writes until repaired.
 use super::process::{self, Identity};
 use crate::launcher_local::filesystem::{
-    optional_snapshot, revision, Dir, Scope, Snapshot, WriteLock,
+    optional_snapshot, revision, Dir, Scope, Snapshot, Stamp, WriteLock,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     fs::File,
-    os::fd::{AsRawFd, FromRawFd},
+    io::Read,
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::fs::MetadataExt,
+    },
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 const NAME: &str = "active.json";
 const LIMIT: u64 = 16 * 1024;
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) enum Phase {
     Starting,
@@ -104,20 +109,138 @@ fn status(marker: &Marker, revision: String) -> Result<MonitorStatus, String> {
     })
 }
 pub fn read_status(project: &Path) -> Result<Option<MonitorStatus>, String> {
+    read_status_observed(project, &mut |_| {})
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReadPoint {
+    Opened,
+    BeforeRecheck,
+}
+/// A GUI can read while its detached helper atomically exchanges the marker.
+/// Preserve the bounded old FD bytes before checking stability: the general
+/// Snapshot reader rightly refuses a replaced inode, but cannot classify this
+/// service's own phase transition after that refusal. No source text is logged.
+fn capture_marker(
+    folder: &Dir,
+    observed: &mut impl FnMut(ReadPoint),
+) -> Result<Option<Snapshot>, String> {
+    let fd = unsafe {
+        libc::openat(
+            folder.0.as_raw_fd(),
+            c"active.json".as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return if std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound {
+            Ok(None)
+        } else {
+            Err("游戏监控状态无法读取，已保留文件".into())
+        };
+    }
+    let mut file = unsafe { File::from_raw_fd(fd) };
+    let metadata = file.metadata().map_err(|_| "无法检查游戏监控状态")?;
+    // An exchange may already have unlinked this opened inode. It is still a
+    // bounded owned regular FD; nlink=0 only permits capture, never acceptance.
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.nlink() > 1
+        || metadata.len() == 0
+        || metadata.len() > LIMIT
+    {
+        return Err("游戏监控状态不是当前用户独占的有限普通文件，已保留文件".into());
+    }
+    let stamp = Stamp::of(&metadata);
+    observed(ReadPoint::Opened);
+    let mut header = Vec::with_capacity(metadata.len() as usize);
+    (&mut file)
+        .take(LIMIT + 1)
+        .read_to_end(&mut header)
+        .map_err(|_| "无法读取游戏监控状态")?;
+    if header.len() as u64 != stamp.bytes || header.len() as u64 > LIMIT {
+        return Err("游戏监控状态在读取期间被编辑，已保留文件".into());
+    }
+    Ok(Some(Snapshot {
+        file,
+        stamp,
+        digest: format!("{:x}", Sha256::digest(&header)),
+        header,
+    }))
+}
+fn progresses(previous: &Marker, current: &Marker) -> bool {
+    previous.project == current.project
+        && previous.root_id == current.root_id
+        && previous.root_path == current.root_path
+        && previous.log_path == current.log_path
+        && previous.monitor == current.monitor
+        && previous.started_at == current.started_at
+        && previous.exit_code.is_none()
+        && match (previous.phase, current.phase) {
+            (Phase::Starting, Phase::Running | Phase::Exited) => {
+                previous.game.is_none()
+                    && current.game.is_some()
+                    && (current.phase != Phase::Running || current.exit_code.is_none())
+            }
+            (Phase::Starting, Phase::Failed) => previous.game.is_none(),
+            (Phase::Running, Phase::Exited | Phase::Failed) => previous.game == current.game,
+            _ => false,
+        }
+}
+fn lock_is_held(folder: &Dir) -> Result<bool, String> {
+    let Some(file) = folder.file(".monitor.lock")? else {
+        return Ok(false);
+    };
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0 {
+        // Explicit unlock is required even if another descriptor is duplicated.
+        unsafe {
+            libc::flock(file.as_raw_fd(), libc::LOCK_UN);
+        }
+        return Ok(false);
+    }
+    if std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock {
+        Ok(true)
+    } else {
+        Err("无法确认独立游戏监控的占用状态".into())
+    }
+}
+pub(super) fn read_status_observed(
+    project: &Path,
+    observed: &mut impl FnMut(ReadPoint),
+) -> Result<Option<MonitorStatus>, String> {
     let scope = Scope::open(project, "game-monitor")?;
     let Some(folder) = &scope.folder else {
         scope.recheck()?;
         return Ok(None);
     };
-    let Some(snapshot) = optional_snapshot(folder, NAME, LIMIT)? else {
+    let mut previous: Option<(Marker, Snapshot)> = None;
+    // One helper publishes starting→running→finished. Four complete bounded
+    // reads cover both legitimate replacements; repeated churn remains blocked.
+    for _ in 0..4 {
+        let Some(snapshot) = capture_marker(folder, observed)? else {
+            scope.recheck()?;
+            if previous.is_some() || lock_is_held(folder)? {
+                return Err("独立游戏监控状态正在提交或已消失，请刷新后重试".into());
+            }
+            return Ok(None);
+        };
+        let marker = parse(project, &snapshot)?;
+        if let Some((old, old_snapshot)) = &previous {
+            if old_snapshot.stamp.device != snapshot.stamp.device
+                || old_snapshot.stamp.inode == snapshot.stamp.inode
+                || !progresses(old, &marker)
+            {
+                return Err("游戏监控状态被外部修改或替换，已保留文件；暂停启动和文件操作".into());
+            }
+        }
+        let result = status(&marker, revision(&scope.path().join(NAME), &snapshot)?)?;
+        observed(ReadPoint::BeforeRecheck);
         scope.recheck()?;
-        return Ok(None);
-    };
-    let marker = parse(project, &snapshot)?;
-    let result = status(&marker, revision(&scope.path().join(NAME), &snapshot)?)?;
-    scope.recheck()?;
-    snapshot.recheck(folder, NAME)?;
-    Ok(Some(result))
+        if snapshot.recheck(folder, NAME).is_ok() {
+            return Ok(Some(result));
+        }
+        previous = Some((marker, snapshot));
+    }
+    Err("独立游戏监控状态持续变化，请刷新后重试".into())
 }
 pub fn stop_monitor(project: &Path, expected_revision: &str) -> Result<(), String> {
     let scope = Scope::open(project, "game-monitor")?;

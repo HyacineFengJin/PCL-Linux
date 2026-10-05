@@ -332,7 +332,7 @@ const messages = {
   "updateValidation.planSize":
     "Invalid file sizes or reuse state in update plan. Check again",
   "manage.transferPolicyHelp":
-    "Settings apply to new download tasks; active tasks retain their captured policy. The speed limit is total artifact MiB/s; 0 means unlimited. HTTP metadata does not count towards artifact bandwidth.",
+    "Settings apply to new download tasks, including Toolbox downloads; active tasks retain their captured policy. The speed limit is total artifact MiB/s; 0 means unlimited. HTTP metadata does not count towards artifact bandwidth.",
   "discovery.announcements": "Project announcements",
   "discovery.releaseHelp":
     "Public releases of this project. Important announcements show stable releases. Release text stays as published.",
@@ -376,5 +376,74 @@ const messages = {
   "save.selectionChanged":
     "The save plan does not match the selected file. Choose again.",
   "save.missingTask": "The save service returned no task ID",
+  "favorites.folder": "Favorites folder",
+  "favorites.settings": "Favorites folder settings",
+  "favorites.loading": "Reading favorites…",
+  "favorites.empty": "This favorites folder is empty",
+  "favorites.help":
+    "Choose Favorite on a community resource detail page to save it here.",
+  "favorites.type.mod": "Mod",
+  "favorites.type.resourcepack": "Resource pack",
+  "favorites.type.shader": "Shader",
+  "favorites.type.modpack": "Modpack",
+  "favorites.renameFolder": "Rename folder",
+  "favorites.createFolder": "Create folder",
+  "favorites.removeFolder": "Delete folder",
+  "favorites.folderNotEmpty":
+    "Move or remove its favorites before deleting this folder.",
+  "favorites.newName": "New name",
+  "favorites.folderName": "Folder name",
+  "favorites.createInstead": "Create a new folder instead",
+  "favorites.changed":
+    "Favorites or the operation context changed. Reopen this action.",
+  "favorites.unavailable":
+    "Requires the desktop app, writable favorites data and a supported Modrinth project.",
+  "favorites.move": "Save to selected folder",
+  "favorites.save": "Save favorite",
+  "favorites.remove": "Remove favorite",
+  "favorites.bulkCount":
+    "Save {count} identified community projects in one folder; duplicate projects are merged.",
+  "favorites.localUnidentified":
+    "Requires Modrinth mods identified by file fingerprints. Wait for identification; unknown files and other local categories cannot be favorited yet.",
+  "toolDownload.urlInvalid":
+    "Enter an HTTP or HTTPS URL without a username or password.",
+  "toolDownload.fileInvalid":
+    "Enter one filename of 1–240 UTF-8 bytes without path separators or control characters.",
+  "toolDownload.changed":
+    "The target changed or the review data is invalid. Prepare it again.",
+  "toolDownload.chooseFirst": "Choose a destination folder first",
+  "toolDownload.preparing": "Preparing…",
+  "toolDownload.reviewHelp":
+    "This custom URL has no official expected hash guarantee. SHA256 is calculated after download. The limit is 2 GiB; existing files are never overwritten.",
+  "task.toolboxDownload": "Custom URL download",
+  "local.infoExported": "Exported information for {count} resources: {path}",
+  "local.infoUnavailable":
+    "Information export is unavailable for this selection.",
+  "local.infoExportWarning":
+    "Information was saved to {path}. Service warning: {warning}",
+  "local.infoExportHelp":
+    "Export the selection, or current filtered results when none are selected. Supports fingerprinted mod JARs and resource/shader ZIPs (up to 128 items and 512 MiB total reads), without changing originals.",
+  "images.itemUnsupported":
+    "Supported items: minecraft:grass_block, minecraft:command_block and minecraft:redstone_lamp.",
+  "images.textRequired":
+    "Enter an achievement name and first description line.",
+  "images.englishOnly":
+    "Achievement images currently support printable ASCII characters only.",
+  "images.assetUnavailable": "Unable to read the bundled item image.",
+  "images.canvasUnavailable":
+    "This rendering environment cannot generate a PNG image.",
+  "images.textTooLong": "Shorten the text to fit the image width.",
+  "images.invalidPreview": "The skin service returned invalid preview data.",
+  "images.exportWarning": "Image saved to {path}. Service warning: {warning}",
+  "images.exported": "Image saved to {path}",
+  "images.supportedItems":
+    "Uses genuine bundled item images: grass block, command block and redstone lamp. Enter their namespaced IDs or short names.",
+  "images.avatarPreview": "Avatar preview from the selected local skin",
+  "images.localSkinHelp":
+    "Generated from the local skin's head and hat layers. The skin is not uploaded or changed.",
+  "images.achievementPreview":
+    "Achievement image generated from the entered text and item icon",
+  "local.infoKinds":
+    "Community downloads are available for mods, resource packs and shaders only.",
 } as const;
 export default messages;
