@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{atomic::Ordering, Arc},
 };
-use tauri::State;
+use tauri::{Emitter, State};
 
 pub fn xdg_paths() -> Result<XdgPaths, String> {
     let home = std::env::var_os("HOME")
@@ -186,12 +186,44 @@ pub fn launcher_finish_using(
     window: tauri::WebviewWindow,
     state: State<'_, Arc<Shared>>,
 ) -> Result<(), String> {
-    let _operation = state.operations.lock().unwrap();
-    admission(&state, true)?;
-    state.closing.store(true, Ordering::SeqCst);
-    if window.close().is_err() {
-        state.closing.store(false, Ordering::SeqCst);
-        return Err("无法关闭启动器，请手动关闭窗口".into());
+    finish_using(
+        &state,
+        || {
+            window
+                .close()
+                .map_err(|_| "无法关闭启动器，请手动关闭窗口".to_string())
+        },
+        |event| {
+            let _ = window.emit("launcher_closing", event);
+        },
+    )
+}
+
+fn finish_using(
+    state: &Shared,
+    close: impl FnOnce() -> Result<(), String>,
+    mut observe: impl FnMut(crate::LauncherClosing),
+) -> Result<(), String> {
+    let claim = {
+        let _operation = state.operations.lock().unwrap();
+        admission(state, true)?;
+        crate::set_launcher_closing(state, true)
+    };
+    observe(claim);
+    // The native close event re-enters operations to stop admission and drain
+    // writers. Calling a compositor while holding that gate can deadlock it.
+    if let Err(error) = close() {
+        let resumed = {
+            let _operation = state.operations.lock().unwrap();
+            // Another native close can arrive after our claim, even if this
+            // compositor call fails. Only our own unsuperseded claim may resume.
+            (state.close_generation.load(Ordering::SeqCst) == claim.generation)
+                .then(|| crate::set_launcher_closing(state, false))
+        };
+        if let Some(event) = resumed {
+            observe(event);
+        }
+        return Err(error);
     }
     Ok(())
 }
@@ -199,6 +231,55 @@ pub fn launcher_finish_using(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stop_using_releases_admission_before_native_close_and_failed_close_can_resume() {
+        let fixture = crate::integration_tests::Fixture::new();
+        let state = fixture.shared();
+        assert!(finish_using(
+            &state,
+            || {
+                assert!(state.closing.load(Ordering::SeqCst));
+                assert!(state.operations.try_lock().is_ok());
+                Err("refused fixture compositor".into())
+            },
+            |_| {}
+        )
+        .is_err());
+        assert!(!state.closing.load(Ordering::SeqCst));
+        finish_using(
+            &state,
+            || {
+                assert!(state.operations.try_lock().is_ok());
+                assert!(state.closing.load(Ordering::SeqCst));
+                Ok(())
+            },
+            |_| {},
+        )
+        .unwrap();
+        assert!(state.closing.load(Ordering::SeqCst));
+    }
+    #[test]
+    fn failed_stop_using_cannot_revoke_a_newer_native_close() {
+        let fixture = crate::integration_tests::Fixture::new();
+        let state = fixture.shared();
+        let mut events = Vec::new();
+        let result = finish_using(
+            &state,
+            || {
+                let newer = crate::begin_launcher_close(&state);
+                assert!(!newer.first_request);
+                assert_eq!(newer.event.generation, 2);
+                Err("refused fixture compositor".into())
+            },
+            |event| events.push(event),
+        );
+        assert!(result.is_err());
+        assert!(state.closing.load(Ordering::SeqCst));
+        assert_eq!(state.close_generation.load(Ordering::SeqCst), 2);
+        assert_eq!(events.len(), 1);
+        assert!(events[0].closing);
+        assert_eq!(events[0].generation, 1);
+    }
     #[test]
     fn desktop_configuration_is_data_and_home_disables_it() {
         let home = Path::new("/example/home");

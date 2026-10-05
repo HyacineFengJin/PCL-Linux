@@ -445,5 +445,19 @@ const messages = {
     "Achievement image generated from the entered text and item icon",
   "local.infoKinds":
     "Community downloads are available for mods, resource packs and shaders only.",
+  "minecraftNotice.releaseFound":
+    "A new Minecraft release is available: {version}",
+  "minecraftNotice.snapshotFound":
+    "A new Minecraft snapshot is available: {version}",
+  "minecraftNotice.bothFound":
+    "New Minecraft versions are available: release {release} and snapshot {snapshot}",
+  "minecraftNotice.help":
+    "The first check establishes a baseline. Later checks report new versions while the launcher is running, without installing a game or switching instances.",
+  "minecraftNotice.unavailable":
+    "Minecraft version notifications are unavailable.",
+  "minecraftNotice.storageBlocked":
+    "Version notification history is currently read-only; existing records are preserved.",
+  "minecraftNotice.invalidResponse":
+    "Minecraft version notifications returned invalid confirmation data.",
 } as const;
 export default messages;

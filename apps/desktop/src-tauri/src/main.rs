@@ -27,6 +27,8 @@ mod launcher_local;
 mod launcher_local_commands;
 mod launcher_log_commands;
 mod launcher_logs;
+mod launcher_minecraft_update_commands;
+mod launcher_minecraft_updates;
 mod launcher_monitor_runtime;
 mod launcher_prefs;
 mod launcher_runtime;
@@ -59,7 +61,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -88,12 +90,14 @@ struct Shared {
     launcher_local: launcher_runtime::LocalRuntime,
     launcher_updates: launcher_update_commands::Updater,
     launcher_announcements: launcher_discovery::AnnouncementStore,
+    minecraft_updates: launcher_minecraft_updates::MinecraftUpdates,
     launcher_favorites: launcher_favorites::FavoriteStore,
     desktop: Arc<platform::Desktop>,
     operations: Mutex<()>,
     status: Mutex<RunStatus>,
     stop: AtomicBool,
     closing: AtomicBool,
+    close_generation: AtomicU64,
     monitor: launcher_monitor_runtime::MonitorRuntime,
     resource_save: resource_save_commands::SaveSession,
     toolbox_download: toolbox_download::DownloadSession,
@@ -112,6 +116,25 @@ struct CloseDecision {
     active_task_id: Option<String>,
     wait_for_workers: bool,
     first_request: bool,
+    event: LauncherClosing,
+}
+
+#[derive(Clone, Copy, Serialize)]
+struct LauncherClosing {
+    closing: bool,
+    generation: u64,
+}
+
+// Call only while operations is held. The generation assigns rollback ownership
+// and lets passive frontend subscribers reject events delivered out of order.
+fn set_launcher_closing(state: &Shared, closing: bool) -> LauncherClosing {
+    let generation = state.close_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    state.closing.store(closing, Ordering::SeqCst);
+    state.minecraft_updates.invalidate();
+    LauncherClosing {
+        closing,
+        generation,
+    }
 }
 
 fn begin_launcher_close(state: &Shared) -> CloseDecision {
@@ -119,13 +142,15 @@ fn begin_launcher_close(state: &Shared) -> CloseDecision {
     // and task reservations. Even an idle close must refuse subsequent work;
     // checking for a worker before entering this gate leaves a shutdown race.
     let _operation = state.operations.lock().unwrap();
-    let first_request = !state.closing.swap(true, Ordering::SeqCst);
+    let first_request = !state.closing.load(Ordering::SeqCst);
+    let event = set_launcher_closing(state, true);
     let active_task_id = state.tasks.active().map(|task| task.id);
     let wait_for_workers = active_task_id.is_some() || state.launcher_updates.busy();
     CloseDecision {
         active_task_id,
         wait_for_workers,
         first_request,
+        event,
     }
 }
 #[derive(Serialize)]
@@ -1782,6 +1807,7 @@ fn main() {
         launcher_local,
         launcher_updates,
         launcher_announcements: launcher_discovery::AnnouncementStore::default(),
+        minecraft_updates: launcher_minecraft_updates::MinecraftUpdates::new(project.clone()),
         launcher_favorites: launcher_favorites::FavoriteStore::load(&project),
         desktop: Arc::new(platform::Desktop::default()),
         operations: Mutex::new(()),
@@ -1793,6 +1819,7 @@ fn main() {
         }),
         stop: AtomicBool::new(false),
         closing: AtomicBool::new(false),
+        close_generation: AtomicU64::new(0),
         monitor: launcher_monitor_runtime::MonitorRuntime::default(),
         resource_save: resource_save_commands::SaveSession::default(),
         toolbox_download: toolbox_download::DownloadSession::default(),
@@ -1833,6 +1860,9 @@ fn main() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<Arc<Shared>>();
                 let decision = begin_launcher_close(&state);
+                // Observational only: frontend subscribers must never take
+                // over the native cancellation/drain-and-close decision.
+                let _ = window.emit("launcher_closing", decision.event);
                 if decision.wait_for_workers {
                     api.prevent_close();
                     if let Some(id) = decision.active_task_id {
@@ -1905,6 +1935,8 @@ fn main() {
             launcher_commands::launcher_apply_settings_import,
             launcher_commands::launcher_network_status,
             launcher_discovery_commands::launcher_announcements,
+            launcher_minecraft_update_commands::launcher_minecraft_updates_check,
+            launcher_minecraft_update_commands::launcher_minecraft_updates_ack,
             launcher_discovery_commands::launcher_clipboard_link,
             launcher_favorite_commands::launcher_favorites_read,
             launcher_favorite_commands::launcher_favorites_patch,
@@ -2029,6 +2061,9 @@ mod integration_tests {
                 launcher_import: launcher_commands::ImportSession::default(),
                 launcher_assets: launcher_assets::AssetStore::new(self.0.clone()),
                 launcher_announcements: launcher_discovery::AnnouncementStore::default(),
+                minecraft_updates: launcher_minecraft_updates::MinecraftUpdates::new(
+                    self.0.clone(),
+                ),
                 launcher_favorites: launcher_favorites::FavoriteStore::load(&self.0),
                 launcher_updates: launcher_update_commands::Updater::new(
                     &self.0,
@@ -2048,6 +2083,7 @@ mod integration_tests {
                 status: Mutex::new(RunStatus::default()),
                 stop: AtomicBool::new(false),
                 closing: AtomicBool::new(false),
+                close_generation: AtomicU64::new(0),
                 monitor: launcher_monitor_runtime::MonitorRuntime::default(),
                 resource_save: resource_save_commands::SaveSession::default(),
                 toolbox_download: toolbox_download::DownloadSession::default(),

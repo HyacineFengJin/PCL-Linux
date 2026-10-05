@@ -298,6 +298,8 @@ pub struct AdvancedPreferences {
 pub struct ManagementPreferences {
     pub max_concurrent_transfers: u16,
     pub clipboard_resource_detection: bool,
+    pub minecraft_release_notifications: bool,
+    pub minecraft_snapshot_notifications: bool,
     pub download_file_name: DownloadFileName,
     pub mod_display_style: ModDisplayStyle,
     pub quick_download: QuickDownload,
@@ -311,6 +313,8 @@ impl Default for ManagementPreferences {
             max_concurrent_transfers: 4,
             total_rate_limit_mib_per_second: 0,
             clipboard_resource_detection: false,
+            minecraft_release_notifications: false,
+            minecraft_snapshot_notifications: false,
             download_file_name: DownloadFileName::Original,
             mod_display_style: ModDisplayStyle::Metadata,
             quick_download: QuickDownload::Ask,
@@ -412,7 +416,12 @@ patch!(NetworkPatch => NetworkPreferences {
 patch!(AdvancedPatch => AdvancedPreferences {
     debug_mode: bool, artificial_delay_ms: u16, forbid_download_copy: bool,
 });
-patch!(ManagementPatch => ManagementPreferences { max_concurrent_transfers: u16, total_rate_limit_mib_per_second: u32, clipboard_resource_detection: bool, download_file_name: DownloadFileName, mod_display_style: ModDisplayStyle, quick_download: QuickDownload });
+patch!(ManagementPatch => ManagementPreferences {
+    max_concurrent_transfers: u16, total_rate_limit_mib_per_second: u32,
+    clipboard_resource_detection: bool, minecraft_release_notifications: bool,
+    minecraft_snapshot_notifications: bool, download_file_name: DownloadFileName,
+    mod_display_style: ModDisplayStyle, quick_download: QuickDownload,
+});
 patch!(UpdatePatch => UpdatePreferences { channel: UpdateChannel, policy: UpdatePolicy });
 
 #[derive(Clone, Debug, Default, Deserialize)]

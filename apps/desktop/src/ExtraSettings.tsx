@@ -384,12 +384,42 @@ function ExtraSettingsContent({
           <div className="extra-fields">
             <Field label={tr.t("manage.gameUpdates")}>
               <div className="extra-two extra-update-hints">
-                <Check reason={tr.t("manage.stableUnavailable")}>
+                <LauncherCheck
+                  value={
+                    preferenceEditor.prefs.management
+                      .minecraft_release_notifications
+                  }
+                  disabled={preferenceEditor.disabled("minecraft_updates")}
+                  reason={preferenceEditor.reason(
+                    "minecraft_updates",
+                    tr.t("manage.stableUnavailable"),
+                  )}
+                  onChange={(minecraft_release_notifications) =>
+                    preferenceEditor.patch("minecraft_updates", {
+                      management: { minecraft_release_notifications },
+                    })
+                  }
+                >
                   {tr.t("manage.stable")}
-                </Check>
-                <Check reason={tr.t("manage.betaUnavailable")}>
+                </LauncherCheck>
+                <LauncherCheck
+                  value={
+                    preferenceEditor.prefs.management
+                      .minecraft_snapshot_notifications
+                  }
+                  disabled={preferenceEditor.disabled("minecraft_updates")}
+                  reason={preferenceEditor.reason(
+                    "minecraft_updates",
+                    tr.t("manage.betaUnavailable"),
+                  )}
+                  onChange={(minecraft_snapshot_notifications) =>
+                    preferenceEditor.patch("minecraft_updates", {
+                      management: { minecraft_snapshot_notifications },
+                    })
+                  }
+                >
                   {tr.t("manage.beta")}
-                </Check>
+                </LauncherCheck>
               </div>
             </Field>
             <Field label={tr.t("manage.gameLanguage")}>

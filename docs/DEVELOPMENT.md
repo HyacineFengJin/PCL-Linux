@@ -145,6 +145,7 @@ Rust 测试不能证明真实桌面选择器、网络授权页面或 Minecraft �
 | 游戏日志 | `launcher_logs/`、`launcher_log_commands.rs` | 有界读取、脱敏导出、排除当前日志、清理和恢复记录所有权 |
 | 统计、诊断、应用入口 | `launcher_local/`、`launcher_runtime.rs` | 统计按实际事件递增；诊断使用固定事件类型；只移除拥有且未修改的入口 |
 | 公告与剪贴板 | `launcher_discovery/` | 固定项目发行来源；剪贴板读前和异步回调均检查开关、原生键盘焦点 |
+| Minecraft 版本提醒 | `launcher_minecraft_updates/`、`launcher_minecraft_update_commands.rs`、`useLauncherMinecraftNotices.ts` | 官方版本身份与发布时间、独立已读记录、检查与确认的生命周期 |
 | 程序更新 | `launcher_updates/`、`launcher_update_commands.rs` | 官方发行资产验证、运行版本与磁盘版本分开、可恢复交换和回退 |
 
 前端 `useLauncherPreferences` 负责偏好写入与回复接纳，其他 `useLauncher*` hook 各自拥有媒体、桌面操作、更新和发现请求的生命周期。用户切页、改变策略或导入设置后，旧请求不能执行后续自动下载、展示旧主页或切换资源详情。
@@ -172,6 +173,14 @@ Rust 测试不能证明真实桌面选择器、网络授权页面或 Minecraft �
 `ToolboxDownload.tsx` 负责输入与确认，`toolbox_download/authority.rs` 持有系统选择器得到的目录和短期 token。实际 URL 只保留在原生内存；确认展示去掉查询参数。`transfer.rs` 检查每次重定向、完整响应、大小与超时，并使用提交时的网络和下载策略快照。`files.rs` 固定目录身份、复核匿名文件和无覆盖发布；任务持有准入直到实际工作线程退出。
 
 原生关闭入口 `begin_launcher_close` 使用相同的 `operations` 准入锁：即使当前空闲，也先设置关闭状态，再捕获活动任务。取消和等待在释放锁后进行，避免检查空闲与新任务接纳之间存在窗口，也避免等待线程阻塞任务的收尾提交。
+
+「停止使用」关闭失败时，只能撤销自己仍持有的关闭请求。`close_generation` 在准入锁下赋予请求所有权，后来的原生关闭不能被旧失败回复撤销。被动 `launcher_closing` 事件带同一 generation；渲染器拒绝乱序旧事件，不接管原生窗口销毁或任务等待。
+
+### Minecraft 版本提醒的检查与确认
+
+`launcher_minecraft_updates/provider.rs` 只读取固定 Mojang 版本清单，在大小、类型、身份与时间检查后选择各类型最新条目；不读取游戏目录，也不安装版本。`receipt.rs` 使用独立的固定文件、锁和容量限制，保存每个类型的发布时间高位、待提示版本和有界已读身份。第一次启用建立安静基线；清单回退、同一身份的元数据变化不能倒退或推进记录。
+
+命令在 `operations` 下捕获开关、不可变网络快照和策略 epoch，释放锁后等待网络，收尾时重新核对它们。相关开关、网络、设置导入/重新读取与关闭使旧请求失效；普通外观变化不改变策略。检查成功可以持久保存待提示状态，但不能标为已读；当前前端接纳合并提示后才提交短期 token，原生再次核对策略和记录 revision。忽略的旧回复不会吞掉通知，确认失败保留待提示状态。渲染器单次会话记住已显示身份，重试确认时不重复显示；显示与落盘之间的崩溃允许重启后再次提示。
 
 `ToolboxGenerators.tsx` 与 `achievementImage.ts` 使用真实内置图像生成成就 PNG。`toolbox_images/pixels.rs` 负责有界 PNG 解码、Minecraft 头部坐标、透明叠加与最近邻缩放；选择的皮肤以原生内存快照和过期 ID 绑定，不把源路径交给渲染器。图片保存前重新验证编码，选择器取消和发布冲突均保留已有内容。
 

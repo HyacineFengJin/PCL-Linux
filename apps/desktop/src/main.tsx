@@ -97,6 +97,7 @@ import {
 import type { LauncherMenuId } from "./launcherTypes";
 import type { ResourceBrowseRequest } from "./resourceBrowse";
 import { useLauncherLocal } from "./useLauncherLocal";
+import { useLauncherMinecraftNotices } from "./useLauncherMinecraftNotices";
 import { useLauncherUpdates } from "./useLauncherUpdates";
 import { useLauncherDiscovery } from "./useLauncherDiscovery";
 import {
@@ -1218,6 +1219,12 @@ function App() {
   const launcherLocal = useLauncherLocal(api, native, launcher, notify);
   const launcherFavorites = useLauncherFavorites(api, native, notify);
   const launcherUpdates = useLauncherUpdates(api, native, launcher, notify);
+  const minecraftNotices = useLauncherMinecraftNotices({
+    api,
+    native,
+    launcher,
+    onNotify: notify,
+  });
   const launcherDiscovery = useLauncherDiscovery({
     api,
     native,
@@ -2638,6 +2645,7 @@ function App() {
                               ...launcherMedia.effects,
                               ...launcherLocal.effects,
                               ...launcherUpdates.effects,
+                              ...minecraftNotices.effects,
                               ...launcherDiscovery.effects,
                             ]}
                             onLauncherAction={(action) =>

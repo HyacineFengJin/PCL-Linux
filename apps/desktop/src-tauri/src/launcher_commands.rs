@@ -33,6 +33,17 @@ pub struct SettingsSaved {
     path: String,
 }
 
+fn minecraft_notice_policy_changed(
+    before: &LauncherPreferences,
+    after: &LauncherPreferences,
+) -> bool {
+    before.network != after.network
+        || before.management.minecraft_release_notifications
+            != after.management.minecraft_release_notifications
+        || before.management.minecraft_snapshot_notifications
+            != after.management.minecraft_snapshot_notifications
+}
+
 pub fn network_policy(prefs: &LauncherPreferences) -> pcl_network::Policy {
     use pcl_network::{DnsFallback, DnsPolicy, Policy, ProxyPolicy};
     Policy {
@@ -180,6 +191,9 @@ pub async fn launcher_preferences(
         // including network policy. Exclude consumers before adopting it.
         require_network_idle(&shared)?;
         let mut view = shared.launcher_preferences.reload();
+        // Explicit adoption also retires an in-flight notice batch, including
+        // a failed reload. Cached preferences must not acknowledge it as fresh.
+        shared.minecraft_updates.invalidate();
         if view.warning.is_none() {
             let result = pcl_network::ClientFactory::new(network_policy(&view.preferences));
             match result {
@@ -226,12 +240,16 @@ pub async fn launcher_preferences_update(
         if shared.closing.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("启动器正在关闭，请稍后修改设置".into());
         }
-        let mut next = shared.launcher_preferences.snapshot().preferences;
+        let before = shared.launcher_preferences.snapshot().preferences;
+        let mut next = before.clone();
         patch.clone().apply(&mut next);
         next.validate()?;
         let network = prepare_network_change(&shared, &next)?;
         let downloads = prepare_download_change(&next)?;
         let view = shared.launcher_preferences.update(&revision, patch)?;
+        if minecraft_notice_policy_changed(&before, &view.preferences) {
+            shared.minecraft_updates.invalidate();
+        }
         // The prepared factory cannot fail after persistence commits. Jobs keep
         // immutable client snapshots; admission excludes a new job until swap.
         if let Some(network) = network {
@@ -366,6 +384,8 @@ pub async fn launcher_apply_settings_import(
         let view = shared
             .launcher_preferences
             .import_settings(&revision, &pending.bytes)?;
+        // Import is a new user intent even when these two flags are unchanged.
+        shared.minecraft_updates.invalidate();
         if let Some(network) = network {
             pcl_network::install_snapshot(network);
             shared

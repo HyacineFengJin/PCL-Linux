@@ -401,5 +401,14 @@ const messages = {
     "由本地皮肤的头部和帽子层生成；不上传皮肤、不修改原文件。",
   "images.achievementPreview": "输入文字和物品图标生成的成就图片",
   "local.infoKinds": "仅支持模组、资源包和光影的社区下载入口。",
+  "minecraftNotice.releaseFound": "Minecraft 有新的正式版：{version}",
+  "minecraftNotice.snapshotFound": "Minecraft 有新的测试版：{version}",
+  "minecraftNotice.bothFound":
+    "Minecraft 有新的正式版 {release} 和测试版 {snapshot}",
+  "minecraftNotice.help":
+    "首次启用时建立当前版本基线；之后在启动器运行期间检查新版本。提示不会安装游戏或切换实例。",
+  "minecraftNotice.unavailable": "Minecraft 版本提示服务当前不可用。",
+  "minecraftNotice.storageBlocked": "版本提示记录暂不可写，已保留原有记录。",
+  "minecraftNotice.invalidResponse": "Minecraft 版本提示返回了无效的确认数据。",
 } as const;
 export default messages;

@@ -91,6 +91,8 @@ export type LauncherPreferences = {
     max_concurrent_transfers: number;
     total_rate_limit_mib_per_second: number;
     clipboard_resource_detection: boolean;
+    minecraft_release_notifications: boolean;
+    minecraft_snapshot_notifications: boolean;
     download_file_name: "original" | "project_version";
     mod_display_style: "metadata" | "file_name";
     quick_download: "ask" | "last_folder";
@@ -141,7 +143,8 @@ export type LauncherEffect =
   | "settings_transfer"
   | "stop_using"
   | "logs"
-  | "updates";
+  | "updates"
+  | "minecraft_updates";
 export type LauncherAction =
   | "open_background_folder"
   | "refresh_background"
@@ -217,6 +220,8 @@ export function defaultLauncherPreferenceView(): LauncherPreferenceView {
         max_concurrent_transfers: 4,
         total_rate_limit_mib_per_second: 0,
         clipboard_resource_detection: false,
+        minecraft_release_notifications: false,
+        minecraft_snapshot_notifications: false,
         download_file_name: "original",
         mod_display_style: "metadata",
         quick_download: "ask",

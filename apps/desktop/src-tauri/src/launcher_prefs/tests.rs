@@ -261,6 +261,9 @@ mod fixtures {
             "task_id",
             "password",
             "cdk",
+            "highWater",
+            "readIds",
+            "policyRevision",
         ] {
             assert!(!text.contains(forbidden));
         }
@@ -290,6 +293,92 @@ mod fixtures {
             .import_settings(&imported.revision, &vec![b' '; MAX_IMPORT_BYTES + 1])
             .is_err());
         assert_eq!(fs::read(target.file()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn minecraft_notice_flags_are_independent_persisted_and_old_backups_default_to_disabled() {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        let defaults = store.snapshot();
+        assert!(
+            !defaults
+                .preferences
+                .management
+                .minecraft_release_notifications
+        );
+        assert!(
+            !defaults
+                .preferences
+                .management
+                .minecraft_snapshot_notifications
+        );
+        let release = store
+            .update(
+                &defaults.revision,
+                patch(serde_json::json!({
+                    "management":{"minecraft_release_notifications":true}
+                })),
+            )
+            .unwrap();
+        assert!(
+            !release
+                .preferences
+                .management
+                .minecraft_snapshot_notifications
+        );
+        let both = store
+            .update(
+                &release.revision,
+                patch(serde_json::json!({
+                    "management":{"minecraft_snapshot_notifications":true}
+                })),
+            )
+            .unwrap();
+        let restarted = fixture.store().snapshot();
+        assert!(
+            restarted
+                .preferences
+                .management
+                .minecraft_release_notifications
+        );
+        assert!(
+            restarted
+                .preferences
+                .management
+                .minecraft_snapshot_notifications
+        );
+        let exported = store.export_settings(&both.revision).unwrap();
+        let fresh = Fixture::new();
+        let target = fresh.store();
+        let view = target.snapshot();
+        let imported = target.import_settings(&view.revision, &exported).unwrap();
+        assert_eq!(imported.preferences.management, both.preferences.management);
+
+        // Older schema-1 backups know neither flag. They must restore disabled
+        // policy, rather than inherit notification consent from this process.
+        let mut old: serde_json::Value = serde_json::from_slice(&exported).unwrap();
+        let management = old["preferences"]["management"].as_object_mut().unwrap();
+        management.remove("minecraft_release_notifications");
+        management.remove("minecraft_snapshot_notifications");
+        let legacy = target
+            .import_settings(&imported.revision, &serde_json::to_vec(&old).unwrap())
+            .unwrap();
+        assert!(
+            !legacy
+                .preferences
+                .management
+                .minecraft_release_notifications
+        );
+        assert!(
+            !legacy
+                .preferences
+                .management
+                .minecraft_snapshot_notifications
+        );
+        assert!(!fresh
+            .0
+            .join(".pcl-rust/launcher-local/minecraft-updates.json")
+            .exists());
     }
 
     #[test]
