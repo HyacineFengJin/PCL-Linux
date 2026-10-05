@@ -1,0 +1,1032 @@
+use super::*;
+use sha2::{Digest, Sha512};
+use std::{fs, os::unix::fs::symlink};
+
+struct Fixture {
+    root: PathBuf,
+    source: PathBuf,
+}
+impl Fixture {
+    fn new(isolated: bool, dirs: bool) -> Self {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("work/autonomous-2026-10-04/mod-updates/transaction/fixtures")
+            .join(new_id());
+        let root = base.join("root");
+        let source = base.join("source");
+        fs::create_dir_all(root.join("versions/test")).unwrap();
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            root.join("versions/test/test.json"),
+            br#"{"id":"test","libraries":[]}"#,
+        )
+        .unwrap();
+        if isolated {
+            fs::create_dir_all(root.join("versions/test/config")).unwrap();
+        }
+        if dirs {
+            for k in KINDS {
+                fs::create_dir_all(if isolated {
+                    root.join("versions/test").join(k)
+                } else {
+                    root.join(k)
+                })
+                .unwrap();
+            }
+        }
+        Self {
+            root: root.canonicalize().unwrap(),
+            source: source.canonicalize().unwrap(),
+        }
+    }
+    fn folder(&self, kind: &str) -> PathBuf {
+        crate::ui_data::resource_dir(&self.root, "test", kind).unwrap()
+    }
+    fn file(&self, kind: &str, name: &str, payload: &[u8]) -> VerifiedImport {
+        let file = Dir::open(&self.source).unwrap().anonymous().unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file("payload.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(payload).unwrap();
+        let mut file = zip.finish().unwrap();
+        file.sync_all().unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        VerifiedImport {
+            kind: kind.into(),
+            file_name: name.into(),
+            size: bytes.len() as u64,
+            sha512: format!("{:x}", Sha512::digest(&bytes)),
+            file,
+        }
+    }
+    fn old(&self, kind: &str, name: &str, payload: &[u8]) -> Replacement {
+        fs::create_dir_all(self.folder(kind)).unwrap();
+        let mut input = self.file(kind, name, payload);
+        let mut bytes = Vec::new();
+        input.file.seek(SeekFrom::Start(0)).unwrap();
+        input.file.read_to_end(&mut bytes).unwrap();
+        let path = self.folder(kind).join(name);
+        fs::write(&path, bytes).unwrap();
+        Replacement {
+            kind: kind.into(),
+            old_file_name: name.into(),
+            old_fingerprint: super::super::fingerprint(&path).unwrap(),
+            old_sha512: input.sha512,
+            new_file_name: format!("next-{name}"),
+        }
+    }
+    fn replacement(&self, name: &str) -> Replacement {
+        let path = self.folder("mods").join(name);
+        Replacement {
+            kind: "mods".into(),
+            old_file_name: name.into(),
+            old_fingerprint: super::super::fingerprint(&path).unwrap(),
+            old_sha512: format!("{:x}", Sha512::digest(fs::read(path).unwrap())),
+            new_file_name: format!("next-{name}"),
+        }
+    }
+    fn run(&self, files: &mut [VerifiedImport], replacements: &[Replacement]) -> MutationResult {
+        update_verified_batch(
+            &self.root,
+            "test",
+            files,
+            replacements,
+            &AtomicBool::new(false),
+            &mut || Ok(()),
+            &mut |_, _| {},
+        )
+        .unwrap()
+    }
+    fn clean(&self) {
+        super::super::ensure_ready(&self.root).unwrap();
+        assert!(scope::marker_store(&self.root)
+            .unwrap()
+            .unwrap()
+            .names()
+            .unwrap()
+            .is_empty());
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        fs::remove_dir_all(self.root.parent().unwrap()).unwrap();
+    }
+}
+fn prepared(
+    f: &Fixture,
+    files: &mut [VerifiedImport],
+    replacements: &[Replacement],
+) -> (Context, Journal) {
+    let cancel = AtomicBool::new(false);
+    let tokens = validate_sources(files, replacements, &cancel).unwrap();
+    let (context, mut j) = scope::prepare(&f.root, "test", files, replacements, &cancel).unwrap();
+    stage(&context, &mut j, files, &tokens, &cancel, &mut |_, _| {}).unwrap();
+    j.after = scope::expected_after(&j).unwrap();
+    j.state = State::Prepared;
+    journal::write(&context, &j).unwrap();
+    (context, j)
+}
+fn applying(context: &Context, j: &mut Journal) {
+    j.state = State::Applying;
+    journal::write(context, j).unwrap();
+    scope::create_targets(context, j).unwrap();
+}
+fn move_one(context: &Context, j: &Journal, index: usize) {
+    let item = &j.items[index];
+    let dir = context.resources(j, &item.kind, true).unwrap().unwrap();
+    let op = context.operation.as_ref().unwrap();
+    if let Some(old) = &item.old {
+        dir.move_directory(&old.name, op, &slot("old", index))
+            .unwrap();
+    }
+    op.move_directory(&slot("new", index), &dir, &item.name)
+        .unwrap();
+}
+fn undo_partial(context: &Context, j: &mut Journal, count: usize) {
+    journal::create_marker(context, j).unwrap();
+    j.state = State::UndoApplying;
+    journal::write(context, j).unwrap();
+    for index in 0..count {
+        let item = &j.items[index];
+        let dir = context.resources(j, &item.kind, true).unwrap().unwrap();
+        dir.move_directory(
+            &item.name,
+            context.operation.as_ref().unwrap(),
+            &slot("new", index),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn mixed_updates_keep_disabled_and_original_inodes() {
+    for isolated in [false, true] {
+        let f = Fixture::new(isolated, true);
+        let mut r = f.old("mods", "old.jar.disabled", b"old");
+        r.new_file_name = "new.jar.disabled".into();
+        let old_inode = fs::metadata(f.folder("mods").join("old.jar.disabled"))
+            .unwrap()
+            .ino();
+        let mut files = vec![
+            f.file("mods", "new.jar.disabled", b"new"),
+            f.file("resourcepacks", "new.zip", b"pack"),
+            f.file("shaderpacks", "new.zip", b"shader"),
+        ];
+        let admitted = std::cell::Cell::new(false);
+        let mut published = Vec::new();
+        let result = update_verified_batch(
+            &f.root,
+            "test",
+            &mut files,
+            &[r],
+            &AtomicBool::new(false),
+            &mut || {
+                admitted.set(true);
+                Ok(())
+            },
+            &mut |done, total| {
+                if admitted.get() {
+                    published.push((done, total));
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(published.len(), files.len());
+        assert!(published.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        let last = published.last().unwrap();
+        assert_eq!(last.0, last.1);
+        assert!(published.first().unwrap().0 < last.1);
+        let id = result.undo_id.unwrap();
+        assert_eq!(result.changed, 3);
+        for input in &files {
+            assert_eq!(
+                fs::metadata(f.folder(&input.kind).join(&input.file_name))
+                    .unwrap()
+                    .nlink(),
+                1
+            );
+        }
+        let history = updates_history(&f.root, "test").unwrap();
+        assert_eq!(history[0].id, id);
+        assert!(history[0].files[0].contains("old.jar.disabled"));
+        restore_update(
+            &f.root,
+            "test",
+            &id,
+            &AtomicBool::new(false),
+            &mut || Ok(()),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::metadata(f.folder("mods").join("old.jar.disabled"))
+                .unwrap()
+                .ino(),
+            old_inode
+        );
+        assert!(updates_history(&f.root, "test").unwrap().is_empty());
+        f.clean();
+    }
+}
+#[test]
+fn preparation_copies_without_fingerprint_or_directory_changes() {
+    let f = Fixture::new(true, false);
+    let r = f.old("mods", "old.jar", b"old");
+    let old_path = f.folder("mods").join("old.jar");
+    let fingerprint = super::super::fingerprint(&old_path).unwrap();
+    let mut files = vec![
+        f.file("mods", &r.new_file_name, b"new"),
+        f.file("resourcepacks", "added.zip", b"added"),
+    ];
+    let (c, j) = prepared(&f, &mut files, &[r]);
+    assert_eq!(super::super::fingerprint(&old_path).unwrap(), fingerprint);
+    assert!(!f.folder("resourcepacks").exists());
+    assert!(!f.folder("shaderpacks").exists());
+    recovery::one(&c, &j).unwrap();
+    f.clean();
+}
+#[test]
+fn cancel_before_commit_cleans_without_touching_original() {
+    let f = Fixture::new(false, true);
+    let r = f.old("mods", "old.jar", b"old");
+    let cancel = AtomicBool::new(false);
+    let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
+    let token = r.old_fingerprint.clone();
+    let mut commits = 0;
+    let result = update_verified_batch(
+        &f.root,
+        "test",
+        &mut files,
+        &[r],
+        &cancel,
+        &mut || {
+            commits += 1;
+            Ok(())
+        },
+        &mut |_, _| cancel.store(true, Ordering::Release),
+    );
+    assert_eq!(result.unwrap_err(), CANCELLED);
+    assert_eq!(commits, 0);
+    assert_eq!(
+        super::super::fingerprint(&f.folder("mods").join("old.jar")).unwrap(),
+        token
+    );
+    f.clean();
+}
+#[test]
+fn commit_rejection_keeps_its_error_after_late_cancel() {
+    let f = Fixture::new(false, true);
+    let r = f.old("mods", "old.jar", b"old");
+    let cancel = AtomicBool::new(false);
+    let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
+    let result = update_verified_batch(
+        &f.root,
+        "test",
+        &mut files,
+        &[r],
+        &cancel,
+        &mut || {
+            cancel.store(true, Ordering::Release);
+            Err("plan changed".into())
+        },
+        &mut |_, _| {},
+    );
+    assert_eq!(result.unwrap_err(), "plan changed");
+    f.clean();
+}
+#[test]
+fn applying_crash_rolls_back_original_inode() {
+    let f = Fixture::new(false, true);
+    let a = f.old("mods", "a.jar", b"a");
+    let b = f.old("mods", "b.jar", b"b");
+    let inode = fs::metadata(f.folder("mods").join("a.jar")).unwrap().ino();
+    let mut files = vec![
+        f.file("mods", &a.new_file_name, b"a2"),
+        f.file("mods", &b.new_file_name, b"b2"),
+    ];
+    let (c, mut j) = prepared(&f, &mut files, &[a, b]);
+    applying(&c, &mut j);
+    move_one(&c, &j, 0);
+    assert!(ensure_ready(&f.root).is_err());
+    recover_root(&f.root).unwrap();
+    assert_eq!(
+        fs::metadata(f.folder("mods").join("a.jar")).unwrap().ino(),
+        inode
+    );
+    assert!(f.folder("mods").join("b.jar").exists());
+    f.clean();
+}
+#[test]
+fn rollback_conflict_retains_record_and_retries() {
+    let f = Fixture::new(false, true);
+    let r = f.old("mods", "old.jar", b"old");
+    let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
+    let (c, mut j) = prepared(&f, &mut files, &[r]);
+    applying(&c, &mut j);
+    move_one(&c, &j, 0);
+    fs::write(f.folder("mods").join("old.jar"), b"external").unwrap();
+    assert!(recover_root(&f.root).is_err());
+    assert!(c
+        .operation
+        .as_ref()
+        .unwrap()
+        .stat("old-0000")
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        fs::read(f.folder("mods").join("old.jar")).unwrap(),
+        b"external"
+    );
+    fs::remove_file(f.folder("mods").join("old.jar")).unwrap();
+    recover_root(&f.root).unwrap();
+    f.clean();
+}
+#[test]
+fn committed_write_error_keeps_new_and_old_for_recovery() {
+    let f = Fixture::new(false, true);
+    let r = f.old("mods", "old.jar", b"old");
+    let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
+    journal::FAIL_COMMITTED_WRITE.with(|v| v.set(true));
+    let result = update_verified_batch(
+        &f.root,
+        "test",
+        &mut files,
+        &[r],
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+        &mut |_, _| {},
+    );
+    assert!(result.unwrap_err().contains("同步失败"));
+    assert!(f.folder("mods").join("next-old.jar").exists());
+    assert!(!f.folder("mods").join("old.jar").exists());
+    assert!(ensure_ready(&f.root).is_err());
+    recover_root(&f.root).unwrap();
+    let id = updates_history(&f.root, "test").unwrap()[0].id.clone();
+    restore_update(
+        &f.root,
+        "test",
+        &id,
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    f.clean();
+}
+#[test]
+fn undo_applying_partial_rolls_forward_to_committed() {
+    let f = Fixture::new(false, true);
+    let r = f.old("mods", "old.jar", b"old");
+    let mut files = vec![
+        f.file("mods", &r.new_file_name, b"new"),
+        f.file("resourcepacks", "added.zip", b"pack"),
+    ];
+    let id = f.run(&mut files, &[r]).undo_id.unwrap();
+    let c = Context::existing(&f.root, "test", &id).unwrap();
+    let mut j = journal::read(&c).unwrap();
+    undo_partial(&c, &mut j, 1);
+    recover_root(&f.root).unwrap();
+    assert!(f.folder("mods").join("next-old.jar").exists());
+    assert!(!f.folder("mods").join("old.jar").exists());
+    restore_update(
+        &f.root,
+        "test",
+        &id,
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    f.clean();
+}
+#[test]
+fn undo_conflict_preserves_external_and_retry_succeeds() {
+    let f = Fixture::new(false, true);
+    let r = f.old("mods", "old.jar", b"old");
+    let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
+    let id = f.run(&mut files, &[r]).undo_id.unwrap();
+    let c = Context::existing(&f.root, "test", &id).unwrap();
+    let mut j = journal::read(&c).unwrap();
+    undo_partial(&c, &mut j, 1);
+    fs::write(f.folder("mods").join("next-old.jar"), b"external").unwrap();
+    assert!(recover_root(&f.root).is_err());
+    assert_eq!(
+        fs::read(f.folder("mods").join("next-old.jar")).unwrap(),
+        b"external"
+    );
+    fs::remove_file(f.folder("mods").join("next-old.jar")).unwrap();
+    recover_root(&f.root).unwrap();
+    restore_update(
+        &f.root,
+        "test",
+        &id,
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    f.clean();
+}
+#[test]
+fn undo_missing_target_dirs_keeps_binding_until_durable_restored() {
+    let f = Fixture::new(true, false);
+    let mut files = vec![f.file("resourcepacks", "added.zip", b"pack")];
+    let id = f.run(&mut files, &[]).undo_id.unwrap();
+    let c = Context::existing(&f.root, "test", &id).unwrap();
+    let mut j = journal::read(&c).unwrap();
+    undo_partial(&c, &mut j, 1);
+    assert!(f.folder("resourcepacks").exists());
+    recover_root(&f.root).unwrap();
+    restore_update(
+        &f.root,
+        "test",
+        &id,
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    assert!(!f.folder("resourcepacks").exists());
+    f.clean();
+}
+#[test]
+fn root_marker_detects_external_instance_move_even_missing_json() {
+    let f = Fixture::new(true, true);
+    let mut files = vec![f.file("mods", "new.jar", b"new")];
+    let (_c, _j) = prepared(&f, &mut files, &[]);
+    fs::remove_file(f.root.join("versions/test/test.json")).unwrap();
+    fs::rename(f.root.join("versions/test"), f.source.join("moved")).unwrap();
+    assert!(super::super::ensure_ready(&f.root).is_err());
+    assert!(recover_root(&f.root).is_err());
+    fs::rename(f.source.join("moved"), f.root.join("versions/test")).unwrap();
+    recover_root(&f.root).unwrap();
+    f.clean();
+}
+#[test]
+fn namespace_replacement_is_retained() {
+    let f = Fixture::new(false, true);
+    let r = f.old("mods", "old.jar", b"old");
+    let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
+    let (c, j) = prepared(&f, &mut files, &[r]);
+    fs::rename(f.folder("mods"), f.source.join("moved-mods")).unwrap();
+    fs::create_dir(f.folder("mods")).unwrap();
+    assert!(recovery::one(&c, &j).is_err());
+    assert!(c
+        .operation
+        .as_ref()
+        .unwrap()
+        .stat("new-0000")
+        .unwrap()
+        .is_some());
+    fs::remove_dir(f.folder("mods")).unwrap();
+    fs::rename(f.source.join("moved-mods"), f.folder("mods")).unwrap();
+    recover_root(&f.root).unwrap();
+    f.clean();
+}
+#[test]
+fn shared_inventory_change_at_commit_is_rejected() {
+    let f = Fixture::new(false, true);
+    let r = f.old("mods", "old.jar", b"old");
+    let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
+    let result = update_verified_batch(
+        &f.root,
+        "test",
+        &mut files,
+        &[r],
+        &AtomicBool::new(false),
+        &mut || {
+            fs::write(f.folder("shaderpacks").join("external.zip"), b"external").unwrap();
+            Ok(())
+        },
+        &mut |_, _| {},
+    );
+    assert!(result.unwrap_err().contains("清单"));
+    assert!(f.folder("mods").join("old.jar").exists());
+    assert_eq!(
+        fs::read(f.folder("shaderpacks").join("external.zip")).unwrap(),
+        b"external"
+    );
+    f.clean();
+}
+#[test]
+fn unknown_private_file_blocks_guard_and_safe_recovery() {
+    let f = Fixture::new(false, true);
+    let r = f.old("mods", "old.jar", b"old");
+    let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
+    let id = f.run(&mut files, &[r]).undo_id.unwrap();
+    let path = f
+        .root
+        .join("versions/test")
+        .join(HISTORY)
+        .join(&id)
+        .join("retain.txt");
+    fs::write(&path, b"retain").unwrap();
+    assert!(super::super::ensure_ready(&f.root).is_err());
+    assert!(restore_update(
+        &f.root,
+        "test",
+        &id,
+        &AtomicBool::new(false),
+        &mut || Ok(())
+    )
+    .is_err());
+    assert!(recover_root(&f.root).is_err());
+    assert_eq!(fs::read(&path).unwrap(), b"retain");
+    fs::remove_file(path).unwrap();
+    f.clean();
+}
+#[test]
+fn consecutive_updates_restore_original_inode_chain() {
+    let f = Fixture::new(true, true);
+    let a = f.old("mods", "old.jar", b"old");
+    let inode = fs::metadata(f.folder("mods").join("old.jar"))
+        .unwrap()
+        .ino();
+    let mut first = vec![f.file("mods", &a.new_file_name, b"first")];
+    let first_id = f.run(&mut first, &[a]).undo_id.unwrap();
+    let b = f.replacement("next-old.jar");
+    let mut second = vec![f.file("mods", &b.new_file_name, b"second")];
+    let second_id = f.run(&mut second, &[b]).undo_id.unwrap();
+    assert!(restore_update(
+        &f.root,
+        "test",
+        &first_id,
+        &AtomicBool::new(false),
+        &mut || Ok(())
+    )
+    .is_err());
+    restore_update(
+        &f.root,
+        "test",
+        &second_id,
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    restore_update(
+        &f.root,
+        "test",
+        &first_id,
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    assert_eq!(
+        fs::metadata(f.folder("mods").join("old.jar"))
+            .unwrap()
+            .ino(),
+        inode
+    );
+    f.clean();
+}
+#[test]
+fn rename_and_delete_restore_carry_history_with_instance_inode() {
+    let f = Fixture::new(true, true);
+    let r = f.old("mods", "old.jar", b"old");
+    let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
+    let id = f.run(&mut files, &[r]).undo_id.unwrap();
+    fs::rename(
+        f.root.join("versions/test"),
+        f.root.join("versions/renamed"),
+    )
+    .unwrap();
+    fs::rename(
+        f.root.join("versions/renamed/test.json"),
+        f.root.join("versions/renamed/renamed.json"),
+    )
+    .unwrap();
+    assert_eq!(updates_history(&f.root, "renamed").unwrap()[0].id, id);
+    fs::rename(f.root.join("versions/renamed"), f.source.join("deleted")).unwrap();
+    super::super::ensure_ready(&f.root).unwrap();
+    fs::rename(f.source.join("deleted"), f.root.join("versions/renamed")).unwrap();
+    restore_update(
+        &f.root,
+        "renamed",
+        &id,
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    assert!(f.root.join("versions/renamed/mods/old.jar").exists());
+    f.clean();
+}
+#[test]
+fn symlinked_resource_directory_is_rejected_without_following() {
+    let f = Fixture::new(false, false);
+    symlink(&f.source, f.root.join("mods")).unwrap();
+    let mut files = vec![f.file("mods", "new.jar", b"new")];
+    assert!(update_verified_batch(
+        &f.root,
+        "test",
+        &mut files,
+        &[],
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+        &mut |_, _| {}
+    )
+    .is_err());
+    assert!(fs::read_dir(&f.source).unwrap().next().is_none());
+}
+#[test]
+fn ownership_receipts_recover_staging_before_next_full_manifest() {
+    let f = Fixture::new(false, true);
+    let r = f.old("mods", "old.jar", b"old");
+    let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
+    let cancel = AtomicBool::new(false);
+    let tokens = validate_sources(&mut files, &[r.clone()], &cancel).unwrap();
+    let (c, mut j) = scope::prepare(&f.root, "test", &files, &[r], &cancel).unwrap();
+    stage(&c, &mut j, &mut files, &tokens, &cancel, &mut |_, _| {}).unwrap();
+    let disk = journal::read(&c).unwrap();
+    assert_eq!(disk.state, State::Staging);
+    assert!(disk.items[0].new.is_some());
+    assert!(disk.items[0].old.as_ref().unwrap().backup.is_some());
+    recover_root(&f.root).unwrap();
+    f.clean();
+}
+#[test]
+fn root_marker_receipt_recovers_undo_before_full_manifest() {
+    let f = Fixture::new(false, true);
+    let r = f.old("mods", "old.jar", b"old");
+    let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
+    let id = f.run(&mut files, &[r]).undo_id.unwrap();
+    let c = Context::existing(&f.root, "test", &id).unwrap();
+    let mut j = journal::read(&c).unwrap();
+    journal::create_marker(&c, &mut j).unwrap();
+    let disk = journal::read(&c).unwrap();
+    assert_eq!(disk.state, State::Committed);
+    assert_eq!(
+        disk.marker.as_ref().unwrap().key,
+        j.marker.as_ref().unwrap().key
+    );
+    recover_root(&f.root).unwrap();
+    f.clean();
+}
+#[test]
+fn partially_completed_apply_rollback_retries() {
+    let f = Fixture::new(false, true);
+    let a = f.old("mods", "a.jar", b"a");
+    let b = f.old("mods", "b.jar", b"b");
+    let mut files = vec![
+        f.file("mods", &a.new_file_name, b"a2"),
+        f.file("mods", &b.new_file_name, b"b2"),
+    ];
+    let (c, mut j) = prepared(&f, &mut files, &[a, b]);
+    applying(&c, &mut j);
+    move_one(&c, &j, 0);
+    move_one(&c, &j, 1);
+    let dir = c.resources(&j, "mods", true).unwrap().unwrap();
+    let op = c.operation.as_ref().unwrap();
+    dir.move_directory(&j.items[0].name, op, "new-0000")
+        .unwrap();
+    op.move_directory("old-0000", &dir, &j.items[0].old.as_ref().unwrap().name)
+        .unwrap();
+    recover_root(&f.root).unwrap();
+    assert!(f.folder("mods").join("a.jar").exists());
+    assert!(f.folder("mods").join("b.jar").exists());
+    f.clean();
+}
+#[test]
+fn partially_completed_undo_rollback_retries() {
+    let f = Fixture::new(false, true);
+    let a = f.old("mods", "a.jar", b"a");
+    let b = f.old("mods", "b.jar", b"b");
+    let mut files = vec![
+        f.file("mods", &a.new_file_name, b"a2"),
+        f.file("mods", &b.new_file_name, b"b2"),
+    ];
+    let id = f.run(&mut files, &[a, b]).undo_id.unwrap();
+    let c = Context::existing(&f.root, "test", &id).unwrap();
+    let mut j = journal::read(&c).unwrap();
+    undo_partial(&c, &mut j, 2);
+    let op = c.operation.as_ref().unwrap();
+    let dir = c.resources(&j, "mods", true).unwrap().unwrap();
+    op.move_directory("old-0000", &dir, &j.items[0].old.as_ref().unwrap().name)
+        .unwrap();
+    op.move_directory("old-0001", &dir, &j.items[1].old.as_ref().unwrap().name)
+        .unwrap();
+    dir.move_directory(&j.items[0].old.as_ref().unwrap().name, op, "old-0000")
+        .unwrap();
+    op.move_directory("new-0000", &dir, &j.items[0].name)
+        .unwrap();
+    recover_root(&f.root).unwrap();
+    assert!(f.folder("mods").join("next-a.jar").exists());
+    assert!(f.folder("mods").join("next-b.jar").exists());
+    restore_update(
+        &f.root,
+        "test",
+        &id,
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    f.clean();
+}
+#[test]
+fn interrupted_journal_temp_retries_without_overwrite() {
+    let f = Fixture::new(false, true);
+    let mut files = vec![f.file("mods", "new.jar", b"new")];
+    let (c, j) = prepared(&f, &mut files, &[]);
+    let op = c.operation.as_ref().unwrap();
+    fs::copy(
+        f.root
+            .join("versions/test")
+            .join(HISTORY)
+            .join(&j.id)
+            .join("journal.json"),
+        f.root
+            .join("versions/test")
+            .join(HISTORY)
+            .join(&j.id)
+            .join("journal.next"),
+    )
+    .unwrap();
+    assert!(op.stat("journal.next").unwrap().is_some());
+    journal::write(&c, &j).unwrap();
+    recover_root(&f.root).unwrap();
+    f.clean();
+}
+#[test]
+fn undo_external_original_slot_conflict_retains_history() {
+    let f = Fixture::new(false, true);
+    let r = f.old("mods", "old.jar", b"old");
+    let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
+    let id = f.run(&mut files, &[r]).undo_id.unwrap();
+    let c = Context::existing(&f.root, "test", &id).unwrap();
+    let mut j = journal::read(&c).unwrap();
+    undo_partial(&c, &mut j, 1);
+    fs::write(f.folder("mods").join("old.jar"), b"external").unwrap();
+    assert!(recover_root(&f.root).is_err());
+    assert_eq!(
+        fs::read(f.folder("mods").join("old.jar")).unwrap(),
+        b"external"
+    );
+    assert!(c
+        .operation
+        .as_ref()
+        .unwrap()
+        .stat("old-0000")
+        .unwrap()
+        .is_some());
+    fs::remove_file(f.folder("mods").join("old.jar")).unwrap();
+    recover_root(&f.root).unwrap();
+    restore_update(
+        &f.root,
+        "test",
+        &id,
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    f.clean();
+}
+
+#[test]
+fn actual_rename_delete_and_restore_services_carry_update_history() {
+    let f = Fixture::new(true, true);
+    let r = f.old("mods", "old.jar", b"old");
+    let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
+    let update_id = f.run(&mut files, &[r]).undo_id.unwrap();
+    fs::write(f.root.join("versions/test/test.json"),br#"{"id":"test","jar":"test","mainClass":"net.minecraft.client.main.Main","clientVersion":"1.20.1","libraries":[]}"#).unwrap();
+    fs::write(f.root.join("versions/test/test.jar"), b"client jar").unwrap();
+    let project = f.source.join("project");
+    fs::create_dir_all(project.join(".pcl-rust")).unwrap();
+    fs::write(project.join(".pcl-rust/settings.json"),serde_json::to_vec(&serde_json::json!({"schema_version":3,"active_root_id":"root-fixture","player":"Player","memory_gib":6,"java":{"mode":"auto"},"java_paths":[],"roots":[{"id":"root-fixture","name":"Game","path":f.root,"selected":"test","overrides":{},"java_overrides":{}}]})).unwrap()).unwrap();
+    super::super::ensure_ready(&f.root).unwrap();
+    let rename = crate::instance_rename::prepare(&f.root, "test", "renamed").unwrap();
+    let refs =
+        crate::instance_rename_refs::prepare(&project, "root-fixture", &f.root, "test", "renamed")
+            .unwrap();
+    crate::instance_rename::execute(
+        &f.root,
+        &project,
+        rename,
+        refs,
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(
+        updates_history(&f.root, "renamed").unwrap()[0].id,
+        update_id
+    );
+    let deletion =
+        crate::instance_delete::prepare(&f.root, &project, "root-fixture", "renamed").unwrap();
+    crate::instance_delete::execute(&f.root, &project, deletion, &AtomicBool::new(false), |_| {})
+        .unwrap();
+    assert!(!f.root.join("versions/renamed").exists());
+    let entry = crate::instance_delete::history(&f.root, &project, "root-fixture")
+        .unwrap()
+        .remove(0);
+    crate::instance_delete::undo(
+        &f.root,
+        &project,
+        "root-fixture",
+        &entry.operation_id,
+        entry.revision.as_ref().unwrap(),
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(
+        updates_history(&f.root, "renamed").unwrap()[0].id,
+        update_id
+    );
+    restore_update(
+        &f.root,
+        "renamed",
+        &update_id,
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    assert!(f.root.join("versions/renamed/mods/old.jar").exists());
+    f.clean();
+}
+#[test]
+fn actual_export_omits_private_history_and_reset_prepare_keeps_it() {
+    let f = Fixture::new(true, true);
+    let r = f.old("mods", "old.jar", b"old");
+    let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
+    let id = f.run(&mut files, &[r]).undo_id.unwrap();
+    fs::write(f.root.join("versions/test/test.json"),br#"{"id":"test","jar":"test","mainClass":"net.minecraft.client.main.Main","clientVersion":"1.20.1","libraries":[]}"#).unwrap();
+    fs::write(f.root.join("versions/test/test.jar"), b"client jar").unwrap();
+    let history_path = f
+        .root
+        .join("versions/test")
+        .join(HISTORY)
+        .join(&id)
+        .join("journal.json");
+    let before = fs::read(&history_path).unwrap();
+    let request = crate::instance_export::ExportRequest {
+        name: "Fixture".into(),
+        version: "1".into(),
+        checks: crate::instance_export::ExportChecks {
+            other: true,
+            ..Default::default()
+        },
+        excluded: BTreeMap::new(),
+    };
+    let plan = crate::instance_export::prepare(&f.root, "test", request).unwrap();
+    let destination = f.source.join("export.zip");
+    crate::instance_export::execute(plan, &destination, &AtomicBool::new(false), |_| {}).unwrap();
+    let mut zip = zip::ZipArchive::new(File::open(destination).unwrap()).unwrap();
+    let mut has_mod = false;
+    for index in 0..zip.len() {
+        let item = zip.by_index(index).unwrap();
+        assert!(!item.name().contains(HISTORY));
+        if item.name().ends_with("mods/next-old.jar") {
+            has_mod = true;
+        }
+    }
+    assert!(has_mod);
+    crate::instance_reset::prepare(&f.root, "test", vec![]).unwrap();
+    assert_eq!(fs::read(history_path).unwrap(), before);
+    restore_update(
+        &f.root,
+        "test",
+        &id,
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    f.clean();
+}
+#[test]
+fn maximum_replacements_have_bounded_phase_writes_and_readable_inventory() {
+    let f = Fixture::new(false, true);
+    let mut replacements = Vec::new();
+    let mut files = Vec::new();
+    for index in 0..MAX_FILES {
+        let r = f.old("mods", &format!("old-{index:04}.jar"), b"old");
+        files.push(f.file("mods", &r.new_file_name, b"new"));
+        replacements.push(r);
+    }
+    journal::FULL_WRITES.with(|n| n.set(0));
+    let id = f.run(&mut files, &replacements).undo_id.unwrap();
+    assert_eq!(journal::FULL_WRITES.with(|n| n.get()), 4);
+    assert_eq!(
+        updates_history(&f.root, "test").unwrap()[0].files.len(),
+        MAX_FILES
+    );
+    f.clean();
+    restore_update(
+        &f.root,
+        "test",
+        &id,
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    f.clean();
+}
+#[test]
+fn size_and_history_limits_refuse_without_dropping_backups() {
+    let f = Fixture::new(false, true);
+    let mut huge = f.file("mods", "huge.jar", b"new");
+    huge.size = MAX_FILE_BYTES + 1;
+    assert!(update_verified_batch(
+        &f.root,
+        "test",
+        &mut [huge],
+        &[],
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+        &mut |_, _| {}
+    )
+    .unwrap_err()
+    .contains("大小"));
+    let history = f.root.join("versions/test").join(HISTORY);
+    fs::create_dir(&history).unwrap();
+    for _ in 0..MAX_HISTORIES {
+        fs::create_dir(history.join(new_id())).unwrap();
+    }
+    let input = f.file("mods", "new.jar", b"new");
+    let result = scope::prepare(&f.root, "test", &[input], &[], &AtomicBool::new(false));
+    assert!(result.err().unwrap().contains("256"));
+    assert_eq!(fs::read_dir(history).unwrap().count(), MAX_HISTORIES);
+    assert!(!f.folder("mods").join("new.jar").exists());
+}
+#[test]
+fn late_cancel_after_first_move_keeps_the_committed_batch() {
+    let f = Fixture::new(false, true);
+    let a = f.old("mods", "a.jar", b"a");
+    let b = f.old("mods", "b.jar", b"b");
+    let mut files = vec![
+        f.file("mods", &a.new_file_name, b"a2"),
+        f.file("mods", &b.new_file_name, b"b2"),
+    ];
+    let cancel = AtomicBool::new(false);
+    let admitted = std::cell::Cell::new(false);
+    let result = update_verified_batch(
+        &f.root,
+        "test",
+        &mut files,
+        &[a, b],
+        &cancel,
+        &mut || {
+            admitted.set(true);
+            Ok(())
+        },
+        &mut |_, _| {
+            if admitted.get() {
+                cancel.store(true, Ordering::Release);
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(result.changed, 2);
+    assert!(f.folder("mods").join("next-a.jar").exists());
+    assert!(f.folder("mods").join("next-b.jar").exists());
+    f.clean();
+}
+#[test]
+fn cancellation_winning_at_the_commit_gate_preserves_old_inode() {
+    let f = Fixture::new(false, true);
+    let r = f.old("mods", "old.jar", b"old");
+    let inode = fs::metadata(f.folder("mods").join("old.jar"))
+        .unwrap()
+        .ino();
+    let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
+    let cancel = AtomicBool::new(false);
+    let result = update_verified_batch(
+        &f.root,
+        "test",
+        &mut files,
+        &[r],
+        &cancel,
+        &mut || {
+            cancel.store(true, Ordering::Release);
+            Ok(())
+        },
+        &mut |_, _| {},
+    );
+    assert_eq!(result.unwrap_err(), CANCELLED);
+    assert_eq!(
+        fs::metadata(f.folder("mods").join("old.jar"))
+            .unwrap()
+            .ino(),
+        inode
+    );
+    f.clean();
+}
+#[test]
+fn update_pending_blocks_legacy_import_before_creating_missing_resource_dirs() {
+    let f = Fixture::new(true, false);
+    let mut files = vec![f.file("mods", "new.jar", b"new")];
+    let (_c, _j) = prepared(&f, &mut files, &[]);
+    let result = super::super::set_enabled(
+        &f.root,
+        "test",
+        "mods",
+        &[super::super::ResourceFile {
+            file_name: "old.jar".into(),
+            fingerprint: "invalid".into(),
+        }],
+        false,
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+        &mut |_, _| {},
+    );
+    assert!(result.is_err());
+    assert!(!f.folder("mods").exists());
+    assert!(super::super::ensure_verified_batches_ready(&f.root).is_err());
+    super::super::recover_verified_batches(&f.root).unwrap();
+    f.clean();
+}

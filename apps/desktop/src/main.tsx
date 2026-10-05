@@ -165,6 +165,8 @@ const resourceWrites = new Set([
   "resource_import",
   "resource_recover",
   "resource_install_start",
+  "resource_update_start",
+  "resource_update_restore",
   "resource_install_recover",
   "instance_metadata_update",
   "instance_reset_start",
@@ -196,7 +198,12 @@ const rootCommands = new Set([
   "resource_removed",
   "resource_recover",
   "resource_install_plan",
+  "resource_update_check",
+  "resource_update_plan",
+  "resource_update_history",
   "resource_install_start",
+  "resource_update_start",
+  "resource_update_restore",
   "resource_install_recover",
   "instance_metadata_update",
   "instance_metadata_read",
@@ -1022,7 +1029,7 @@ function App() {
     try {
       await api("resource_install_recover", { rootId: targetRoot });
       await load();
-      notify("已恢复未完成的资源安装");
+      notify("已恢复未完成的资源安装或更新");
     } catch (error) {
       await load();
       notify(String(error));
@@ -1118,6 +1125,8 @@ function App() {
       "instance_delete",
       "instance_restore",
       "resource_download",
+      "resource_update",
+      "resource_update_restore",
     ].includes(next.kind || "");
     notify(`${next.version || "游戏"} ${instanceTaskAction(next.kind)}已取消`);
     if (!instanceTask) {
@@ -2124,7 +2133,7 @@ function App() {
                   }
                   onClick={() => void recoverResourceInstall()}
                 >
-                  恢复资源安装
+                  恢复资源安装或更新
                 </button>
               </section>
             )}

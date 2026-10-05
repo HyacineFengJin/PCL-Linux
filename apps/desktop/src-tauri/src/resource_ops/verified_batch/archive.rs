@@ -123,7 +123,7 @@ fn preflight_zip(file: &mut File) -> Result<(usize, u64)> {
     file.seek(SeekFrom::Start(0)).map_err(error)?;
     Ok((count as usize, cd_offset))
 }
-pub(super) fn validate(file: &mut File, cancel: &AtomicBool) -> Result<()> {
+pub(in crate::resource_ops) fn validate(file: &mut File, cancel: &AtomicBool) -> Result<()> {
     check(cancel)?;
     let (count, central) = preflight_zip(file)?;
     let mut zip =

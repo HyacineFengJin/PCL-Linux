@@ -18,19 +18,19 @@ use std::{
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Key {
-    pub(super) dev: u64,
-    pub(super) ino: u64,
+pub(in crate::resource_ops) struct Key {
+    pub(in crate::resource_ops) dev: u64,
+    pub(in crate::resource_ops) ino: u64,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Owned {
-    pub(super) key: Key,
-    pub(super) size: u64,
-    pub(super) sha512: String,
-    pub(super) mode: u32,
+pub(in crate::resource_ops) struct Owned {
+    pub(in crate::resource_ops) key: Key,
+    pub(in crate::resource_ops) size: u64,
+    pub(in crate::resource_ops) sha512: String,
+    pub(in crate::resource_ops) mode: u32,
 }
-pub(super) struct Dir(File);
+pub(in crate::resource_ops) struct Dir(File);
 fn c(name: &str) -> Result<CString> {
     super::super::safe_name(name)?;
     CString::new(name).map_err(error)
@@ -38,14 +38,14 @@ fn c(name: &str) -> Result<CString> {
 fn io(context: &str) -> String {
     format!("{context}：{}", std::io::Error::last_os_error())
 }
-pub(super) fn key_file(file: &File) -> Result<Key> {
+pub(in crate::resource_ops) fn key_file(file: &File) -> Result<Key> {
     let m = file.metadata().map_err(error)?;
     Ok(Key {
         dev: m.dev(),
         ino: m.ino(),
     })
 }
-pub(super) fn anonymous_source(file: &File) -> Result<()> {
+pub(in crate::resource_ops) fn anonymous_source(file: &File) -> Result<()> {
     let m = file.metadata().map_err(error)?;
     if !m.is_file() || m.nlink() != 0 {
         return Err("资源下载来源必须是匿名普通文件描述符".into());
@@ -53,7 +53,7 @@ pub(super) fn anonymous_source(file: &File) -> Result<()> {
     Ok(())
 }
 impl Dir {
-    pub(super) fn open(path: &Path) -> Result<Self> {
+    pub(in crate::resource_ops) fn open(path: &Path) -> Result<Self> {
         if !path.is_absolute() {
             return Err("游戏目录必须是绝对路径".into());
         }
@@ -91,13 +91,13 @@ impl Dir {
         }
         Ok(dir)
     }
-    pub(super) fn key(&self) -> Result<Key> {
+    pub(in crate::resource_ops) fn key(&self) -> Result<Key> {
         key_file(&self.0)
     }
     fn duplicate(&self) -> Result<Self> {
         self.0.try_clone().map(Self).map_err(error)
     }
-    pub(super) fn sync(&self) -> Result<()> {
+    pub(in crate::resource_ops) fn sync(&self) -> Result<()> {
         self.0.sync_all().map_err(error)
     }
     fn open_at(&self, name: &str, directory: bool) -> Result<File> {
@@ -140,13 +140,13 @@ impl Dir {
         }
         Ok(file)
     }
-    pub(super) fn child(&self, name: &str) -> Result<Self> {
+    pub(in crate::resource_ops) fn child(&self, name: &str) -> Result<Self> {
         self.open_at(name, true).map(Self)
     }
-    pub(super) fn regular(&self, name: &str) -> Result<File> {
+    pub(in crate::resource_ops) fn regular(&self, name: &str) -> Result<File> {
         self.open_at(name, false)
     }
-    pub(super) fn stat(&self, name: &str) -> Result<Option<libc::stat>> {
+    pub(in crate::resource_ops) fn stat(&self, name: &str) -> Result<Option<libc::stat>> {
         let name = c(name)?;
         let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
         if unsafe {
@@ -167,14 +167,14 @@ impl Dir {
             Err(error(e))
         }
     }
-    pub(super) fn optional(&self, name: &str) -> Result<Option<Self>> {
+    pub(in crate::resource_ops) fn optional(&self, name: &str) -> Result<Option<Self>> {
         if self.stat(name)?.is_some() {
             self.child(name).map(Some)
         } else {
             Ok(None)
         }
     }
-    pub(super) fn optional_at(&self, path: &str) -> Result<Option<Self>> {
+    pub(in crate::resource_ops) fn optional_at(&self, path: &str) -> Result<Option<Self>> {
         let mut dir = self.duplicate()?;
         for part in path.split('/') {
             let Some(child) = dir.optional(part)? else {
@@ -184,7 +184,7 @@ impl Dir {
         }
         Ok(Some(dir))
     }
-    pub(super) fn parent(&self, path: &str) -> Result<(Self, String)> {
+    pub(in crate::resource_ops) fn parent(&self, path: &str) -> Result<(Self, String)> {
         let parts: Vec<_> = path.split('/').collect();
         if parts.is_empty() {
             return Err("资源路径无效".into());
@@ -196,7 +196,7 @@ impl Dir {
         super::super::safe_name(parts[parts.len() - 1])?;
         Ok((dir, parts[parts.len() - 1].into()))
     }
-    pub(super) fn mkdir(&self, name: &str) -> Result<Self> {
+    pub(in crate::resource_ops) fn mkdir(&self, name: &str) -> Result<Self> {
         let name_c = c(name)?;
         if unsafe { libc::mkdirat(self.0.as_raw_fd(), name_c.as_ptr(), 0o700) } != 0 {
             return Err(io("无法创建资源批次目录"));
@@ -204,20 +204,20 @@ impl Dir {
         self.sync()?;
         self.child(name)
     }
-    pub(super) fn ensure(&self, name: &str) -> Result<Self> {
+    pub(in crate::resource_ops) fn ensure(&self, name: &str) -> Result<Self> {
         match self.optional(name)? {
             Some(dir) => Ok(dir),
             None => self.mkdir(name),
         }
     }
-    pub(super) fn absent(&self, name: &str) -> Result<()> {
+    pub(in crate::resource_ops) fn absent(&self, name: &str) -> Result<()> {
         if self.stat(name)?.is_some() {
             Err(format!("已有同名或禁用状态的资源文件，拒绝覆盖：{name}"))
         } else {
             Ok(())
         }
     }
-    pub(super) fn anonymous(&self) -> Result<File> {
+    pub(in crate::resource_ops) fn anonymous(&self) -> Result<File> {
         let dot = CString::new(".").map_err(error)?;
         let fd = unsafe {
             libc::openat(
@@ -232,7 +232,7 @@ impl Dir {
         }
         Ok(unsafe { File::from_raw_fd(fd) })
     }
-    pub(super) fn link_anonymous(&self, file: &File, name: &str) -> Result<()> {
+    pub(in crate::resource_ops) fn link_anonymous(&self, file: &File, name: &str) -> Result<()> {
         let empty = CString::new("").map_err(error)?;
         let name = c(name)?;
         if unsafe {
@@ -249,7 +249,12 @@ impl Dir {
         }
         self.sync()
     }
-    pub(super) fn link(&self, name: &str, target: &Dir, target_name: &str) -> Result<()> {
+    pub(in crate::resource_ops) fn link(
+        &self,
+        name: &str,
+        target: &Dir,
+        target_name: &str,
+    ) -> Result<()> {
         let name = c(name)?;
         let target_name = c(target_name)?;
         if unsafe {
@@ -266,7 +271,12 @@ impl Dir {
         }
         target.sync()
     }
-    pub(super) fn move_directory(&self, name: &str, target: &Dir, target_name: &str) -> Result<()> {
+    pub(in crate::resource_ops) fn move_directory(
+        &self,
+        name: &str,
+        target: &Dir,
+        target_name: &str,
+    ) -> Result<()> {
         let name = c(name)?;
         let target_name = c(target_name)?;
         if unsafe {
@@ -285,7 +295,11 @@ impl Dir {
         target.sync()?;
         self.sync()
     }
-    pub(super) fn replace_journal(&self, source: &str, target: &str) -> Result<()> {
+    pub(in crate::resource_ops) fn replace_journal(
+        &self,
+        source: &str,
+        target: &str,
+    ) -> Result<()> {
         let source = c(source)?;
         let target = c(target)?;
         if unsafe {
@@ -301,7 +315,7 @@ impl Dir {
         }
         self.sync()
     }
-    pub(super) fn unlink(&self, name: &str, directory: bool) -> Result<()> {
+    pub(in crate::resource_ops) fn unlink(&self, name: &str, directory: bool) -> Result<()> {
         let name = c(name)?;
         if unsafe {
             libc::unlinkat(
@@ -315,7 +329,10 @@ impl Dir {
         }
         self.sync()
     }
-    pub(super) fn names(&self) -> Result<Vec<String>> {
+    pub(in crate::resource_ops) fn names(&self) -> Result<Vec<String>> {
+        self.names_with_limit(MAX_FILES * 4 + 8)
+    }
+    pub(in crate::resource_ops) fn names_with_limit(&self, limit: usize) -> Result<Vec<String>> {
         // A fresh open file description avoids dup/readdir sharing seek state.
         let dot = CString::new(".").map_err(error)?;
         let fd = unsafe {
@@ -359,7 +376,7 @@ impl Dir {
                 .to_owned();
             super::super::safe_name(&name)?;
             names.push(name);
-            if names.len() > MAX_FILES * 4 + 8 {
+            if names.len() > limit {
                 return Err("资源批次目录节点数量过多".into());
             }
         }
@@ -367,7 +384,7 @@ impl Dir {
         Ok(names)
     }
 }
-pub(super) fn verify_file(
+pub(in crate::resource_ops) fn verify_file(
     file: &mut File,
     expected_key: Option<&Key>,
     size: u64,
@@ -416,7 +433,7 @@ pub(super) fn verify_file(
         mode: m.mode(),
     })
 }
-pub(super) fn verify_named(dir: &Dir, name: &str, owned: &Owned) -> Result<()> {
+pub(in crate::resource_ops) fn verify_named(dir: &Dir, name: &str, owned: &Owned) -> Result<()> {
     let mut file = dir.regular(name)?;
     let before = super::super::token_for(&file)?;
     let now = verify_file(&mut file, Some(&owned.key), owned.size, &owned.sha512, None)?;

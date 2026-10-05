@@ -13,7 +13,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+mod update_batch;
 mod verified_batch;
+pub use update_batch::{Replacement, UpdateHistory};
 pub use verified_batch::VerifiedImport;
 
 /// One recoverable transaction for all downloaded resource kinds. Inputs remain
@@ -29,10 +31,53 @@ pub fn import_verified_batch(
     verified_batch::import_verified_batch(root, id, files, cancel, commit, progress)
 }
 pub fn ensure_verified_batches_ready(root: &Path) -> Result<(), String> {
-    verified_batch::ensure_ready(root)
+    verified_batch::ensure_ready(root)?;
+    ensure_updates_ready(root)
 }
 pub fn recover_verified_batches(root: &Path) -> Result<MutationResult, String> {
-    verified_batch::recover_root(root)
+    // Recover older import batches first; updates then recheck their own root
+    // marker and physical instance bindings under the same writer admission.
+    let imported = verified_batch::recover_root(root)?;
+    let updated = recover_updates(root)?;
+    Ok(MutationResult {
+        changed: imported.changed + updated.changed,
+        undo_id: None,
+        message: format!(
+            "已恢复 {} 个资源下载、更新或撤销事务",
+            imported.changed + updated.changed
+        ),
+    })
+}
+
+/// Replace verified anonymous downloads and preserve their original inodes for undo.
+pub fn update_verified_batch(
+    root: &Path,
+    id: &str,
+    files: &mut [VerifiedImport],
+    replacements: &[Replacement],
+    cancel: &AtomicBool,
+    commit: &mut dyn FnMut() -> Result<(), String>,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<MutationResult, String> {
+    update_batch::update_verified_batch(root, id, files, replacements, cancel, commit, progress)
+}
+pub fn updates_history(root: &Path, id: &str) -> Result<Vec<UpdateHistory>, String> {
+    update_batch::updates_history(root, id)
+}
+pub fn restore_update(
+    root: &Path,
+    id: &str,
+    undo_id: &str,
+    cancel: &AtomicBool,
+    commit: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<MutationResult, String> {
+    update_batch::restore_update(root, id, undo_id, cancel, commit)
+}
+pub fn ensure_updates_ready(root: &Path) -> Result<(), String> {
+    update_batch::ensure_ready(root)
+}
+pub fn recover_updates(root: &Path) -> Result<MutationResult, String> {
+    update_batch::recover_root(root)
 }
 
 const MAX_FILES: usize = 512;
@@ -513,7 +558,7 @@ impl Context {
             .then(|| crate::instance_rename_refs::root_history_lock(&root_path))
             .transpose()?;
         if write {
-            verified_batch::ensure_ready(&root_path)?;
+            ensure_verified_batches_ready(&root_path)?;
         }
         let path = crate::ui_data::resource_dir(&root_path, id, kind)?;
         let relative = relative_string(

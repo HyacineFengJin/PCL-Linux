@@ -20,6 +20,8 @@ mod provider;
 mod target;
 #[path = "modrinth_install/transfer.rs"]
 mod transfer;
+#[path = "modrinth_install/updates.rs"]
+mod updates;
 
 use serde::{Deserialize, Serialize};
 use std::{fs::File, path::Path, sync::atomic::AtomicBool};
@@ -27,6 +29,12 @@ use std::{fs::File, path::Path, sync::atomic::AtomicBool};
 pub use plan::InstallPlan;
 pub use target::TargetSnapshot;
 pub use transfer::{DownloadProgress, VerifiedBatch};
+#[cfg(test)]
+pub(crate) use updates::test_update_batch;
+pub use updates::{
+    check_updates, download_update_request, prepare_update, recheck_update_target, UpdateCheck,
+    UpdatePlan, VerifiedUpdateBatch,
+};
 type Result<T> = std::result::Result<T, String>;
 pub const CANCELLED: &str = "资源下载已取消";
 const MAX_PROJECTS: usize = 64;
@@ -71,6 +79,8 @@ pub(crate) struct LocalFile {
     pub sha512: String,
     pub enabled: bool,
     pub fingerprint: String,
+    /// Resource panel v2 token, captured from the same verified descriptor.
+    pub resource_fingerprint: String,
 }
 
 /// Prepare does local CPU/I/O and HTTP outside the application operations mutex.

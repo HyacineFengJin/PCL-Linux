@@ -171,6 +171,40 @@ pub(super) trait Provider: Sync {
         &'a self,
         hashes: &'a [String],
     ) -> FutureResult<'a, BTreeMap<String, Version>>;
+    /// Defaults keep small fixture providers useful; HTTP overrides these with
+    /// the official bulk endpoints, so check never performs one GET per mod.
+    fn projects<'a>(&'a self, ids: &'a [String]) -> FutureResult<'a, Vec<Project>> {
+        Box::pin(async move {
+            let mut result = Vec::new();
+            for id in ids {
+                result.push(self.project(id).await?)
+            }
+            Ok(result)
+        })
+    }
+    fn updates<'a>(
+        &'a self,
+        hashes: &'a [String],
+        compatibility: &'a Compatibility,
+    ) -> FutureResult<'a, BTreeMap<String, Version>> {
+        Box::pin(async move {
+            let old = self.from_hashes(hashes).await?;
+            let mut result = BTreeMap::new();
+            for (hash, old) in old {
+                let versions = self.versions(&old.project_id, compatibility).await?;
+                if let Some(new) = versions
+                    .into_iter()
+                    .filter(|v| {
+                        v.version_type == "release" && plan::compatible(v, "mods", compatibility)
+                    })
+                    .max_by_key(|v| chrono::DateTime::parse_from_rfc3339(&v.date_published).ok())
+                {
+                    result.insert(hash, new);
+                }
+            }
+            Ok(result)
+        })
+    }
 }
 
 /// Keep the complete HTTP future inside the cancellation race, including DNS,
@@ -263,6 +297,51 @@ impl<'a> HttpProvider<'a> {
     }
 }
 impl Provider for HttpProvider<'_> {
+    fn projects<'a>(&'a self, ids: &'a [String]) -> FutureResult<'a, Vec<Project>> {
+        Box::pin(async move {
+            if ids.is_empty() {
+                return Ok(vec![]);
+            }
+            if ids.len() > 256 {
+                return Err("批量项目检查超过256项".into());
+            }
+            for value in ids {
+                id(value)?
+            }
+            // https://docs.modrinth.com/api/operations/getprojects/
+            let query = serde_json::to_string(ids).map_err(|e| e.to_string())?;
+            let projects: Vec<Project> = self
+                .read(
+                    self.client
+                        .get(format!("{API}projects"))
+                        .query(&[("ids", query)]),
+                )
+                .await?;
+            validate_projects(ids, &projects)?;
+            Ok(projects)
+        })
+    }
+    fn updates<'a>(
+        &'a self,
+        hashes: &'a [String],
+        compatibility: &'a Compatibility,
+    ) -> FutureResult<'a, BTreeMap<String, Version>> {
+        Box::pin(async move {
+            if hashes.is_empty() {
+                return Ok(BTreeMap::new());
+            }
+            if hashes.len() > 256 {
+                return Err("批量更新检查超过256项".into());
+            }
+            for hash in hashes {
+                sha512(hash)?
+            }
+            // https://docs.modrinth.com/api/operations/getlatestversionsfromhashes/
+            let versions:BTreeMap<String,Version>=self.read(self.client.post(format!("{API}version_files/update")).json(&serde_json::json!({"hashes":hashes,"algorithm":"sha512","loaders":[compatibility.loader],"game_versions":[compatibility.minecraft_version],"version_types":["release"]}))).await?;
+            validate_updates(hashes, &versions)?;
+            Ok(versions)
+        })
+    }
     fn project<'a>(&'a self, value: &'a str) -> FutureResult<'a, Project> {
         Box::pin(async move {
             id(value)?;
@@ -350,4 +429,31 @@ impl Provider for HttpProvider<'_> {
             Ok(versions)
         })
     }
+}
+
+pub(super) fn validate_projects(requested: &[String], projects: &[Project]) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for project in projects {
+        id(&project.id)?;
+        if !requested.contains(&project.id)
+            || !seen.insert(&project.id)
+            || project.title.len() > 2048
+        {
+            return Err("Modrinth批量项目返回未请求、重复或无效项目".into());
+        }
+    }
+    Ok(())
+}
+pub(super) fn validate_updates(
+    requested: &[String],
+    versions: &BTreeMap<String, Version>,
+) -> Result<()> {
+    for (hash, version) in versions {
+        if !requested.contains(hash) {
+            return Err("Modrinth批量更新返回未请求的旧哈希".into());
+        }
+        validate_version(version)?;
+        // The key is the OLD file hash; it must not be matched to new bytes.
+    }
+    Ok(())
 }

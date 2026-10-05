@@ -31,6 +31,8 @@ pub enum TaskKind {
     InstanceDelete,
     InstanceRestore,
     ResourceDownload,
+    ResourceUpdate,
+    ResourceUpdateRestore,
     ResourceOperation,
 }
 
@@ -249,6 +251,8 @@ impl Tasks {
                     TaskKind::InstanceDelete => "delete-check",
                     TaskKind::InstanceRestore => "restore-check",
                     TaskKind::ResourceDownload => "resource-check",
+                    TaskKind::ResourceUpdate => "resource-update-check",
+                    TaskKind::ResourceUpdateRestore => "resource-update-restore-check",
                     TaskKind::ResourceOperation => "resources",
                 }
                 .into(),
@@ -261,6 +265,8 @@ impl Tasks {
                     TaskKind::InstanceDelete => "正在检查实例删除范围…",
                     TaskKind::InstanceRestore => "正在检查实例恢复记录…",
                     TaskKind::ResourceDownload => "正在获取资源与必需前置信息…",
+                    TaskKind::ResourceUpdate => "正在检查模组更新与必需前置…",
+                    TaskKind::ResourceUpdateRestore => "正在检查模组更新恢复记录…",
                     TaskKind::ResourceOperation => "正在检查资源文件…",
                 }
                 .into(),
@@ -316,6 +322,8 @@ impl Tasks {
                     TaskKind::InstanceDelete => "正在取消删除…",
                     TaskKind::InstanceRestore => "正在取消恢复…",
                     TaskKind::ResourceDownload => "正在取消资源下载并清理未完成文件…",
+                    TaskKind::ResourceUpdate => "正在取消模组更新并清理未完成文件…",
+                    TaskKind::ResourceUpdateRestore => "正在取消模组更新恢复…",
                     TaskKind::ResourceOperation => "正在取消资源操作…",
                 }
                 .into();
@@ -494,6 +502,10 @@ impl Tasks {
                             TaskKind::InstanceDelete => "删除已取消，原实例已保留",
                             TaskKind::InstanceRestore => "恢复已取消，可恢复文件已保留",
                             TaskKind::ResourceDownload => "资源下载已取消，未完成文件已清理",
+                            TaskKind::ResourceUpdate => "模组更新已取消，未完成文件已清理",
+                            TaskKind::ResourceUpdateRestore => {
+                                "模组恢复已取消，更新结果与恢复记录已保留"
+                            }
                             TaskKind::ResourceOperation => "资源操作已取消",
                         }
                         .into()

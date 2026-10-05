@@ -16,7 +16,7 @@ type Result<T> = std::result::Result<T, String>;
 
 /// Called under operations, before writer admission. Plans always address a
 /// physical, non-reserved instance in the explicitly registered root.
-fn capture(shared: &Shared, root_id: Option<&str>, id: &str) -> Result<GameRoot> {
+pub(super) fn capture(shared: &Shared, root_id: Option<&str>, id: &str) -> Result<GameRoot> {
     crate::require_instance_job(shared)?;
     pcl_core::identifier(id)?;
     let root = shared.config.resolve(root_id)?;
@@ -28,7 +28,7 @@ fn capture(shared: &Shared, root_id: Option<&str>, id: &str) -> Result<GameRoot>
     Ok(root)
 }
 
-fn same_root(shared: &Shared, root: &GameRoot) -> Result<()> {
+pub(super) fn same_root(shared: &Shared, root: &GameRoot) -> Result<()> {
     if shared.config.resolve(Some(&root.id))?.path != root.path {
         return Err("资源安装目标目录已改变，请重新检查".into());
     }

@@ -17,10 +17,10 @@ use std::{
     time::{Duration, Instant},
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
-fn run<F: std::future::Future>(future: F) -> F::Output {
+pub(super) fn run<F: std::future::Future>(future: F) -> F::Output {
     tauri::async_runtime::block_on(future)
 }
-fn sha(bytes: &[u8]) -> String {
+pub(super) fn sha(bytes: &[u8]) -> String {
     format!("{:x}", Sha512::digest(bytes))
 }
 struct Fixture {
@@ -76,13 +76,13 @@ impl Drop for Fixture {
     }
 }
 #[derive(Default)]
-struct FakeProvider {
-    projects: BTreeMap<String, Project>,
-    versions: BTreeMap<String, Version>,
-    hashes: BTreeMap<String, Version>,
+pub(super) struct FakeProvider {
+    pub projects: BTreeMap<String, Project>,
+    pub versions: BTreeMap<String, Version>,
+    pub hashes: BTreeMap<String, Version>,
 }
 impl FakeProvider {
-    fn add(
+    pub(super) fn add(
         &mut self,
         project: &str,
         version: &str,
@@ -192,7 +192,7 @@ impl Provider for FakeProvider {
         })
     }
 }
-fn dependency(project: Option<&str>, version: Option<&str>, kind: &str) -> Dependency {
+pub(super) fn dependency(project: Option<&str>, version: Option<&str>, kind: &str) -> Dependency {
     Dependency {
         project_id: project.map(str::to_owned),
         version_id: version.map(str::to_owned),
@@ -582,7 +582,7 @@ fn changed_authoritative_file_metadata_changes_the_confirmation_revision() {
     let after = p.plan(&f, None).unwrap();
     assert_ne!(before.revision, after.revision);
 }
-fn server(response: &[u8], delay: Duration) -> (String, thread::JoinHandle<()>) {
+pub(super) fn server(response: &[u8], delay: Duration) -> (String, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let response = response.to_owned();

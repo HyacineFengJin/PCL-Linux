@@ -209,7 +209,10 @@ fn stamp(m: &Metadata) -> (u64, u64, u64, u32, u64, i64, i64, i64, i64) {
         m.ctime_nsec(),
     )
 }
-pub(super) fn fingerprint(file: &mut File, cancel: &AtomicBool) -> Result<(u64, String, String)> {
+pub(super) fn fingerprint(
+    file: &mut File,
+    cancel: &AtomicBool,
+) -> Result<(u64, String, String, String)> {
     let before = file.metadata().map_err(|e| e.to_string())?;
     if !before.is_file() || before.nlink() != 1 || before.len() > MAX_FILE_BYTES {
         return Err("资源文件不安全或超过大小限制".into());
@@ -237,7 +240,25 @@ pub(super) fn fingerprint(file: &mut File, cancel: &AtomicBool) -> Result<(u64, 
     }
     let sha512 = format!("{:x}", digest.finalize());
     let token = serde_json::to_vec(&(stamp(&before), &sha512)).map_err(|e| e.to_string())?;
-    Ok((count, sha512, format!("{:x}", Sha512::digest(token))))
+    // Keep the resource panel's opaque token exactly compatible with
+    // resource_ops::fingerprint, while retaining the stronger content token
+    // for snapshot rechecks. Both describe the same pre/post-verified FD.
+    let resource_token = format!(
+        "v2:{}:{}:{}:{}:{}:{}:{}",
+        before.len(),
+        before.mtime(),
+        before.mtime_nsec(),
+        before.dev(),
+        before.ino(),
+        before.ctime(),
+        before.ctime_nsec()
+    );
+    Ok((
+        count,
+        sha512,
+        format!("{:x}", Sha512::digest(token)),
+        resource_token,
+    ))
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -282,7 +303,7 @@ fn profiles(root: &Dir, id: &str, cancel: &AtomicBool) -> Result<Vec<Profile>> {
         if file.metadata().map_err(|e| e.to_string())?.len() > 8 * 1024 * 1024 {
             return Err("实例JSON超过安全上限".into());
         }
-        let (_, _, fingerprint) = fingerprint(&mut file, cancel)?;
+        let (_, _, fingerprint, _) = fingerprint(&mut file, cancel)?;
         file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
         let mut bytes = Vec::new();
         Read::by_ref(&mut file)
@@ -377,7 +398,8 @@ pub(super) fn capture(
                         return Err("本地资源文件超过512项，请先减少文件后下载".into());
                     }
                     let mut file = dir.regular(&name)?;
-                    let (size, sha512, fingerprint) = fingerprint(&mut file, cancel)?;
+                    let (size, sha512, fingerprint, resource_fingerprint) =
+                        fingerprint(&mut file, cancel)?;
                     bytes = bytes.checked_add(size).ok_or("本地资源总大小过大")?;
                     if bytes > 16 * 1024 * 1024 * 1024 {
                         return Err("本地资源总大小超过兼容性检查上限".into());
@@ -393,6 +415,7 @@ pub(super) fn capture(
                         sha512,
                         enabled: !name.ends_with(".disabled"),
                         fingerprint,
+                        resource_fingerprint,
                     });
                 } else {
                     view.others

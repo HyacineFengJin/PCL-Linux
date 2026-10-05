@@ -23,9 +23,13 @@ export function instanceTaskAction(kind: DownloadStatus["kind"]) {
             ? "删除"
             : kind === "instance_restore"
               ? "恢复"
-              : kind === "resource_download"
-                ? "资源下载安装"
-                : "安装";
+              : kind === "resource_update_restore"
+                ? "模组恢复"
+                : kind === "resource_update"
+                  ? "模组更新"
+                  : kind === "resource_download"
+                    ? "资源下载安装"
+                    : "安装";
 }
 export function useDownloadSpeed(status: DownloadStatus) {
   const sample = useRef<{
@@ -92,7 +96,8 @@ export function TaskStatistics({
           status.kind === "instance_rename" ||
           status.kind === "instance_import" ||
           status.kind === "instance_delete" ||
-          status.kind === "instance_restore"
+          status.kind === "instance_restore" ||
+          status.kind === "resource_update_restore"
             ? "—"
             : `${(speed / 1048576).toFixed(2)} MiB/s`}
         </strong>
@@ -189,35 +194,43 @@ export function TaskManager({
     status.phase ||
     (status.stage === "downloading" ? "downloading" : "metadata");
   const current =
-    status.kind === "instance_import"
-      ? Math.max(
-          0,
-          [
-            "import-check",
-            "import-extract",
-            "import-commit",
-            "import-cleanup",
-          ].indexOf(phase),
-        )
-      : status.kind === "instance_delete" || status.kind === "instance_restore"
-        ? phase === "committing"
-          ? 1
-          : 0
-        : status.kind === "resource_download"
-          ? phase === "resource-publish" || phase === "installing"
-            ? 2
-            : status.stage === "downloading"
-              ? 1
-              : 0
-          : phase === "metadata"
-            ? 0
-            : phase === "downloading"
-              ? 1
-              : phase === "installing"
-                ? 2
-                : phase === "complete"
+    status.kind === "resource_update_restore"
+      ? phase === "resource-update-restore-apply"
+        ? 1
+        : 0
+      : status.kind === "instance_import"
+        ? Math.max(
+            0,
+            [
+              "import-check",
+              "import-extract",
+              "import-commit",
+              "import-cleanup",
+            ].indexOf(phase),
+          )
+        : status.kind === "instance_delete" ||
+            status.kind === "instance_restore"
+          ? phase === "committing"
+            ? 1
+            : 0
+          : status.kind === "resource_download" ||
+              status.kind === "resource_update"
+            ? phase === "resource-publish" ||
+              phase === "resource-update-publish" ||
+              phase === "installing"
+              ? 2
+              : status.stage === "downloading"
+                ? 1
+                : 0
+            : phase === "metadata"
+              ? 0
+              : phase === "downloading"
+                ? 1
+                : phase === "installing"
                   ? 2
-                  : 0;
+                  : phase === "complete"
+                    ? 2
+                    : 0;
   const fallbackLabels =
     status.kind === "instance_import"
       ? [
@@ -228,9 +241,17 @@ export function TaskManager({
         ]
       : status.kind === "instance_delete" || status.kind === "instance_restore"
         ? ["检查实例文件与引用", "移动实例目录", "校验文件并保存恢复记录"]
-        : status.kind === "resource_download"
-          ? ["获取资源与前置信息", "下载并校验文件", "安装资源文件"]
-          : ["获取原版版本信息", "下载游戏与运行所需文件", "安装游戏"];
+        : status.kind === "resource_update_restore"
+          ? ["检查模组更新恢复记录", "恢复原文件并保存记录"]
+          : status.kind === "resource_update"
+            ? [
+                "检查模组更新与必需前置",
+                "下载并校验文件",
+                "替换文件并保存恢复记录",
+              ]
+            : status.kind === "resource_download"
+              ? ["获取资源与前置信息", "下载并校验文件", "安装资源文件"]
+              : ["获取原版版本信息", "下载游戏与运行所需文件", "安装游戏"];
   const steps: DownloadStep[] = status.steps?.length
     ? status.steps
     : fallbackLabels.map((label, index) => ({

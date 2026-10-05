@@ -662,6 +662,7 @@
   border-radius: 6px;
   box-shadow: 0 1px 3px #5278a528;
   padding: 6px 13px 10px;
+  width: min(573px, calc(100% - 185px));
   max-width: calc(100% - 185px);
 }
 .ce-resource-selection-count {

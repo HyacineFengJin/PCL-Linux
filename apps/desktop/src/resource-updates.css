@@ -1,0 +1,53 @@
+/* Only the update confirmation owns this flex/scroll layout. Existing CE
+ * dialogs and the resource list/selection bar retain their shared styles. */
+.ce-resource-update-dialog .ce-instance-file-dialog {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ce-resource-update-dialog .ce-instance-file-dialog > h2,
+.ce-resource-update-dialog .rd-name-actions {
+  flex: none;
+}
+.ce-resource-update-content {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.ce-resource-update-content > p {
+  margin: 10px 7px;
+  font-size: 13px;
+  line-height: 21px;
+  overflow-wrap: anywhere;
+}
+.ce-resource-update-content > .ce-instance-plan-warning {
+  color: #9b8554;
+}
+.ce-resource-update-content > .rd-name-error {
+  color: #c44b3b;
+  font-size: 12px;
+}
+.ce-resource-update-status {
+  margin: 0 8px 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: #92999f;
+  overflow-wrap: anywhere;
+}
+.ce-resource-update-status strong {
+  font-weight: 400;
+}
+.ce-resource-update-status p {
+  margin: 4px 0;
+}
+.ce-resource-update-status .ce-button,
+.ce-resource-updates-state .ce-button {
+  margin-top: 8px;
+  min-height: 25px;
+}
+.ce-resource-text .ce-resource-update-version {
+  color: var(--blue);
+}
+.ce-resource-update-undo:not([role="alert"]) {
+  color: #92999f;
+}

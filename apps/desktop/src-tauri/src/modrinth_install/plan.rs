@@ -7,12 +7,16 @@
 //! visited versions may still contribute another explicitly required file.
 //! Matching enabled bytes may be reused under their existing name. Disabled
 //! files and ambiguous versions require manual action rather than mutation.
+use super::updates::policy::Policy;
 use super::{
     provider::{ApiFile, Dependency, FutureResult, Project, Provider, Version},
     *,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+#[path = "plan/update_graph.rs"]
+mod update_graph;
+pub(super) use update_graph::prepare_updates;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct InstallFile {
@@ -54,9 +58,9 @@ pub struct InstallPlan {
     pub(super) target: TargetSnapshot,
 }
 #[derive(Clone)]
-struct Installed {
-    file: LocalFile,
-    version: Version,
+pub(super) struct Installed {
+    pub file: LocalFile,
+    pub version: Version,
 }
 struct Planner<'a, P: Provider> {
     provider: &'a P,
@@ -72,8 +76,9 @@ struct Planner<'a, P: Provider> {
     edges: Vec<PlannedDependency>,
     warnings: BTreeSet<String>,
     incompatible: Vec<Dependency>,
+    updating: Option<Policy>,
 }
-fn kind(project: &Project) -> Result<&'static str> {
+pub(super) fn kind(project: &Project) -> Result<&'static str> {
     match project.project_type.as_str() {
         "mod" => Ok("mods"),
         "resourcepack" => Ok("resourcepacks"),
@@ -81,7 +86,7 @@ fn kind(project: &Project) -> Result<&'static str> {
         _ => Err("首批仅支持Modrinth模组、资源包与光影文件".into()),
     }
 }
-fn compatible(version: &Version, kind: &str, target: &Compatibility) -> bool {
+pub(super) fn compatible(version: &Version, kind: &str, target: &Compatibility) -> bool {
     version
         .game_versions
         .iter()
@@ -98,7 +103,7 @@ fn compatible(version: &Version, kind: &str, target: &Compatibility) -> bool {
             _ => false,
         }
 }
-fn file_kind(project: &Project, file: &ApiFile) -> Result<&'static str> {
+pub(super) fn file_kind(project: &Project, file: &ApiFile) -> Result<&'static str> {
     if matches!(
         file.file_type.as_deref(),
         Some("required-resource-pack" | "optional-resource-pack")
@@ -113,7 +118,7 @@ fn file_kind(project: &Project, file: &ApiFile) -> Result<&'static str> {
     }
     kind(project)
 }
-fn extension(kind: &str, file: &ApiFile) -> Result<()> {
+pub(super) fn extension(kind: &str, file: &ApiFile) -> Result<()> {
     if file.filename.starts_with(".pcl-") {
         return Err("资源文件名称与应用保留名称冲突".into());
     }
@@ -127,7 +132,7 @@ fn extension(kind: &str, file: &ApiFile) -> Result<()> {
     }
     Ok(())
 }
-fn select_file<'a>(version: &'a Version, name: Option<&str>) -> Result<&'a ApiFile> {
+pub(super) fn select_file<'a>(version: &'a Version, name: Option<&str>) -> Result<&'a ApiFile> {
     match name {
         Some(name) => version
             .files
@@ -255,10 +260,22 @@ impl<'a, P: Provider> Planner<'a, P> {
     ) -> Result<()> {
         let resource_kind = file_kind(project, file)?;
         extension(resource_kind, file)?;
+        let replacement = if resource_kind == "mods" {
+            self.updating
+                .as_mut()
+                .map(|policy| policy.replacement(&self.installed, project, version, file, required))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+        let name = replacement
+            .as_ref()
+            .map_or_else(|| file.filename.clone(), |r| r.new_file_name.clone());
         if let Some(previous) = self
             .files
             .iter_mut()
-            .find(|p| p.kind == resource_kind && p.file_name == file.filename)
+            .find(|p| p.kind == resource_kind && p.file_name == name)
         {
             if previous.sha512 != file.hashes.sha512 {
                 return Err(format!("依赖文件 {} 名称相同但内容不同", file.filename));
@@ -272,6 +289,10 @@ impl<'a, P: Provider> Planner<'a, P> {
         for installed in &self.installed {
             if installed.version.project_id == version.project_id
                 && installed.version.id != version.id
+                && !self
+                    .updating
+                    .as_ref()
+                    .is_some_and(|p| p.replaced(&installed.file))
             {
                 return Err(format!(
                     "项目 {} 已存在其他版本 {}，请先手动处理旧文件",
@@ -279,11 +300,12 @@ impl<'a, P: Provider> Planner<'a, P> {
                 ));
             }
         }
-        let exact = self
-            .target
-            .local_files
-            .iter()
-            .find(|f| f.kind == resource_kind && f.sha512 == file.hashes.sha512 && f.enabled);
+        let exact = self.target.local_files.iter().find(|f| {
+            f.kind == resource_kind
+                && f.sha512 == file.hashes.sha512
+                && f.enabled
+                && replacement.is_none()
+        });
         if exact.is_none()
             && self
                 .target
@@ -296,7 +318,12 @@ impl<'a, P: Provider> Planner<'a, P> {
                 file.filename
             ));
         }
-        if exact.is_none() && target::existing_name(self.target, resource_kind, &file.filename) {
+        if exact.is_none()
+            && target::existing_name(self.target, resource_kind, &name)
+            && !replacement
+                .as_ref()
+                .is_some_and(|r| r.old_file_name == name)
+        {
             return Err(format!(
                 "目标文件 {} 已存在且内容不同，原文件已保留",
                 file.filename
@@ -309,6 +336,9 @@ impl<'a, P: Provider> Planner<'a, P> {
                 resource_kind,
                 &format!("{}.disabled", file.filename),
             )
+            && !replacement
+                .as_ref()
+                .is_some_and(|r| r.old_file_name == format!("{}.disabled", file.filename))
         {
             return Err(format!(
                 "文件 {} 已有同名禁用旧文件，请先手动处理",
@@ -323,7 +353,7 @@ impl<'a, P: Provider> Planner<'a, P> {
             version_id: version.id.clone(),
             title: project.title.clone(),
             kind: resource_kind.into(),
-            file_name: file.filename.clone(),
+            file_name: name,
             size: file.size,
             sha512: file.hashes.sha512.clone(),
             required,
@@ -344,6 +374,9 @@ impl<'a, P: Provider> Planner<'a, P> {
         Box::pin(async move {
             target::cancelled(self.cancel)?;
             provider::validate_version(&version)?;
+            if self.updating.is_some() && version.version_type != "release" {
+                return Err("模组更新方案仅支持正式版本，alpha/beta前置需先手动处理".into());
+            }
             if depth > MAX_DEPTH {
                 return Err("必需依赖深度超过32层".into());
             }
@@ -457,6 +490,7 @@ impl<'a, P: Provider> Planner<'a, P> {
                         .is_none_or(|id| id == version)
                 }) || self.installed.iter().any(|i| {
                     i.file.enabled
+                        && !self.updating.as_ref().is_some_and(|p| p.replaced(&i.file))
                         && &i.version.project_id == project
                         && dependency
                             .version_id
@@ -467,11 +501,11 @@ impl<'a, P: Provider> Planner<'a, P> {
             let external_conflict = dependency.project_id.is_none()
                 && dependency.version_id.is_none()
                 && dependency.file_name.as_ref().is_some_and(|name| {
-                    self.target
-                        .local_files
-                        .iter()
-                        .any(|f| f.enabled && &f.file_name == name)
-                        || self.files.iter().any(|f| &f.file_name == name)
+                    self.target.local_files.iter().any(|f| {
+                        f.enabled
+                            && &f.file_name == name
+                            && !self.updating.as_ref().is_some_and(|p| p.replaced(f))
+                    }) || self.files.iter().any(|f| &f.file_name == name)
                 });
             if project_conflict || external_conflict {
                 return Err(
@@ -482,13 +516,11 @@ impl<'a, P: Provider> Planner<'a, P> {
         Ok(())
     }
 }
-pub(super) async fn prepare<P: Provider>(
+pub(super) async fn identify<P: Provider>(
     provider: &P,
-    target: TargetSnapshot,
-    request: InstallRequest,
+    target: &TargetSnapshot,
     cancel: &AtomicBool,
-) -> Result<InstallPlan> {
-    request.validate()?;
+) -> Result<Vec<Installed>> {
     let mut installed = Vec::new();
     let hashes: Vec<String> = target
         .local_files
@@ -518,6 +550,16 @@ pub(super) async fn prepare<P: Provider>(
             });
         }
     }
+    Ok(installed)
+}
+pub(super) async fn prepare<P: Provider>(
+    provider: &P,
+    target: TargetSnapshot,
+    request: InstallRequest,
+    cancel: &AtomicBool,
+) -> Result<InstallPlan> {
+    request.validate()?;
+    let installed = identify(provider, &target, cancel).await?;
     let unidentified = target.local_files.len().saturating_sub(installed.len());
     let installed_incompatibilities: Vec<Dependency> = installed
         .iter()
@@ -540,6 +582,7 @@ pub(super) async fn prepare<P: Provider>(
         edges: vec![],
         warnings: BTreeSet::new(),
         incompatible: vec![],
+        updating: None,
     };
     if unidentified > 0 {
         planner.warnings.insert(format!(

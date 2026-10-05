@@ -117,6 +117,8 @@ impl Downloads {
                 | TaskKind::InstanceDelete
                 | TaskKind::InstanceRestore
                 | TaskKind::ResourceDownload
+                | TaskKind::ResourceUpdate
+                | TaskKind::ResourceUpdateRestore
         ) {
             return Err("此任务不在任务管理页面中".into());
         }
@@ -290,6 +292,8 @@ mod tests {
             TaskKind::InstanceDelete,
             TaskKind::InstanceRestore,
             TaskKind::ResourceDownload,
+            TaskKind::ResourceUpdate,
+            TaskKind::ResourceUpdateRestore,
         ] {
             let tasks = Arc::new(Tasks::new());
             let downloads = Downloads::new(tasks.clone());

@@ -18,6 +18,7 @@ mod platform;
 mod resource_details;
 mod resource_install_commands;
 mod resource_ops;
+mod resource_update_commands;
 mod tasks;
 mod ui_catalog;
 mod ui_data;
@@ -230,7 +231,10 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
     let resource_install_recovery_error = if s.tasks.active().is_some_and(|task| {
         matches!(
             task.kind,
-            tasks::TaskKind::ResourceDownload | tasks::TaskKind::ResourceOperation
+            tasks::TaskKind::ResourceDownload
+                | tasks::TaskKind::ResourceUpdate
+                | tasks::TaskKind::ResourceUpdateRestore
+                | tasks::TaskKind::ResourceOperation
         ) && task.root_id == settings.root_id
     }) {
         None
@@ -1667,6 +1671,11 @@ fn main() {
             resource_install_commands::resource_install_plan,
             resource_install_commands::resource_install_start,
             resource_install_commands::resource_install_recover,
+            resource_update_commands::resource_update_check,
+            resource_update_commands::resource_update_plan,
+            resource_update_commands::resource_update_start,
+            resource_update_commands::resource_update_history,
+            resource_update_commands::resource_update_restore,
             ui_catalog::ui_open_link,
             ui_catalog::loader_catalog,
             ui_catalog::loader_candidates,
@@ -1731,6 +1740,9 @@ mod integration_tests {
     use super::*;
     use std::thread;
     use tasks::{TaskKind, TaskOutcome, TaskTarget};
+
+    #[path = "resource_updates.rs"]
+    mod resource_updates;
 
     struct Fixture(PathBuf);
     impl Fixture {
@@ -2445,6 +2457,8 @@ mod integration_tests {
             TaskKind::InstanceDelete,
             TaskKind::InstanceRestore,
             TaskKind::ResourceDownload,
+            TaskKind::ResourceUpdate,
+            TaskKind::ResourceUpdateRestore,
         ] {
             let task = state
                 .tasks

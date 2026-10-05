@@ -18,8 +18,8 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
-mod archive;
-mod filesystem;
+pub(super) mod archive;
+pub(super) mod filesystem;
 use filesystem::{Dir, Key, Owned};
 type Result<T> = std::result::Result<T, String>;
 const STORE: &str = "resource-batches";
@@ -666,6 +666,7 @@ pub(super) fn import_verified_batch(
     let _history_lock = crate::instance_rename_refs::root_history_lock(&scope.root)?;
     super::ensure_local_resources_ready(&scope.root)?;
     ensure_ready(&scope.root)?;
+    super::ensure_updates_ready(&scope.root)?;
     scope.live(&root_dir, false)?;
     if files.is_empty() {
         commit()?;

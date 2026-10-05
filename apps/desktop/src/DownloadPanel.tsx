@@ -39,6 +39,8 @@ export type DownloadStatus = {
     | "instance_delete"
     | "instance_restore"
     | "resource_download"
+    | "resource_update"
+    | "resource_update_restore"
     | null;
   stage:
     | "idle"
@@ -220,6 +222,8 @@ export function DownloadPanel({
                 "instance_delete",
                 "instance_restore",
                 "resource_download",
+                "resource_update",
+                "resource_update_restore",
               ].includes(next.kind || ""))) &&
           next.version &&
           completed.current !==
@@ -235,6 +239,8 @@ export function DownloadPanel({
             next.kind === "instance_delete" ||
             next.kind === "instance_restore" ||
             next.kind === "resource_download" ||
+            next.kind === "resource_update" ||
+            next.kind === "resource_update_restore" ||
             next.kind === "install" ||
             !next.root_id ||
             next.root_id === context.current.rootId
