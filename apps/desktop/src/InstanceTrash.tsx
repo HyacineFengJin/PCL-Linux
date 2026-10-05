@@ -1,3 +1,4 @@
+import { t, formatNumber } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import type { Api, InstanceDeletedEntry, InstanceDeletePlan } from "./types";
 import {
@@ -79,7 +80,7 @@ export function InstanceDelete({
       )
         return;
       if (plan.id !== id || plan.root_id !== scopeKey || !plan.revision)
-        throw new Error("删除计划与当前实例或游戏目录不一致，请重新检查");
+        throw new Error(t("trash.planChanged"));
       setDialog({ ...next, plan });
     } catch (error) {
       if (
@@ -122,7 +123,7 @@ export function InstanceDelete({
         dialogRef.current !== submitted
       )
         return;
-      if (!result.id) throw new Error("未收到删除任务，请重新检查后重试");
+      if (!result.id) throw new Error(t("trash.taskMissing"));
       setDialog(null);
       callback.current(result.id);
     } catch (error) {
@@ -146,7 +147,7 @@ export function InstanceDelete({
         ref={trigger}
         className="ce-button danger"
         disabled={!native || disabled || !!visible || !!working}
-        title={!native ? "请在桌面应用中删除实例" : "删除实例后可以撤销恢复"}
+        title={!native ? t("trash.desktop") : t("trash.undoHelp")}
         onClick={() => {
           if (
             !allowed() ||
@@ -157,22 +158,22 @@ export function InstanceDelete({
           void prepare();
         }}
       >
-        删除实例
+        {t("trash.deleteInstance")}
       </button>
       {visible && (
         <InstanceOperationDialog
-          title="删除实例"
+          title={t("trash.deleteInstance")}
           titleId="ce-instance-delete-title"
           busy={!!working}
           committing={working === "start"}
           confirmLabel={
             working === "start"
-              ? "正在提交…"
+              ? t("ui.submitting")
               : working === "prepare"
-                ? "正在检查…"
+                ? t("ui.checking")
                 : visible.plan
-                  ? "删除"
-                  : "重新检查"
+                  ? t("ui.delete")
+                  : t("ui.recheck")
           }
           confirmDisabled={!native || disabled}
           onConfirm={() => void start()}
@@ -180,24 +181,24 @@ export function InstanceDelete({
         >
           {visible.plan ? (
             <>
-              <p>
-                将整个实例文件夹移入可恢复区，包括该文件夹内的存档、模组与配置。删除后可在实例列表中点击“撤销删除”恢复。
-              </p>
+              <p>{t("trash.help")}</p>
               <dl>
-                <dt>实例</dt>
+                <dt>{t("ui.instance")}</dt>
                 <dd>{visible.plan.id}</dd>
-                <dt>文件夹</dt>
+                <dt>{t("ui.folder")}</dt>
                 <dd>versions/{visible.plan.id}</dd>
-                <dt>删除内容</dt>
+                <dt>{t("trash.contents")}</dt>
                 <dd>
-                  {visible.plan.total_files.toLocaleString("zh-CN")} 个文件，
-                  {instanceOperationSize(visible.plan.total_bytes)}
+                  {t("ui.fileCountSize", {
+                    count: formatNumber(visible.plan.total_files),
+                    size: instanceOperationSize(visible.plan.total_bytes),
+                  })}
                 </dd>
               </dl>
-              <p>游戏目录中的共享资源与其他实例会保留。</p>
+              <p>{t("trash.sharedRetained")}</p>
             </>
           ) : (
-            !visible.error && <p role="status">正在检查实例内容…</p>
+            !visible.error && <p role="status">{t("trash.checking")}</p>
           )}
           {visible.error && (
             <p className="rd-name-error" role="alert">
@@ -265,7 +266,7 @@ export function InstanceTrash({
       );
       if (!current() || readEpoch.current !== epoch) return;
       if (entries.some((entry) => entry.root_id !== scopeKey))
-        throw new Error("删除记录与当前游戏目录不一致，请刷新重试");
+        throw new Error(t("trash.recordChanged"));
       setSnapshot({
         scope,
         entries: [...entries].sort((a, b) => b.created_ms - a.created_ms),
@@ -314,7 +315,7 @@ export function InstanceTrash({
         revision: saved.revision,
       });
       if (!current() || operation.current !== token) return;
-      if (!result.id) throw new Error("未收到恢复任务，请刷新后重试");
+      if (!result.id) throw new Error(t("trash.restoreTaskMissing"));
       callback.current(result.id);
     } catch (error) {
       if (current() && operation.current === token)
@@ -341,7 +342,7 @@ export function InstanceTrash({
               if (current() && operation.current?.scope !== scope) void read();
             }}
           >
-            刷新
+            {t("ui.refresh")}
           </button>
         </div>
       )}
@@ -353,9 +354,9 @@ export function InstanceTrash({
         >
           <span>
             {entry.state === "deleted"
-              ? `已删除实例 ${entry.id}。`
-              : `实例 ${entry.id} 的删除或恢复操作尚未完成。`}
-            {entry.warning || "可撤销删除，恢复实例文件夹。"}
+              ? t("trash.deleted", { name: entry.id })
+              : t("trash.incomplete", { name: entry.id })}
+            {entry.warning || t("trash.restoreHelp")}
           </span>
           <button
             className="ce-button"
@@ -370,8 +371,8 @@ export function InstanceTrash({
             onClick={() => void restore(entry)}
           >
             {working?.operationId === entry.operation_id
-              ? "正在提交…"
-              : "撤销删除"}
+              ? t("ui.submitting")
+              : t("trash.undo")}
           </button>
           {entry.warning && (
             <button
@@ -382,7 +383,7 @@ export function InstanceTrash({
                   void read();
               }}
             >
-              刷新
+              {t("ui.refresh")}
             </button>
           )}
         </div>

@@ -1,3 +1,4 @@
+import { t, formatNumber } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import {
   Check,
@@ -11,25 +12,29 @@ import type { DownloadStatus, DownloadStep } from "./DownloadPanel";
 import type { Api } from "./types";
 import "./task-manager.css";
 export function instanceTaskAction(kind: DownloadStatus["kind"]) {
-  return kind === "instance_reset"
-    ? "重置"
-    : kind === "instance_export"
-      ? "导出"
-      : kind === "instance_rename"
-        ? "改名"
-        : kind === "instance_import"
-          ? "导入"
-          : kind === "instance_delete"
-            ? "删除"
-            : kind === "instance_restore"
-              ? "恢复"
-              : kind === "resource_update_restore"
-                ? "模组恢复"
-                : kind === "resource_update"
-                  ? "模组更新"
-                  : kind === "resource_download"
-                    ? "资源下载安装"
-                    : "安装";
+  return kind === "resource_save"
+    ? t("task.resourceSave")
+    : kind === "launcher_logs"
+      ? t("task.launcherLogs")
+      : kind === "instance_reset"
+        ? t("ui.reset")
+        : kind === "instance_export"
+          ? t("nav.export")
+          : kind === "instance_rename"
+            ? t("ui.rename")
+            : kind === "instance_import"
+              ? t("ui.import")
+              : kind === "instance_delete"
+                ? t("ui.delete")
+                : kind === "instance_restore"
+                  ? t("ui.restore")
+                  : kind === "resource_update_restore"
+                    ? t("task.modRestore")
+                    : kind === "resource_update"
+                      ? t("nav.modUpdates")
+                      : kind === "resource_download"
+                        ? t("task.resourceInstall")
+                        : t("ui.install");
 }
 export function useDownloadSpeed(status: DownloadStatus) {
   const sample = useRef<{
@@ -84,11 +89,15 @@ export function TaskStatistics({
   return (
     <div className="ce-task-statistics">
       <div>
-        <span>总进度</span>
-        <strong>{percent === null ? "—" : `${percent.toFixed(1)}%`}</strong>
+        <span>{t("task.progress")}</span>
+        <strong>
+          {percent === null
+            ? "—"
+            : `${formatNumber(percent, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`}
+        </strong>
       </div>
       <div>
-        <span>下载速度</span>
+        <span>{t("task.speed")}</span>
         <strong>
           {terminalCancelled ||
           speed === null ||
@@ -97,18 +106,17 @@ export function TaskStatistics({
           status.kind === "instance_import" ||
           status.kind === "instance_delete" ||
           status.kind === "instance_restore" ||
-          status.kind === "resource_update_restore"
+          status.kind === "resource_update_restore" ||
+          status.kind === "launcher_logs"
             ? "—"
-            : `${(speed / 1048576).toFixed(2)} MiB/s`}
+            : `${formatNumber(speed / 1048576, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MiB/s`}
         </strong>
       </div>
       <div>
-        <span>剩余文件</span>
+        <span>{t("task.remaining")}</span>
         <strong>
           {!terminalCancelled && status.total > 0
-            ? Math.max(0, status.total - status.completed).toLocaleString(
-                "zh-CN",
-              )
+            ? formatNumber(Math.max(0, status.total - status.completed))
             : "—"}
         </strong>
       </div>
@@ -189,7 +197,7 @@ export function TaskManager({
   );
   const action = instanceTaskAction(status.kind);
   const cancelAction =
-    status.kind === "resource_download" ? "资源下载" : action;
+    status.kind === "resource_download" ? t("task.resourceDownload") : action;
   const phase =
     status.phase ||
     (status.stage === "downloading" ? "downloading" : "metadata");
@@ -213,9 +221,12 @@ export function TaskManager({
           ? phase === "committing"
             ? 1
             : 0
-          : status.kind === "resource_download" ||
+          : status.kind === "resource_save" ||
+              status.kind === "resource_download" ||
               status.kind === "resource_update"
-            ? phase === "resource-publish" ||
+            ? (status.kind === "resource_save" && phase === "committing") ||
+              phase === "save-publish" ||
+              phase === "resource-publish" ||
               phase === "resource-update-publish" ||
               phase === "installing"
               ? 2
@@ -232,26 +243,47 @@ export function TaskManager({
                     ? 2
                     : 0;
   const fallbackLabels =
-    status.kind === "instance_import"
+    status.kind === "resource_save"
       ? [
-          "检查导入包与目标目录",
-          "解压独立实例与资源",
-          "发布实例文件",
-          "清理导入暂存文件",
+          t("task.resourceMetadata"),
+          t("task.downloadVerify"),
+          t("task.savePublish"),
         ]
-      : status.kind === "instance_delete" || status.kind === "instance_restore"
-        ? ["检查实例文件与引用", "移动实例目录", "校验文件并保存恢复记录"]
-        : status.kind === "resource_update_restore"
-          ? ["检查模组更新恢复记录", "恢复原文件并保存记录"]
-          : status.kind === "resource_update"
+      : status.kind === "launcher_logs"
+        ? []
+        : status.kind === "instance_import"
+          ? [
+              t("task.importCheck"),
+              t("task.importExtract"),
+              t("task.importPublish"),
+              t("task.importCleanup"),
+            ]
+          : status.kind === "instance_delete" ||
+              status.kind === "instance_restore"
             ? [
-                "检查模组更新与必需前置",
-                "下载并校验文件",
-                "替换文件并保存恢复记录",
+                t("task.instanceCheck"),
+                t("task.instanceMove"),
+                t("task.instanceRecord"),
               ]
-            : status.kind === "resource_download"
-              ? ["获取资源与前置信息", "下载并校验文件", "安装资源文件"]
-              : ["获取原版版本信息", "下载游戏与运行所需文件", "安装游戏"];
+            : status.kind === "resource_update_restore"
+              ? [t("task.updateUndoCheck"), t("task.updateUndoApply")]
+              : status.kind === "resource_update"
+                ? [
+                    t("task.updateCheck"),
+                    t("task.downloadVerify"),
+                    t("task.updateApply"),
+                  ]
+                : status.kind === "resource_download"
+                  ? [
+                      t("task.resourceMetadata"),
+                      t("task.downloadVerify"),
+                      t("task.resourceApply"),
+                    ]
+                  : [
+                      t("task.minecraftMetadata"),
+                      t("task.minecraftDownload"),
+                      t("task.minecraftInstall"),
+                    ];
   const steps: DownloadStep[] = status.steps?.length
     ? status.steps
     : fallbackLabels.map((label, index) => ({
@@ -328,23 +360,33 @@ export function TaskManager({
     return (
       <section className="ce-card ce-task-empty">
         <Download size={36} />
-        <p>暂无任务</p>
+        <p>{t("task.empty")}</p>
       </section>
     );
   return (
     <section className={`ce-card ce-task-card ${status.stage}`}>
       <div className="ce-task-heading">
         <strong
-          title={status.root_path ? `游戏目录：${status.root_path}` : undefined}
+          title={
+            status.root_path
+              ? t("task.root", { path: status.root_path })
+              : undefined
+          }
         >
           {status.version} {action}
         </strong>
         <button
           className="icon-button"
           aria-label={
-            cancelling ? "正在清理未完成文件" : `取消${cancelAction}任务`
+            cancelling
+              ? t("task.cleanupPending")
+              : t("task.cancel", { action: cancelAction })
           }
-          title={cancelling ? "正在清理…" : `取消${cancelAction}任务`}
+          title={
+            cancelling
+              ? t("task.cleanup")
+              : t("task.cancel", { action: cancelAction })
+          }
           disabled={
             !native || !active || status.can_cancel === false || cancelling
           }
@@ -380,8 +422,13 @@ export function TaskManager({
         role="status"
       >
         {status.stage === "error" && <TriangleAlert size={16} />}{" "}
-        {cancelling ? "正在取消并清理未完成文件…" : status.message}
+        {cancelling ? t("task.cancelling") : status.message}
       </p>
+      {status.error && status.error !== status.message && (
+        <p className="ce-task-message auth-error" role="alert">
+          {t("task.originalWarning", { message: status.error })}
+        </p>
+      )}
     </section>
   );
 }

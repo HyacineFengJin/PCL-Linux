@@ -1,3 +1,4 @@
+import { t, formatNumber } from "./i18n";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Box,
@@ -37,7 +38,7 @@ const resourceKinds = [
 ] as const;
 type ResourceKind = (typeof resourceKinds)[number];
 type Resources = Record<ResourceKind, ResourceGroup>;
-const unavailable = "此功能尚未开放";
+
 type ComponentSelection = { provider: string; version: string };
 type ResetPlan = {
   revision: string;
@@ -187,10 +188,10 @@ function OperationConfirmation({
             disabled={working}
             onClick={onClose}
           >
-            取消
+            {t("common.cancel")}
           </button>
           <button className="ce-button primary" disabled={working || disabled}>
-            {working ? "正在提交…" : confirm}
+            {working ? t("ui.submitting") : confirm}
           </button>
         </div>
       </form>
@@ -211,7 +212,7 @@ function componentSummary(components: ComponentSelection[]) {
             `${names[item.provider.toLowerCase()] || item.provider} ${item.version}`,
         )
         .join("、")
-    : "原版";
+    : t("ui.vanilla");
 }
 const initialChecks: Record<string, boolean> = {
   game: true,
@@ -357,7 +358,7 @@ function ModifyInstance(props: OperationProps) {
       await api("instance_reset_recover");
       if (scope.current()) {
         setError("");
-        onNotify("实例重置恢复完成");
+        onNotify(t("reset.completed"));
         recovered = true;
       }
     } catch (failure) {
@@ -456,10 +457,10 @@ function ModifyInstance(props: OperationProps) {
         <button
           className="ce-operation-row-action ce-operation-edit-action"
           disabled
-          title="Minecraft 版本修改尚未开放"
+          title={t("reset.minecraftUnavailable")}
         >
           <Pencil size={14} />
-          修改
+          {t("nav.modify")}
         </button>
       </section>
       {modifyProviders.map((name) => {
@@ -470,18 +471,18 @@ function ModifyInstance(props: OperationProps) {
         const isLoading = loading.includes(name);
         const unsupported = !candidateProviders.includes(name);
         const subtitle =
-          selected ||
+          (selected === "已安装" ? t("ui.installed") : selected) ||
           (incompatible
-            ? `与 ${incompatible} 不兼容`
+            ? t("reset.incompatible", { name: incompatible })
             : unsupported
-              ? "暂不支持重置此组件"
+              ? t("reset.componentUnavailable")
               : isLoading
-                ? "正在获取…"
+                ? t("ui.loading")
                 : errors[name]
-                  ? "暂不可用"
+                  ? t("ui.temporarilyUnavailable")
                   : versions.length
-                    ? "可以选择"
-                    : "没有可用版本");
+                    ? t("reset.selectable")
+                    : t("install.noVersion"));
         function versionRow(version: string, latest = false) {
           return (
             <button
@@ -498,7 +499,7 @@ function ModifyInstance(props: OperationProps) {
                 <strong>
                   {name === "OptiFine" ? version.replaceAll("_", " ") : version}
                 </strong>
-                {latest && <small>最新版本</small>}
+                {latest && <small>{t("ui.latest")}</small>}
               </span>
             </button>
           );
@@ -519,7 +520,7 @@ function ModifyInstance(props: OperationProps) {
                   setExpanded((old) => (old === name ? null : name))
                 }
                 aria-expanded={isExpanded}
-                aria-label={"选择 " + name + " 版本"}
+                aria-label={t("reset.selectVersion", { name })}
               >
                 <strong>{name}</strong>
                 <span
@@ -551,8 +552,8 @@ function ModifyInstance(props: OperationProps) {
               {selected && (
                 <button
                   className="ce-operation-loader-remove"
-                  aria-label={"从重置方案移除 " + name}
-                  title="从重置方案移除，实例不会改变"
+                  aria-label={t("reset.remove", { name })}
+                  title={t("reset.removeHelp")}
                   disabled={locked || unsupported}
                   onClick={() => {
                     setChoices((old) => {
@@ -576,13 +577,13 @@ function ModifyInstance(props: OperationProps) {
                     onClick={restoreChoices}
                   >
                     <X size={13} />
-                    取消选择
+                    {t("ui.deselect")}
                   </button>
                 )}
                 {isLoading ? (
                   <p className="ce-modify-candidate-state" role="status">
                     <LoaderCircle size={16} className="spin" />
-                    正在获取兼容版本…
+                    {t("install.loadingCompatible")}
                   </p>
                 ) : errors[name] ? (
                   <div className="ce-modify-candidate-state" role="status">
@@ -592,18 +593,22 @@ function ModifyInstance(props: OperationProps) {
                       disabled={locked}
                       onClick={() => setRefresh((old) => old + 1)}
                     >
-                      重新获取
+                      {t("ui.reload")}
                     </button>
                   </div>
                 ) : !versions.length ? (
                   <p className="ce-modify-candidate-state">
-                    没有适用于 Minecraft {instance.minecraft_version} 的版本
+                    {t("install.noMinecraftVersion", {
+                      version: instance.minecraft_version,
+                    })}
                   </p>
                 ) : (
                   <>
                     {versionRow(versions[0], true)}
                     <div className="ce-modify-all-versions">
-                      全部版本 ({versions.length})
+                      {t("install.allVersions", {
+                        count: formatNumber(versions.length),
+                      })}
                     </div>
                     {versions.map((version) => (
                       <div key={version}>{versionRow(version)}</div>
@@ -617,14 +622,14 @@ function ModifyInstance(props: OperationProps) {
       })}
       {changed && (
         <div className="ce-modify-draft-notice" role="status">
-          <span>选择仅保存在本页，实例尚未修改。</span>
+          <span>{t("reset.choiceHelp")}</span>
           <button
             className="ce-button"
             disabled={locked}
             onClick={restoreChoices}
           >
             <X size={13} />
-            取消选择
+            {t("ui.deselect")}
           </button>
         </div>
       )}
@@ -640,21 +645,21 @@ function ModifyInstance(props: OperationProps) {
             disabled={!native || locked}
             onClick={() => void recoverReset()}
           >
-            {activity === "recover" ? "正在恢复…" : "恢复未完成重置"}
+            {activity === "recover" ? t("ui.restoring") : t("reset.recover")}
           </button>
         </div>
       )}
       {!supportedCurrent && (
-        <p className="ce-operation-note">此实例的组件暂不支持重置。</p>
+        <p className="ce-operation-note">{t("reset.unsupported")}</p>
       )}
       <div className="ce-operation-floating-action">
         <button
           disabled={!native || locked || !supportedCurrent}
           title={
             !native
-              ? "请在桌面应用中重置实例"
+              ? t("reset.desktop")
               : busy
-                ? "当前有游戏或任务运行"
+                ? t("ui.gameTaskBusy")
                 : undefined
           }
           onClick={() => void prepareReset()}
@@ -664,35 +669,35 @@ function ModifyInstance(props: OperationProps) {
           ) : (
             <RotateCcw size={17} />
           )}
-          {activity === "plan" ? "正在检查…" : "开始重置"}
+          {activity === "plan" ? t("ui.checking") : t("reset.start")}
         </button>
       </div>
       {plan && (
         <OperationConfirmation
-          title="重置游戏实例"
+          title={t("reset.title")}
           working={activity === "start"}
           disabled={!native || busy}
-          confirm="开始重置"
+          confirm={t("reset.start")}
           onClose={() => setPlan(null)}
           onConfirm={() => void startReset()}
         >
           <dl>
-            <dt>游戏实例</dt>
+            <dt>{t("instance.instance")}</dt>
             <dd>{plan.id}</dd>
             <dt>Minecraft</dt>
-            <dd>{plan.minecraft}（版本不变）</dd>
-            <dt>当前组件</dt>
+            <dd>
+              {plan.minecraft}
+              {t("reset.unchanged")}
+            </dd>
+            <dt>{t("reset.current")}</dt>
             <dd>
               {plan.current_summary ||
                 componentSummary(plan.current_components)}
             </dd>
-            <dt>重置后组件</dt>
+            <dt>{t("reset.after")}</dt>
             <dd>{componentSummary(plan.components)}</dd>
           </dl>
-          <p>
-            将替换此实例的版本 JSON 和
-            JAR。模组、配置、存档、选项和实例个性化信息会保留。
-          </p>
+          <p>{t("reset.help")}</p>
         </OperationConfirmation>
       )}
     </div>
@@ -717,15 +722,15 @@ function ExportInstance(props: OperationProps) {
   const working = useRef(false);
   const locked = !!activity || !!plan || busy;
   const invalid = !name.trim()
-    ? "请输入整合包名称"
+    ? t("export.nameRequired")
     : Array.from(name.trim()).length > 200
-      ? "整合包名称不能超过 200 个字符"
+      ? t("export.nameLong")
       : !version.trim()
-        ? "请输入整合包版本"
+        ? t("export.versionRequired")
         : Array.from(version.trim()).length > 128
-          ? "整合包版本不能超过 128 个字符"
+          ? t("export.versionLong")
           : /[\u0000-\u001f\u007f]/.test(name + version)
-            ? "名称和版本不能包含控制字符"
+            ? t("export.controlChars")
             : "";
   const request = (): ExportRequest => ({
     name: name.trim(),
@@ -765,7 +770,7 @@ function ExportInstance(props: OperationProps) {
       if (scope.current()) {
         setPlan(null);
         if (id) onTaskStart(id);
-        else setMessage("已取消选择导出位置。");
+        else setMessage(t("export.locationCancelled"));
       }
     } catch (failure) {
       if (scope.current()) {
@@ -793,7 +798,7 @@ function ExportInstance(props: OperationProps) {
       );
       if (!scope.current()) return;
       if (!saved) {
-        setMessage("此实例还没有保存导出配置。");
+        setMessage(t("export.noConfig"));
         return;
       }
       setName(saved.name);
@@ -811,7 +816,7 @@ function ExportInstance(props: OperationProps) {
         ),
       );
       setExcluded(saved.excluded);
-      setMessage("已读取此实例的导出配置。");
+      setMessage(t("export.configLoaded"));
     } catch (failure) {
       if (scope.current()) setError(String(failure));
     } finally {
@@ -833,8 +838,8 @@ function ExportInstance(props: OperationProps) {
         request: request(),
       });
       if (scope.current()) {
-        setMessage("已保存此实例的导出配置。");
-        onNotify("已保存导出配置");
+        setMessage(t("export.configSaved"));
+        onNotify(t("export.savedNotice"));
       }
     } catch (failure) {
       if (scope.current()) setError(String(failure));
@@ -859,7 +864,7 @@ function ExportInstance(props: OperationProps) {
       await api("instance_reset_recover");
       if (scope.current()) {
         setError("");
-        onNotify("实例重置恢复完成");
+        onNotify(t("reset.completed"));
         recovered = true;
       }
     } catch (failure) {
@@ -924,7 +929,7 @@ function ExportInstance(props: OperationProps) {
           (child ? " is-child" : "") +
           (disabled ? " is-unavailable" : "")
         }
-        title={disabled && key !== "game" ? unavailable : undefined}
+        title={disabled && key !== "game" ? t("common.unavailable") : undefined}
       >
         <input
           type="checkbox"
@@ -942,17 +947,21 @@ function ExportInstance(props: OperationProps) {
     if (group.loading)
       return (
         <div className="ce-export-tree-note is-child" role="status">
-          正在读取文件…
+          {t("export.readingFiles")}
         </div>
       );
     if (group.error)
       return (
         <div className="ce-export-tree-note is-child" role="alert">
-          读取失败：{group.error}
+          {t("export.readError", { error: group.error })}
         </div>
       );
     if (!group.files.length)
-      return <div className="ce-export-tree-note is-child">没有本地文件</div>;
+      return (
+        <div className="ce-export-tree-note is-child">
+          {t("export.noFiles")}
+        </div>
+      );
     return group.files.map((file) => {
       const filename = file.file_name || file.name;
       const omitted = excluded[kind] || [];
@@ -979,16 +988,16 @@ function ExportInstance(props: OperationProps) {
   return (
     <div className="ce-instance-operation ce-instance-export">
       <section className="ce-card ce-export-name-card">
-        <label htmlFor="ce-export-name">整合包名称</label>
+        <label htmlFor="ce-export-name">{t("export.name")}</label>
         <input
           id="ce-export-name"
           className="ce-field"
           value={name}
           disabled={locked}
           onChange={(event) => setName(event.target.value)}
-          placeholder="输入整合包名称"
+          placeholder={t("export.namePlaceholder")}
         />
-        <label htmlFor="ce-export-version">整合包版本</label>
+        <label htmlFor="ce-export-version">{t("instance.packVersion")}</label>
         <input
           id="ce-export-version"
           className="ce-field"
@@ -999,78 +1008,79 @@ function ExportInstance(props: OperationProps) {
         />
       </section>
       <section className="ce-card ce-export-content-card">
-        <h2 className="ce-card-title">导出内容列表</h2>
+        <h2 className="ce-card-title">{t("export.contents")}</h2>
         <div className="ce-export-tree">
           {option(
             "game",
-            "游戏本体",
+            t("instance.game"),
             `Minecraft ${instance.minecraft_version}${instance.loader !== "Vanilla" ? `, ${instance.loader}` : ""}`,
             false,
             true,
           )}
           {option(
             "gameSettings",
-            "游戏本体设置",
-            "键位、音量、视频设置等",
+            t("export.gameSettings"),
+            t("export.gameSettingsHelp"),
             true,
           )}
           {option(
             "gamePersonal",
-            "游戏本体个人信息",
-            "命令历史、已保存的快捷栏",
+            t("export.gamePersonal"),
+            t("export.gamePersonalHelp"),
             true,
           )}
           {option(
             "mods",
-            "模组",
+            t("resources.mods"),
             resources.mods.loading
-              ? "正在读取模组…"
+              ? t("export.readingMods")
               : resources.mods.error
-                ? "模组列表读取失败"
-                : `${resources.mods.files.length} 个模组`,
+                ? t("export.modsError")
+                : t("export.modCount", {
+                    count: formatNumber(resources.mods.files.length),
+                  }),
           )}
           <Collapse open={checks.mods}>
             {option(
               "packData",
-              "整合包重要数据",
-              "脚本文件、内置资源包、数据包等",
+              t("export.packData"),
+              t("export.packDataHelp"),
               true,
             )}
-            {option("modSettings", "模组设置", "", true)}
-            {option(
-              "maps",
-              "已绘制的地图",
-              "地图类模组现有的存档、服务器记录的地图、路标点等",
-              true,
-            )}
-            {option("jeiPersonal", "JEI 个人信息", "物品收藏夹等", true)}
+            {option("modSettings", t("export.modSettings"), "", true)}
+            {option("maps", t("export.maps"), t("export.mapsHelp"), true)}
+            {option("jeiPersonal", t("export.jei"), t("export.jeiHelp"), true)}
             {option(
               "guidePersonal",
-              "帕秋莉手册个人信息",
-              "教程书的已读记录、书签、阅读历史记录等",
+              t("export.patchouli"),
+              t("export.patchouliHelp"),
               true,
             )}
           </Collapse>
-          {option("resourcepacks", "资源包", "纹理包/材质包")}
+          {option(
+            "resourcepacks",
+            t("nav.resourcepacks"),
+            t("export.textures"),
+          )}
           <Collapse open={checks.resourcepacks}>
             {fileList("resourcepacks")}
           </Collapse>
-          {option("shaderpacks", "光影包")}
+          {option("shaderpacks", t("nav.shaderpacks"))}
           <Collapse open={checks.shaderpacks}>
             {fileList("shaderpacks")}
           </Collapse>
-          {option("screenshots", "截图")}
+          {option("screenshots", t("nav.screenshots"))}
           <Collapse open={checks.screenshots}>
             {fileList("screenshots")}
           </Collapse>
-          {option("saves", "单人游戏存档", "世界/地图")}
+          {option("saves", t("export.saves"), t("export.worlds"))}
           <Collapse open={checks.saves}>{fileList("saves")}</Collapse>
-          {option("server", "多人游戏服务器列表")}
-          {option("other", "其他文件夹", "未被上方选项覆盖的文件夹")}
+          {option("server", t("export.servers"))}
+          {option("other", t("export.other"), t("export.otherHelp"))}
           {option(
             "launcher",
-            "PCL Linux 启动器程序",
-            "打包启动器，以便没有启动器的玩家安装整合包",
+            t("export.launcher"),
+            t("export.launcherHelp"),
             false,
             true,
           )}
@@ -1082,7 +1092,7 @@ function ExportInstance(props: OperationProps) {
           onClick={() => setAdvanced((old) => !old)}
           aria-expanded={advanced}
         >
-          <h2 className="ce-card-title">高级选项</h2>
+          <h2 className="ce-card-title">{t("export.advanced")}</h2>
           <ChevronDown
             size={17}
             className={"ce-disclosure-arrow" + (advanced ? " is-open" : "")}
@@ -1090,29 +1100,26 @@ function ExportInstance(props: OperationProps) {
         </button>
         <Collapse open={advanced}>
           <div className="ce-export-tree">
-            {option("bundleAssets", "打包资源文件，以避免在导入时下载")}
-            {option("modrinth", "Modrinth 上传模式", "", false, true)}
+            {option("bundleAssets", t("export.assets"))}
+            {option("modrinth", t("export.modrinth"), "", false, true)}
           </div>
-          <p className="ce-operation-note">
-            导出为本地
-            ZIP。个人信息和模组数据按已识别的文件位置筛选，自定义模组文件请在导出前核对。
-          </p>
+          <p className="ce-operation-note">{t("export.help")}</p>
           <div className="ce-actions ce-export-config-actions">
             <button
               className="ce-button primary"
               disabled={!native || locked}
-              title="读取此实例上次保存的导出配置"
+              title={t("export.readConfigHelp")}
               onClick={() => void readConfig()}
             >
-              {activity === "read" ? "正在读取…" : "读取配置"}
+              {activity === "read" ? t("ui.reading") : t("export.readConfig")}
             </button>
             <button
               className="ce-button"
               disabled={!native || locked || !!invalid}
-              title="将当前选项保存为此实例的导出配置"
+              title={t("export.saveConfigHelp")}
               onClick={() => void saveConfig()}
             >
-              {activity === "save" ? "正在保存…" : "保存配置"}
+              {activity === "save" ? t("ui.saving") : t("export.saveConfig")}
             </button>
           </div>
         </Collapse>
@@ -1129,7 +1136,7 @@ function ExportInstance(props: OperationProps) {
             disabled={!native || locked}
             onClick={() => void recoverReset()}
           >
-            {activity === "recover" ? "正在恢复…" : "恢复未完成重置"}
+            {activity === "recover" ? t("ui.restoring") : t("reset.recover")}
           </button>
         </div>
       )}
@@ -1143,9 +1150,9 @@ function ExportInstance(props: OperationProps) {
           disabled={!native || locked || !!invalid}
           title={
             !native
-              ? "请在桌面应用中导出实例"
+              ? t("export.desktop")
               : busy
-                ? "当前有游戏或任务运行"
+                ? t("ui.gameTaskBusy")
                 : invalid || undefined
           }
           onClick={() => void prepareExport()}
@@ -1155,31 +1162,33 @@ function ExportInstance(props: OperationProps) {
           ) : (
             <Box size={17} />
           )}
-          {activity === "plan" ? "正在检查…" : "开始导出"}
+          {activity === "plan" ? t("ui.checking") : t("export.start")}
         </button>
       </div>
       {plan && (
         <OperationConfirmation
-          title="导出游戏实例"
+          title={t("export.title")}
           working={activity === "start"}
           disabled={!native || busy}
-          confirm="选择导出位置"
+          confirm={t("export.location")}
           onClose={() => setPlan(null)}
           onConfirm={() => void startExport()}
         >
           <dl>
-            <dt>游戏实例</dt>
+            <dt>{t("instance.instance")}</dt>
             <dd>{plan.instance_id}</dd>
-            <dt>整合包</dt>
+            <dt>{t("resources.modpacks")}</dt>
             <dd>
               {plan.request.name} {plan.request.version}
             </dd>
-            <dt>导出格式</dt>
-            <dd>本地 ZIP</dd>
-            <dt>导出内容</dt>
+            <dt>{t("export.format")}</dt>
+            <dd>{t("export.zip")}</dd>
+            <dt>{t("export.content")}</dt>
             <dd>
-              {plan.file_count} 个文件，{(plan.bytes / 1024 / 1024).toFixed(1)}{" "}
-              MiB
+              {t("ui.fileCountSize", {
+                count: formatNumber(plan.file_count),
+                size: `${formatNumber(plan.bytes / 1048576, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MiB`,
+              })}
             </dd>
           </dl>
           {(plan.warnings || []).map((warning) => (

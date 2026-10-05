@@ -10,6 +10,7 @@ custom-protocol = ["tauri/custom-protocol"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+pcl-network = { path = "../../../crates/network" }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
@@ -20,6 +21,9 @@ toml = "0.8"
 base64 = "0.22"
 libc = "0.2"
 sha2 = "0.10"
+semver = "1"
+gtk = "0.18"
+gdk = "0.18"
 pcl-core = { path = "../../../crates/core" }
 pcl-auth = { path = "../../../crates/auth" }
 pcl-install = { path = "../../../crates/install" }

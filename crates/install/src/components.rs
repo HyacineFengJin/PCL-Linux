@@ -299,12 +299,19 @@ impl Installer {
         cb: &(impl Fn(Progress) + Send + Sync),
     ) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
-        self.transfer(&self.url(url)?, limit, cancel, |chunk| {
+        let consume = |chunk: &[u8]| {
             stats.network += chunk.len() as u64;
             bytes.extend_from_slice(chunk);
             cb(stats.event("component_metadata", "正在读取组件安装信息", 0.0));
             Ok(())
-        })?;
+        };
+        // JSON/profile/SHA metadata is not charged to artifact pacing; an
+        // installer archive has the larger MAX_COMPONENT contract and is.
+        if limit <= MAX_METADATA {
+            self.metadata_transfer(&self.url(url)?, limit, cancel, consume)?;
+        } else {
+            self.transfer(&self.url(url)?, limit, cancel, consume)?;
+        }
         Ok(bytes)
     }
     fn component_file(
@@ -324,7 +331,9 @@ impl Installer {
         }
         stats.total += 1;
         stats.byte_total += d.size;
-        if verify(&cached, &d.hash, d.size, cancel)? {
+        if !self.downloads.policy().forbid_cross_root_cache_copy
+            && verify(&cached, &d.hash, d.size, cancel)?
+        {
             // Copy instead of hard links: processors can rewrite their inputs.
             copy_cancel(&cached, &path, cancel)?;
             stats.component_completed += 1;

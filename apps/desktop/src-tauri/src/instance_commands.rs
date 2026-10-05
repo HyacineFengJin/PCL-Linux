@@ -209,6 +209,11 @@ pub async fn instance_import_start(
         if checked.revision != revision {
             return Err("ZIP、导入名称或目标文件已改变，请重新检查".into());
         }
+        let auto_select = shared
+            .launcher_preferences
+            .snapshot()
+            .preferences
+            .auto_select_installed;
         spawn(
             shared.clone(),
             root,
@@ -238,11 +243,13 @@ pub async fn instance_import_start(
                 // A selection write failure does not invalidate a committed import.
                 // Keep the installed result and expose the persistence warning.
                 let _operation = shared.operations.lock().unwrap();
-                if let Err(error) = shared.config.select_installed(
-                    &root.id,
-                    result["id"].as_str().ok_or("导入结果缺少实例名称")?,
-                ) {
-                    result["warning"] = format!("实例已导入，但选择状态未保存：{error}").into();
+                if auto_select {
+                    if let Err(error) = shared.config.select_installed(
+                        &root.id,
+                        result["id"].as_str().ok_or("导入结果缺少实例名称")?,
+                    ) {
+                        result["warning"] = format!("实例已导入，但选择状态未保存：{error}").into();
+                    }
                 }
                 Ok(result)
             },

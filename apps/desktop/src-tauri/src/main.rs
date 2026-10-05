@@ -13,11 +13,30 @@ mod instance_rename_service;
 mod instance_reset;
 mod java_commands;
 mod java_service;
+mod launcher_asset_commands;
+mod launcher_assets;
+mod launcher_commands;
+mod launcher_delay;
+mod launcher_discovery;
+mod launcher_discovery_commands;
+mod launcher_game_monitor;
+mod launcher_local;
+mod launcher_local_commands;
+mod launcher_log_commands;
+mod launcher_logs;
+mod launcher_monitor_runtime;
+mod launcher_prefs;
+mod launcher_runtime;
+mod launcher_update_commands;
+mod launcher_updates;
+mod launcher_visibility;
 mod modrinth_install;
 mod platform;
 mod resource_details;
 mod resource_install_commands;
 mod resource_ops;
+mod resource_save;
+mod resource_save_commands;
 mod resource_update_commands;
 mod tasks;
 mod ui_catalog;
@@ -26,9 +45,8 @@ use config::{ConfigStore, GameRoot, RootSummary, Settings};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -53,16 +71,32 @@ struct Shared {
     tasks: Arc<tasks::Tasks>,
     config: ConfigStore,
     instance_metadata: instance_meta::MetadataStore,
+    launcher_preferences: launcher_prefs::LauncherPreferencesStore,
+    launcher_import: launcher_commands::ImportSession,
+    launcher_assets: launcher_assets::AssetStore,
+    launcher_local: launcher_runtime::LocalRuntime,
+    launcher_updates: launcher_update_commands::Updater,
+    launcher_announcements: launcher_discovery::AnnouncementStore,
     desktop: Arc<platform::Desktop>,
     operations: Mutex<()>,
     status: Mutex<RunStatus>,
     stop: AtomicBool,
     closing: AtomicBool,
+    monitor: launcher_monitor_runtime::MonitorRuntime,
+    resource_save: resource_save_commands::SaveSession,
     log: Mutex<Option<PathBuf>>,
+}
+impl Shared {
+    fn launcher_view(&self) -> launcher_prefs::LauncherPreferencesView {
+        let mut view = self.launcher_preferences.snapshot();
+        view.runtime_warning = self.launcher_local.warnings.message();
+        view
+    }
 }
 #[derive(Serialize)]
 struct Bootstrap {
     settings: Settings,
+    launcher_preferences: launcher_prefs::LauncherPreferencesView,
     instances: Vec<InstanceView>,
     roots: Vec<RootSummary>,
     scan_issues: Vec<pcl_core::ScanIssue>,
@@ -100,6 +134,7 @@ fn project() -> PathBuf {
         .expect("项目路径不存在")
 }
 fn bootstrap_view(s: &Shared) -> Bootstrap {
+    let _ = launcher_monitor_runtime::refresh(s);
     let (settings, roots) = s.config.view();
     // Bind scanning and metadata to the same directory even if a registered
     // alias is retargeted while this read is running.
@@ -245,6 +280,7 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
     };
     Bootstrap {
         settings,
+        launcher_preferences: s.launcher_view(),
         roots,
         instances,
         scan_issues,
@@ -360,6 +396,7 @@ fn save_settings(settings: Settings, state: State<'_, Arc<Shared>>) -> Result<Se
 /// Rename recovery snapshots include launcher references. Keep all cooperating
 /// writers out until those references and the physical directory agree.
 fn require_reference_write(s: &Shared) -> Result<(), String> {
+    launcher_monitor_runtime::refresh(s)?;
     if s.tasks
         .active()
         .is_some_and(|task| task.kind == tasks::TaskKind::InstanceRename)
@@ -452,6 +489,7 @@ async fn root_update(
 }
 
 fn require_root_unused(s: &Shared, id: &str) -> Result<(), String> {
+    launcher_monitor_runtime::require_root_unused(s, id)?;
     let run = s.status.lock().unwrap();
     if s.tasks.uses_root(id)
         || (run.root_id.as_deref() == Some(id)
@@ -496,6 +534,7 @@ async fn root_remove(id: String, state: State<'_, Arc<Shared>>) -> Result<Bootst
 }
 #[tauri::command]
 fn process_status(state: State<'_, Arc<Shared>>) -> RunStatus {
+    let _ = launcher_monitor_runtime::refresh(&state);
     state.status.lock().unwrap().clone()
 }
 #[tauri::command]
@@ -534,6 +573,7 @@ fn download_start(
     if state.closing.load(Ordering::SeqCst) {
         return Err("启动器正在关闭，请重新打开后安装".into());
     }
+    launcher_monitor_runtime::require_idle(&state)?;
     let run = state.status.lock().unwrap();
     if matches!(run.stage.as_str(), "preparing" | "running") {
         return Err("请在游戏退出后安装新实例".into());
@@ -555,6 +595,13 @@ fn download_start(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("无法检查实例名称：{e}")),
     }
+    // Installation uses the policy submitted with this job. Editing the
+    // launcher later must not change its post-publication selection behavior.
+    let auto_select = state
+        .launcher_preferences
+        .snapshot()
+        .preferences
+        .auto_select_installed;
     let shared = state.inner().clone();
     let target = root.id.clone();
     state.downloads.start(
@@ -562,7 +609,13 @@ fn download_start(
         root.id,
         request,
         shared.project.clone(),
-        move |result| shared.config.select_installed(&target, &result.id),
+        move |result| {
+            if auto_select {
+                shared.config.select_installed(&target, &result.id)
+            } else {
+                Ok(())
+            }
+        },
     )
 }
 
@@ -582,6 +635,7 @@ fn task_cancel(id: String, state: State<'_, Arc<Shared>>) -> Result<tasks::TaskS
 }
 
 fn require_instance_job(s: &Shared) -> Result<(), String> {
+    launcher_monitor_runtime::require_idle(s)?;
     s.config.ensure_writable()?;
     if s.closing.load(Ordering::SeqCst) {
         return Err("启动器正在关闭，请重新打开后再操作实例".into());
@@ -765,15 +819,17 @@ async fn instance_reset_start(
         let task_id = task.id().to_owned();
         s.downloads.track(&task);
         let worker = s.clone();
+        let download_policy = pcl_network::download_snapshot();
         std::thread::Builder::new()
             .name(format!("pcl-reset-{task_id}"))
             .spawn(move || {
                 let cancel = task.cancellation_token();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    instance_reset::execute(
+                    instance_reset::execute_with_policy(
                         Path::new(&root.path),
                         &worker.project,
                         checked,
+                        download_policy,
                         &cancel,
                         |p| worker.downloads.progress(&task, p),
                     )
@@ -1015,6 +1071,7 @@ enum ResourceRequest {
 }
 
 fn require_resource_write(s: &Shared) -> Result<(), String> {
+    launcher_monitor_runtime::require_idle(s)?;
     s.config.ensure_writable()?;
     if matches!(
         s.status.lock().unwrap().stage.as_str(),
@@ -1274,21 +1331,43 @@ fn require_account_edit(st: &RunStatus) -> Result<(), String> {
     }
     Ok(())
 }
+/// Account writes publish their new stage while holding the same admission lock
+/// as network-policy adoption and game preparation. In particular, `start`
+/// captures its client and sets Accounts.preparing before this lock is released.
+/// The action is synchronous; no native UI or asynchronous wait occurs here.
+fn with_account_write<T>(
+    s: &Shared,
+    action: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let _operation = s.operations.lock().unwrap();
+    if s.closing.load(Ordering::SeqCst) {
+        return Err("启动器正在关闭，请稍后管理账号".into());
+    }
+    launcher_monitor_runtime::require_idle(s)?;
+    if s.tasks.active().is_some() || s.launcher_updates.busy() {
+        return Err("请在文件任务和启动器更新结束后管理账号".into());
+    }
+    let run = s.status.lock().unwrap();
+    require_account_edit(&run)?;
+    if matches!(
+        s.accounts.snapshot().stage.as_str(),
+        "preparing" | "waiting"
+    ) {
+        return Err("请先完成或取消当前微软登录".into());
+    }
+    action()
+}
 #[tauri::command]
 fn auth_status(state: State<'_, Arc<Shared>>) -> accounts::AuthState {
     state.accounts.snapshot()
 }
 #[tauri::command]
 fn auth_configure(client_id: String, state: State<'_, Arc<Shared>>) -> Result<(), String> {
-    let st = state.status.lock().unwrap();
-    require_account_edit(&st)?;
-    state.accounts.configure(client_id)
+    with_account_write(&state, || state.accounts.configure(client_id))
 }
 #[tauri::command]
 fn auth_start(remember: bool, state: State<'_, Arc<Shared>>) -> Result<(), String> {
-    let st = state.status.lock().unwrap();
-    require_account_edit(&st)?;
-    state.accounts.start(remember)
+    with_account_write(&state, || state.accounts.start(remember))
 }
 #[tauri::command]
 fn auth_cancel(state: State<'_, Arc<Shared>>) {
@@ -1296,20 +1375,14 @@ fn auth_cancel(state: State<'_, Arc<Shared>>) {
 }
 #[tauri::command]
 fn auth_select(id: Option<String>, state: State<'_, Arc<Shared>>) -> Result<(), String> {
-    let st = state.status.lock().unwrap();
-    require_account_edit(&st)?;
-    state.accounts.select(id)
+    with_account_write(&state, || state.accounts.select(id))
 }
 #[tauri::command]
 async fn auth_remove(id: String, state: State<'_, Arc<Shared>>) -> Result<(), String> {
     let s = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let st = s.status.lock().unwrap();
-        require_account_edit(&st)?;
-        s.accounts.remove(id)
-    })
-    .await
-    .map_err(|_| "账号操作任务失败")?
+    tauri::async_runtime::spawn_blocking(move || with_account_write(&s, || s.accounts.remove(id)))
+        .await
+        .map_err(|_| "账号操作任务失败")?
 }
 fn open_official(url: &str) -> Result<(), String> {
     Command::new("xdg-open")
@@ -1347,6 +1420,7 @@ async fn inspect_instance(
         // Building the current launch plan extracts natives. Coordinate this
         // short write with game startup, installs and root removal.
         let _operation = s.operations.lock().unwrap();
+        launcher_monitor_runtime::require_idle(&s)?;
         s.config.ensure_writable()?;
         require_account_edit(&s.status.lock().unwrap())?;
         if s.tasks.active().is_some() {
@@ -1386,6 +1460,7 @@ fn instance_context(
     instance_delete::ensure_name_available(Path::new(&root.path), id)?;
     Ok((settings, root))
 }
+#[cfg(test)]
 fn update(s: &Shared, stage: &str, message: String, pid: Option<u32>, exit_code: Option<i32>) {
     let mut st = s.status.lock().unwrap();
     st.stage = stage.into();
@@ -1393,67 +1468,57 @@ fn update(s: &Shared, stage: &str, message: String, pid: Option<u32>, exit_code:
     st.pid = pid;
     st.exit_code = exit_code;
 }
-fn capture_output(
-    reader: impl Read + Send + 'static,
-    log: Arc<Mutex<fs::File>>,
-    accounts: Arc<accounts::Accounts>,
-) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
-        let mut reader = BufReader::new(reader);
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            match reader.read_until(b'\n', &mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    let safe = accounts.redact(String::from_utf8_lossy(&line).into_owned());
-                    if log.lock().unwrap().write_all(safe.as_bytes()).is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    })
-}
 #[tauri::command]
 fn launch_game(
     id: String,
     root_id: Option<String>,
+    window: tauri::WebviewWindow,
     state: State<'_, Arc<Shared>>,
 ) -> Result<(), String> {
     let _operation = state.operations.lock().unwrap();
+    if state.closing.load(Ordering::SeqCst) {
+        return Err("启动器正在关闭".into());
+    }
+    launcher_monitor_runtime::require_idle(&state)?;
     state.config.ensure_writable()?;
     let (cfg, root) = instance_context(&state.config, root_id.as_deref(), &id)?;
     resource_ops::ensure_ready(Path::new(&root.path))?;
     instance_reset::ensure_ready(Path::new(&root.path))?;
     ensure_instance_files_ready(&state, &root)?;
-    {
-        let mut st = state.status.lock().unwrap();
-        if state.tasks.active().is_some() {
-            return Err("请在文件操作结束后启动游戏".into());
-        }
-        if st.stage == "preparing" || st.stage == "running" {
-            return Err("已有启动任务或游戏正在运行".into());
-        }
-        if matches!(
-            state.accounts.snapshot().stage.as_str(),
-            "preparing" | "waiting"
-        ) {
-            return Err("请先完成或取消微软登录".into());
-        }
-        state.stop.store(false, Ordering::SeqCst);
-        *st = RunStatus {
+    let generation = launcher_monitor_runtime::begin_preparation(
+        &state,
+        RunStatus {
             stage: "preparing".into(),
             message: "正在解析版本和检查 Linux 依赖…".into(),
             version: Some(id.clone()),
             root_id: Some(root.id.clone()),
             root_path: Some(root.path.clone()),
             ..Default::default()
-        };
-    }
+        },
+    )?;
+    let launcher_policy = state.launcher_preferences.snapshot().preferences;
+    let visibility_policy = launcher_policy.launch_visibility;
+    let preparation_delay = launcher_policy.advanced.artificial_delay_ms;
     let s = state.inner().clone();
     std::thread::spawn(move || {
-        let task = || -> Result<(), String> {
+        let mut visibility = launcher_visibility::VisibilityGuard::new(
+            window.clone(),
+            visibility_policy,
+            s.clone(),
+            generation,
+        );
+        let mut task = || -> Result<(), String> {
+            if launcher_delay::preparation_delay(preparation_delay, &s.stop) {
+                launcher_monitor_runtime::update_current(
+                    &s,
+                    generation,
+                    "idle",
+                    "启动已取消".into(),
+                    None,
+                    None,
+                );
+                return Ok(());
+            }
             let memory = *root.overrides.get(&id).unwrap_or(&cfg.memory_gib);
             let plan = match s.accounts.identity()? {
                 Some(identity) => pcl_core::build_launch_plan_authenticated_with_java(
@@ -1482,71 +1547,94 @@ fn launch_game(
                 )?,
             };
             if s.stop.load(Ordering::SeqCst) {
-                update(&s, "idle", "启动已取消".into(), None, None);
+                launcher_monitor_runtime::update_current(
+                    &s,
+                    generation,
+                    "idle",
+                    "启动已取消".into(),
+                    None,
+                    None,
+                );
                 return Ok(());
             }
-            fs::create_dir_all(plan.log_path.parent().unwrap()).map_err(|e| e.to_string())?;
-            let log = fs::File::create(&plan.log_path).map_err(|e| e.to_string())?;
-            let mut child = Command::new(&plan.java)
-                .args(&plan.args)
-                .current_dir(&plan.game_dir)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(|e| format!("Java 启动失败：{e}"))?;
-            let log = Arc::new(Mutex::new(log));
-            let stdout = capture_output(
-                child.stdout.take().unwrap(),
-                log.clone(),
-                s.accounts.clone(),
-            );
-            let stderr = capture_output(child.stderr.take().unwrap(), log, s.accounts.clone());
-            *s.log.lock().unwrap() = Some(plan.log_path);
-            update(
+            let request = launcher_game_monitor::MonitorRequest::new(
+                s.project.clone(),
+                root.id.clone(),
+                PathBuf::from(&root.path),
+                plan.java,
+                plan.args,
+                plan.game_dir,
+                plan.log_path,
+                s.accounts.redaction_snapshot(),
+            )?;
+            let started = launcher_game_monitor::spawn_monitor(request)?;
+            // Statistics reflect actual ACKed spawn even when the user cancels
+            // during the handshake; cancellation is checked before window effects.
+            let handoff = launcher_monitor_runtime::adopt_spawned(
                 &s,
-                "running",
-                "游戏进程已启动，正在加载".into(),
-                Some(child.id()),
-                None,
+                generation,
+                started.pid,
+                started.monitor_pid,
+                started.session_id,
+                started.log_path,
             );
-            loop {
-                if s.stop.swap(false, Ordering::SeqCst) {
-                    child.kill().map_err(|e| e.to_string())?;
-                    let _ = child.wait();
-                    update(&s, "exited", "游戏进程已结束".into(), None, None);
-                    break;
+            s.launcher_local.game_spawned();
+            let handoff = handoff?;
+            if handoff == launcher_monitor_runtime::Handoff::Superseded {
+                return Ok(());
+            }
+            if handoff == launcher_monitor_runtime::Handoff::Ready {
+                if visibility_policy == launcher_prefs::LaunchVisibility::ExitAfterLaunch {
+                    let closed =
+                        launcher_monitor_runtime::with_spawn_visibility(&s, generation, || {
+                            window.close()
+                        })?;
+                    if let Some(result) = closed {
+                        launcher_monitor_runtime::with_current(&s, generation, || {
+                            s.launcher_local.warnings.set(
+                                launcher_runtime::WarningKind::Visibility,
+                                result.err().map(|_| {
+                                    "游戏已启动，但启动器窗口未能关闭；可以手动关闭".into()
+                                }),
+                            )
+                        });
+                        return Ok(());
+                    }
+                } else {
+                    let warning = visibility
+                        .spawned()?
+                        .and_then(|result| result.err())
+                        .map(|_| "游戏已启动，但窗口管理器未能隐藏启动器".into());
+                    launcher_monitor_runtime::with_current(&s, generation, || {
+                        s.launcher_local
+                            .warnings
+                            .set(launcher_runtime::WarningKind::Visibility, warning)
+                    });
                 }
-                if let Some(result) = child.try_wait().map_err(|e| e.to_string())? {
-                    update(
-                        &s,
-                        if result.success() { "exited" } else { "error" },
-                        format!(
-                            "游戏已退出（{}）",
-                            result
-                                .code()
-                                .map(|v| v.to_string())
-                                .unwrap_or("信号".into())
-                        ),
-                        None,
-                        result.code(),
-                    );
-                    break;
-                }
+            }
+            while launcher_monitor_runtime::poll_generation(&s, generation)? {
                 std::thread::sleep(Duration::from_millis(300));
             }
-            let _ = stdout.join();
-            let _ = stderr.join();
+            let warning = visibility
+                .restore()
+                .err()
+                .map(|_| "游戏已退出，但窗口管理器未能恢复启动器，请从应用入口重新打开".into());
+            launcher_monitor_runtime::with_current(&s, generation, || {
+                s.launcher_local
+                    .warnings
+                    .set(launcher_runtime::WarningKind::Visibility, warning)
+            });
             Ok(())
         };
         if let Err(e) = task() {
-            update(&s, "error", e, None, None);
+            launcher_monitor_runtime::update_current(&s, generation, "error", e, None, None);
         }
     });
     Ok(())
 }
 #[tauri::command]
-fn stop_game(state: State<'_, Arc<Shared>>) {
-    state.stop.store(true, Ordering::SeqCst);
+fn stop_game(state: State<'_, Arc<Shared>>) -> Result<(), String> {
+    launcher_monitor_runtime::request_stop(&state)
 }
 #[tauri::command]
 fn read_log(state: State<'_, Arc<Shared>>) -> Result<String, String> {
@@ -1556,15 +1644,23 @@ fn read_log(state: State<'_, Arc<Shared>>) -> Result<String, String> {
         .unwrap()
         .clone()
         .ok_or("这次会话还没有游戏日志")?;
-    let mut f = fs::File::open(p).map_err(|e| e.to_string())?;
-    let n = f.metadata().map_err(|e| e.to_string())?.len();
-    f.seek(SeekFrom::Start(n.saturating_sub(65536)))
-        .map_err(|e| e.to_string())?;
-    let mut b = Vec::new();
-    f.read_to_end(&mut b).map_err(|e| e.to_string())?;
-    Ok(state
-        .accounts
-        .redact(String::from_utf8_lossy(&b).into_owned()))
+    let folder = p
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or("当前日志目录无效")?;
+    let name = p
+        .file_name()
+        .and_then(|v| v.to_str())
+        .ok_or("当前日志文件名无效")?;
+    let lines = state
+        .launcher_preferences
+        .snapshot()
+        .preferences
+        .realtime_log_line_limit;
+    launcher_logs::read_tail(folder, name, lines as usize, |text| {
+        state.accounts.redact(text.to_owned())
+    })
 }
 #[tauri::command]
 fn open_folder(
@@ -1597,7 +1693,46 @@ fn open_folder(
     Ok(())
 }
 fn main() {
+    if let Some(code) = launcher_game_monitor::dispatch_cli() {
+        std::process::exit(code);
+    }
     let project = project();
+    let launcher_preferences = launcher_prefs::LauncherPreferencesStore::load(&project);
+    let initial_preferences = launcher_preferences.snapshot().preferences;
+    let network_warning =
+        pcl_network::install_policy(launcher_commands::network_policy(&initial_preferences))
+            .err()
+            .map(|_| "启动器网络设置未能应用，本次会话暂用系统网络策略".to_string());
+    pcl_network::install_download_policy(launcher_commands::download_policy(&initial_preferences))
+        .expect("已验证的下载策略无效");
+    let xdg = launcher_local_commands::xdg_paths().unwrap_or(launcher_local::XdgPaths {
+        applications: PathBuf::new(),
+        desktop: None,
+    });
+    let launcher_local =
+        launcher_runtime::LocalRuntime::new(project.clone(), xdg, &initial_preferences);
+    launcher_local
+        .warnings
+        .set(launcher_runtime::WarningKind::Network, network_warning);
+    // This renderer process option is set before Tauri or worker threads start.
+    // Runtime edits are persisted and reported as requiring a restart.
+    if launcher_preferences
+        .snapshot()
+        .preferences
+        .disable_hardware_acceleration
+    {
+        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+    }
+    let launcher_updates = launcher_update_commands::Updater::new(
+        &project,
+        launcher_update_commands::current_build(&project),
+    )
+    .expect("更新服务初始化失败");
+    // Recover our executable transaction before any configuration migration or
+    // task can write. This is read-only when no update journal exists.
+    if let Err(error) = launcher_updates.service.recover() {
+        eprintln!("启动器更新恢复服务不可用：{error}");
+    }
     let (config, warning) = ConfigStore::load(&project);
     let tasks = Arc::new(tasks::Tasks::new());
     let state = Arc::new(Shared {
@@ -1606,6 +1741,12 @@ fn main() {
         tasks,
         config,
         instance_metadata: instance_meta::MetadataStore::load(&project),
+        launcher_preferences,
+        launcher_import: launcher_commands::ImportSession::default(),
+        launcher_assets: launcher_assets::AssetStore::new(project.clone()),
+        launcher_local,
+        launcher_updates,
+        launcher_announcements: launcher_discovery::AnnouncementStore::default(),
         desktop: Arc::new(platform::Desktop::default()),
         operations: Mutex::new(()),
         project,
@@ -1616,31 +1757,55 @@ fn main() {
         }),
         stop: AtomicBool::new(false),
         closing: AtomicBool::new(false),
+        monitor: launcher_monitor_runtime::MonitorRuntime::default(),
+        resource_save: resource_save_commands::SaveSession::default(),
         log: Mutex::new(None),
     });
+    let _ = launcher_monitor_runtime::refresh(&state);
     tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol(
+            "pcl-media",
+            launcher_asset_commands::serve_media,
+        )
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .setup(|app| {
+            let shared = app.state::<Arc<Shared>>().inner().clone();
+            let prefs = shared.launcher_preferences.snapshot();
+            if let Some(window) = app.get_webview_window("main") {
+                shared.launcher_local.warnings.set(
+                    launcher_runtime::WarningKind::Window,
+                    launcher_commands::apply_window(&window, &prefs.preferences)
+                        .err()
+                        .map(|_| "窗口管理器未能应用启动器的窗口设置".to_string()),
+                );
+            }
+            shared.launcher_local.opened();
             let handle = app.handle().clone();
-            app.state::<Arc<Shared>>()
-                .tasks
-                .set_listener(move |snapshot| {
-                    let _ = handle.emit("task_changed", snapshot);
-                });
+            let weak = Arc::downgrade(&shared);
+            shared.tasks.set_listener(move |snapshot| {
+                if let Some(shared) = weak.upgrade() {
+                    shared.launcher_local.task_changed(&snapshot);
+                }
+                let _ = handle.emit("task_changed", snapshot);
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<Arc<Shared>>();
-                if let Some(task) = state.tasks.active() {
+                if state.tasks.active().is_some() || state.launcher_updates.busy() {
                     api.prevent_close();
-                    let _ = state.tasks.cancel(&task.id);
+                    if let Some(task) = state.tasks.active() {
+                        let _ = state.tasks.cancel(&task.id);
+                    }
+                    state.launcher_updates.service.cancel();
                     if !state.closing.swap(true, Ordering::SeqCst) {
-                        let tasks = state.tasks.clone();
+                        let shared = state.inner().clone();
                         let window = window.clone();
                         std::thread::spawn(move || {
-                            while tasks.active().is_some() {
+                            while shared.tasks.active().is_some() || shared.launcher_updates.busy()
+                            {
                                 std::thread::sleep(Duration::from_millis(100));
                             }
                             let _ = window.close();
@@ -1674,6 +1839,8 @@ fn main() {
             resource_update_commands::resource_update_check,
             resource_update_commands::resource_update_plan,
             resource_update_commands::resource_update_start,
+            resource_save_commands::resource_save_prepare,
+            resource_save_commands::resource_save_start,
             resource_update_commands::resource_update_history,
             resource_update_commands::resource_update_restore,
             ui_catalog::ui_open_link,
@@ -1684,8 +1851,45 @@ fn main() {
             resource_details::resource_open_link,
             ui_catalog::upstream_contributors,
             ui_catalog::project_feedback,
-            ui_catalog::launcher_logs,
-            ui_catalog::launcher_read_log,
+            launcher_log_commands::launcher_logs,
+            launcher_log_commands::launcher_read_log,
+            launcher_log_commands::launcher_prepare_log_export,
+            launcher_log_commands::launcher_export_logs,
+            launcher_log_commands::launcher_prepare_log_clear,
+            launcher_log_commands::launcher_clear_logs,
+            launcher_log_commands::launcher_log_recovery,
+            launcher_log_commands::launcher_restore_logs,
+            launcher_commands::launcher_preferences,
+            launcher_commands::launcher_preferences_update,
+            launcher_commands::launcher_export_settings,
+            launcher_commands::launcher_prepare_settings_import,
+            launcher_commands::launcher_apply_settings_import,
+            launcher_commands::launcher_network_status,
+            launcher_discovery_commands::launcher_announcements,
+            launcher_discovery_commands::launcher_clipboard_link,
+            launcher_local_commands::launcher_statistics,
+            launcher_local_commands::launcher_shortcut_plan,
+            launcher_local_commands::launcher_shortcut_apply,
+            launcher_local_commands::launcher_shortcut_recovery,
+            launcher_local_commands::launcher_shortcut_restore,
+            launcher_local_commands::launcher_finish_using,
+            launcher_update_commands::launcher_update_status,
+            launcher_update_commands::launcher_update_check,
+            launcher_update_commands::launcher_update_download,
+            launcher_update_commands::launcher_update_cancel,
+            launcher_update_commands::launcher_update_discard,
+            launcher_update_commands::launcher_update_apply,
+            launcher_update_commands::launcher_update_rollback,
+            launcher_update_commands::launcher_update_acknowledge,
+            launcher_update_commands::launcher_update_recover,
+            launcher_asset_commands::launcher_assets,
+            launcher_asset_commands::launcher_open_media_folder,
+            launcher_asset_commands::launcher_fonts,
+            launcher_asset_commands::launcher_title_asset,
+            launcher_asset_commands::launcher_title_pick,
+            launcher_asset_commands::launcher_home_pick,
+            launcher_asset_commands::launcher_home_refresh,
+            launcher_asset_commands::launcher_home_open_link,
             ui_catalog::instance_servers,
             ui_data::system_info,
             java_commands::java_catalog,
@@ -1744,9 +1948,9 @@ mod integration_tests {
     #[path = "resource_updates.rs"]
     mod resource_updates;
 
-    struct Fixture(PathBuf);
+    pub(crate) struct Fixture(pub(crate) PathBuf);
     impl Fixture {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let path = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../../work/desktop-integration-tests")
                 .join(format!(
@@ -1760,7 +1964,7 @@ mod integration_tests {
             fs::create_dir_all(path.join("Minecraft/.minecraft")).unwrap();
             Self(path.canonicalize().unwrap())
         }
-        fn shared(&self) -> Shared {
+        pub(crate) fn shared(&self) -> Shared {
             let (config, warning) = ConfigStore::load(&self.0);
             assert!(warning.is_none());
             let tasks = Arc::new(tasks::Tasks::new());
@@ -1771,11 +1975,30 @@ mod integration_tests {
                 tasks,
                 config,
                 instance_metadata: instance_meta::MetadataStore::load(&self.0),
+                launcher_preferences: launcher_prefs::LauncherPreferencesStore::load(&self.0),
+                launcher_import: launcher_commands::ImportSession::default(),
+                launcher_assets: launcher_assets::AssetStore::new(self.0.clone()),
+                launcher_announcements: launcher_discovery::AnnouncementStore::default(),
+                launcher_updates: launcher_update_commands::Updater::new(
+                    &self.0,
+                    launcher_update_commands::current_build(&self.0),
+                )
+                .unwrap(),
+                launcher_local: launcher_runtime::LocalRuntime::new(
+                    self.0.clone(),
+                    launcher_local::XdgPaths {
+                        applications: self.0.join("xdg/applications"),
+                        desktop: Some(self.0.join("xdg/desktop")),
+                    },
+                    &launcher_prefs::LauncherPreferences::default(),
+                ),
                 desktop: Arc::new(platform::Desktop::default()),
                 operations: Mutex::new(()),
                 status: Mutex::new(RunStatus::default()),
                 stop: AtomicBool::new(false),
                 closing: AtomicBool::new(false),
+                monitor: launcher_monitor_runtime::MonitorRuntime::default(),
+                resource_save: resource_save_commands::SaveSession::default(),
                 log: Mutex::new(None),
             }
         }
@@ -1791,6 +2014,119 @@ mod integration_tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn account_write_keeps_admission_until_its_stage_publication_finishes() {
+        let fixture = Fixture::new();
+        let shared = Arc::new(fixture.shared());
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let worker = shared.clone();
+        let worker_entered = entered.clone();
+        let worker_release = release.clone();
+        let account = thread::spawn(move || {
+            with_account_write(&worker, || {
+                worker_entered.wait();
+                worker_release.wait();
+                Ok(())
+            })
+        });
+        entered.wait();
+        assert!(
+            shared.operations.try_lock().is_err(),
+            "policy adoption cannot enter between admission and account stage publication"
+        );
+        assert!(
+            shared.status.try_lock().is_err(),
+            "game preparation cannot enter the same account action"
+        );
+        let (started, waiting) = std::sync::mpsc::channel();
+        let (done, completed) = std::sync::mpsc::channel();
+        let policy = shared.clone();
+        let adoption = thread::spawn(move || {
+            started.send(()).unwrap();
+            let _operation = policy.operations.lock().unwrap();
+            done.send(()).unwrap();
+        });
+        waiting.recv().unwrap();
+        assert!(completed.recv_timeout(Duration::from_millis(30)).is_err());
+        release.wait();
+        account.join().unwrap().unwrap();
+        completed.recv_timeout(Duration::from_secs(2)).unwrap();
+        adoption.join().unwrap();
+    }
+
+    #[test]
+    fn account_write_refuses_close_file_task_game_and_unknown_monitor_without_action() {
+        let fixture = Fixture::new();
+        let shared = fixture.shared();
+        let action = || -> Result<(), String> { panic!("blocked account action must not run") };
+        shared.closing.store(true, Ordering::SeqCst);
+        assert!(with_account_write(&shared, action).is_err());
+        shared.closing.store(false, Ordering::SeqCst);
+        let root = shared.config.resolve(None).unwrap();
+        let task = shared
+            .tasks
+            .admit(
+                TaskTarget {
+                    root_id: root.id,
+                    root_path: root.path,
+                    instance_id: None,
+                },
+                TaskKind::ResourceOperation,
+            )
+            .unwrap();
+        assert!(with_account_write(&shared, action).is_err());
+        task.finish(TaskOutcome::Failed("cancelled fixture".into()));
+        for stage in ["preparing", "running"] {
+            shared.status.lock().unwrap().stage = stage.into();
+            assert!(with_account_write(&shared, action).is_err());
+        }
+        shared.status.lock().unwrap().stage = "idle".into();
+        let marker = fixture.0.join(".pcl-rust/game-monitor/active.json");
+        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        let foreign = br#"{"schema_version":999,"retain":"unknown"}"#;
+        fs::write(&marker, foreign).unwrap();
+        assert!(with_account_write(&shared, action).is_err());
+        assert_eq!(fs::read(&marker).unwrap(), foreign);
+        assert!(!fixture.0.join(".pcl-rust/accounts.json").exists());
+    }
+
+    #[test]
+    fn unknown_monitor_marker_blocks_writes_without_replacing_known_context() {
+        let fixture = Fixture::new();
+        let shared = fixture.shared();
+        let root = shared.config.resolve(None).unwrap();
+        *shared.status.lock().unwrap() = RunStatus {
+            root_id: Some(root.id.clone()),
+            root_path: Some(root.path.clone()),
+            version: Some("Example".into()),
+            ..Default::default()
+        };
+        let marker = fixture.0.join(".pcl-rust/game-monitor/active.json");
+        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        fs::write(&marker, br#"{"schema_version":999,"external":"keep"}"#).unwrap();
+        let before = fs::read(&marker).unwrap();
+        assert!(launcher_monitor_runtime::require_idle(&shared).is_err());
+        assert!(launcher_monitor_runtime::require_root_unused(&shared, &root.id).is_err());
+        assert!(require_reference_write(&shared).is_err());
+        assert_eq!(fs::read(&marker).unwrap(), before);
+        let run = shared.status.lock().unwrap();
+        assert_eq!(run.root_id.as_deref(), Some(root.id.as_str()));
+        assert_eq!(run.version.as_deref(), Some("Example"));
+        assert_eq!(run.stage, "error");
+    }
+
+    #[test]
+    fn missing_attached_monitor_is_not_evidence_that_game_exited() {
+        let fixture = Fixture::new();
+        let shared = fixture.shared();
+        launcher_monitor_runtime::test_attach(&shared);
+        assert!(launcher_monitor_runtime::refresh(&shared).is_err());
+        assert!(launcher_monitor_runtime::test_attached(&shared));
+        assert!(launcher_monitor_runtime::require_idle(&shared).is_err());
+        assert!(!fixture.0.join(".pcl-rust/game-monitor").exists());
     }
 
     fn rename_fixture(state: &Shared) -> (GameRoot, String) {

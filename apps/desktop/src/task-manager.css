@@ -14,7 +14,7 @@
 }
 .ce-task-statistics span {
   display: block;
-  color: #2683eb;
+  color: var(--ce-link, #2683eb);
   font-size: 14px;
   border-bottom: 2px solid #2683eb;
   padding: 0 0 8px;
@@ -41,7 +41,7 @@
   font-size: 14px;
 }
 .ce-task-heading > .icon-button {
-  color: #398df0;
+  color: var(--ce-link, #398df0);
 }
 .ce-task-steps > div {
   display: flex;
@@ -52,14 +52,14 @@
 }
 .ce-task-step-status {
   width: 38px;
-  color: #2483ed;
+  color: var(--ce-link, #2483ed);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
 .ce-task-card.error .ce-task-step.running .ce-task-step-status {
-  color: #b34d4d;
+  color: var(--ce-danger-text, #b34d4d);
 }
 .ce-task-message {
   margin: 12px 7px 0;
@@ -72,7 +72,7 @@
 .ce-task-empty {
   text-align: center;
   padding: 35px;
-  color: #8e99a8;
+  color: var(--ce-muted-text, #8e99a8);
 }
 .ce-task-entry {
   position: absolute;
@@ -97,9 +97,9 @@
 }
 .ce-community-results .ce-mod-row[role="button"]:hover,
 .ce-community-results .ce-mod-row[role="button"]:focus-visible {
-  background: #ddebfc;
+  background: var(--ce-tinted-surface, #ddebfc);
   border-radius: 4px;
-  outline-color: #2782e5;
+  outline-color: var(--ce-link, #2782e5);
 }
 
 .ce-community-loading {
@@ -116,7 +116,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #2582e8;
+  color: var(--ce-link, #2582e8);
   padding: 18px 8px !important;
 }
 .ce-community-loading-box > i {

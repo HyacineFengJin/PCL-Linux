@@ -1,3 +1,4 @@
+import { t, formatNumber, type MessageKey } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import {
   Box,
@@ -36,20 +37,68 @@ import type {
   Settings,
 } from "./types";
 
-export const instancePages = [
-  { id: "overview", label: "概览", group: "游戏本体", icon: Blocks },
-  { id: "settings", label: "设置", icon: null },
-  { id: "modify", label: "修改", icon: null },
-  { id: "export", label: "导出", icon: Box },
-  { id: "saves", label: "存档", group: "游戏资源", icon: Globe },
-  { id: "screenshots", label: "截图", icon: Image },
-  { id: "mods", label: "模组", icon: Puzzle },
-  { id: "resourcepacks", label: "资源包", icon: Layers },
-  { id: "shaderpacks", label: "光影包", icon: Sparkles },
-  { id: "litematics", label: "投影原理图", icon: Blocks },
-  { id: "server", label: "服务器", icon: Server, unavailable: true },
+export const instancePages: {
+  id: string;
+  label: string;
+  labelKey: MessageKey;
+  group?: string;
+  groupKey?: MessageKey;
+  icon: React.ElementType | null;
+  unavailable?: boolean;
+}[] = [
+  {
+    id: "overview",
+    label: "概览",
+    labelKey: "instance.overview",
+    group: "游戏本体",
+    groupKey: "instance.game",
+    icon: Blocks,
+  },
+  { id: "settings", label: "设置", labelKey: "nav.settings", icon: null },
+  { id: "modify", label: "修改", labelKey: "nav.modify", icon: null },
+  { id: "export", label: "导出", labelKey: "nav.export", icon: Box },
+  {
+    id: "saves",
+    label: "存档",
+    labelKey: "nav.saves",
+    group: "游戏资源",
+    groupKey: "instance.resources",
+    icon: Globe,
+  },
+  {
+    id: "screenshots",
+    label: "截图",
+    labelKey: "nav.screenshots",
+    icon: Image,
+  },
+  { id: "mods", label: "模组", labelKey: "resources.mods", icon: Puzzle },
+  {
+    id: "resourcepacks",
+    label: "资源包",
+    labelKey: "nav.resourcepacks",
+    icon: Layers,
+  },
+  {
+    id: "shaderpacks",
+    label: "光影包",
+    labelKey: "nav.shaderpacks",
+    icon: Sparkles,
+  },
+  {
+    id: "litematics",
+    label: "投影原理图",
+    labelKey: "nav.schematics",
+    icon: Blocks,
+  },
+  {
+    id: "server",
+    label: "服务器",
+    labelKey: "nav.server",
+    icon: Server,
+    unavailable: true,
+  },
 ];
-const notReady = "此功能尚未开放";
+
 const defaultMetadata: InstanceMetadata = {
   description: "",
   favorite: false,
@@ -96,20 +145,19 @@ export function instanceRenameNameError(
   current: string,
   occupiedNames: string[],
 ): string {
-  if (!name.trim()) return "请输入实例名称";
-  if (name !== name.trim()) return "实例名称不能以空白字符开头或结尾";
+  if (!name.trim()) return t("instance.nameRequired");
+  if (name !== name.trim()) return t("instance.nameWhitespace");
   if (
     name === "." ||
     name === ".." ||
     /[\\/:\u0000-\u001f\u007f-\u009f]/.test(name)
   )
-    return "实例名称不能包含路径分隔符、冒号或控制字符";
-  if (name.startsWith(".install-")) return "实例名称不能使用 .install- 前缀";
+    return t("instance.nameCharacters");
+  if (name.startsWith(".install-")) return t("instance.namePrefix");
   if (new TextEncoder().encode(name).length > 120)
-    return "实例名称过长，请缩短到 120 字节以内";
-  if (name === current) return "请输入与当前实例不同的名称";
-  if (occupiedNames.includes(name))
-    return "此游戏目录中已存在同名实例，请修改名称";
+    return t("instance.nameLong");
+  if (name === current) return t("instance.nameDifferent");
+  if (occupiedNames.includes(name)) return t("instance.nameExists");
   return "";
 }
 export function InstanceIcon({
@@ -177,8 +225,8 @@ export function InstanceSelection({
         <Search size={17} />
         <input
           autoFocus
-          placeholder="搜索游戏实例"
-          aria-label="搜索游戏实例"
+          placeholder={t("instance.search")}
+          aria-label={t("instance.search")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -204,9 +252,11 @@ export function InstanceSelection({
             >
               <strong>
                 {group === "favorites"
-                  ? "收藏夹"
-                  : `${group === "Vanilla" ? "原版" : group} 实例`}{" "}
-                ({entries.length})
+                  ? t("resources.favorites")
+                  : t("instance.group", {
+                      group: group === "Vanilla" ? t("ui.vanilla") : group,
+                    })}{" "}
+                ({formatNumber(entries.length)})
               </strong>
               <ChevronDown
                 size={17}
@@ -245,7 +295,7 @@ export function InstanceSelection({
         );
       })}
       {!visible.length && (
-        <section className="ce-card ce-empty">没有找到游戏实例</section>
+        <section className="ce-card ce-empty">{t("instance.empty")}</section>
       )}
     </>
   );
@@ -403,7 +453,7 @@ export function InstancePanel({
           plan: { revision, id, new_name },
         });
         if (!isCurrent()) return;
-        if (!result.id) throw new Error("未收到重命名任务，请重新检查后重试");
+        if (!result.id) throw new Error(t("instance.renameTaskMissing"));
         setRenameDialog(null);
         onTaskStart(result.id);
       } else {
@@ -417,7 +467,7 @@ export function InstancePanel({
           plan.new_name !== dialog.draft ||
           !plan.revision
         )
-          throw new Error("重命名计划与当前实例不一致，请重新检查");
+          throw new Error(t("instance.renamePlanChanged"));
         setRenameDialog({ ...dialog, plan, error: "" });
       }
     } catch (error) {
@@ -458,8 +508,7 @@ export function InstancePanel({
     metadataWorking ||
     renameOpen ||
     renameWorking;
-  const metadataReadOnlyMessage =
-    "当前实例个性化信息仅可查看，请重新加载实例列表后再试。";
+  const metadataReadOnlyMessage = t("instance.metadataReadonly");
   useEffect(() => {
     metadataLive.current = true;
     return () => {
@@ -514,7 +563,7 @@ export function InstancePanel({
       if (descriptionOpen)
         restoreDescriptionFocus.current = currentMetadataScope;
       setDescriptionDialog(null);
-      onNotify("已重新读取实例个性化信息");
+      onNotify(t("instance.metadataReloaded"));
     } catch (error) {
       if (isCurrent()) {
         setMetadataFailure({
@@ -632,7 +681,7 @@ export function InstancePanel({
           </div>
         </section>
         <section className="ce-card">
-          <h2 className="ce-card-title">实例信息</h2>
+          <h2 className="ce-card-title">{t("instance.information")}</h2>
           <div className="instance-info">
             <div>
               <span className="info-block">
@@ -659,7 +708,8 @@ export function InstancePanel({
                 </svg>
               </span>
               <div>
-                启动次数<small>—</small>
+                {t("instance.launchCount")}
+                <small>—</small>
               </div>
             </div>
             <div>
@@ -667,7 +717,8 @@ export function InstancePanel({
                 <img src={commandIcon} alt="" />
               </span>
               <div>
-                整合包版本<small>—</small>
+                {t("instance.packVersion")}
+                <small>—</small>
               </div>
             </div>
             <div>
@@ -688,36 +739,36 @@ export function InstancePanel({
           </div>
         </section>
         <section className="ce-card">
-          <h2 className="ce-card-title">个性化</h2>
+          <h2 className="ce-card-title">{t("nav.personalize")}</h2>
           <div className="instance-personalization">
             <label className="ce-row">
-              <span>图标</span>
+              <span>{t("instance.icon")}</span>
               <select
                 className="ce-field"
-                aria-label="实例图标"
+                aria-label={t("instance.iconLabel")}
                 value={metadata.icon}
                 disabled={metadataWritesDisabled}
                 title={metadataReadOnly ? metadataReadOnlyMessage : undefined}
                 onChange={(event) =>
                   void updateMetadata(
                     { icon: event.target.value as InstanceMetadata["icon"] },
-                    "已保存实例图标",
+                    t("instance.iconSaved"),
                   )
                 }
               >
-                <option value="auto">自动</option>
-                <option value="grass">草方块</option>
+                <option value="auto">{t("ui.auto")}</option>
+                <option value="grass">{t("instance.grass")}</option>
                 <option value="forge">Forge</option>
                 <option value="neoforge">NeoForge</option>
-                <option value="command">命令方块</option>
+                <option value="command">{t("instance.command")}</option>
                 <option value="steve">Steve</option>
               </select>
             </label>
             <label className="ce-row">
-              <span>分类</span>
+              <span>{t("instance.category")}</span>
               <select
                 className="ce-field"
-                aria-label="实例分类"
+                aria-label={t("instance.categoryLabel")}
                 value={metadata.category}
                 disabled={metadataWritesDisabled}
                 title={metadataReadOnly ? metadataReadOnlyMessage : undefined}
@@ -727,12 +778,12 @@ export function InstancePanel({
                       category: event.target
                         .value as InstanceMetadata["category"],
                     },
-                    "已保存实例分类",
+                    t("instance.categorySaved"),
                   )
                 }
               >
-                <option value="auto">自动</option>
-                <option value="vanilla">原版</option>
+                <option value="auto">{t("ui.auto")}</option>
+                <option value="vanilla">{t("ui.vanilla")}</option>
                 <option value="forge">Forge</option>
                 <option value="neoforge">NeoForge</option>
                 <option value="fabric">Fabric</option>
@@ -745,7 +796,9 @@ export function InstancePanel({
                 ref={renameButton}
                 disabled={renameDisabled || renameOpen || renameWorking}
                 title={
-                  !native ? "请在桌面应用中修改实例名" : "修改实例文件夹的名称"
+                  !native
+                    ? t("instance.renameDesktop")
+                    : t("instance.renameFolder")
                 }
                 onClick={() => {
                   if (
@@ -763,7 +816,7 @@ export function InstancePanel({
                   });
                 }}
               >
-                修改实例名
+                {t("instance.rename")}
               </button>
               <button
                 className="ce-button"
@@ -786,7 +839,7 @@ export function InstancePanel({
                   });
                 }}
               >
-                修改实例描述
+                {t("instance.descriptionEdit")}
               </button>
               <button
                 className="ce-button"
@@ -795,11 +848,15 @@ export function InstancePanel({
                 onClick={() =>
                   void updateMetadata(
                     { favorite: !metadata.favorite },
-                    metadata.favorite ? "已从收藏夹移除实例" : "已加入收藏夹",
+                    metadata.favorite
+                      ? t("instance.favoriteRemoved")
+                      : t("instance.favoriteAdded"),
                   )
                 }
               >
-                {metadata.favorite ? "移出收藏夹" : "加入收藏夹"}
+                {metadata.favorite
+                  ? t("instance.removeFavorite")
+                  : t("instance.addFavorite")}
               </button>
             </div>
             {(metadataReadOnly || metadataError) && !descriptionOpen && (
@@ -814,45 +871,59 @@ export function InstancePanel({
                   disabled={metadataWorking}
                   onClick={() => void reloadMetadata()}
                 >
-                  {metadataActivity === "read" ? "正在读取…" : "重新读取"}
+                  {metadataActivity === "read"
+                    ? t("ui.reading")
+                    : t("ui.reread")}
                 </button>
               </div>
             )}
           </div>
         </section>
         <section className="ce-card">
-          <h2 className="ce-card-title">快捷方式</h2>
+          <h2 className="ce-card-title">{t("instance.shortcuts")}</h2>
           <div className="ce-actions">
             <button className="ce-button" onClick={() => onOpen("instance")}>
-              实例文件夹
+              {t("instance.folder")}
             </button>
             <button className="ce-button" onClick={() => onOpen("saves")}>
-              存档文件夹
+              {t("instance.savesFolder")}
             </button>
             <button className="ce-button" onClick={() => onOpen("mods")}>
-              模组文件夹
+              {t("instance.modsFolder")}
             </button>
           </div>
         </section>
         <section className="ce-card">
-          <h2 className="ce-card-title">高级管理</h2>
+          <h2 className="ce-card-title">{t("instance.advanced")}</h2>
           <div className="ce-actions advanced-actions">
-            <button className="ce-button" disabled title={notReady}>
-              导出启动脚本
+            <button
+              className="ce-button"
+              disabled
+              title={t("common.unavailable")}
+            >
+              {t("instance.exportScript")}
             </button>
             <button
               className="ce-button"
               disabled={disabled}
               onClick={onInspect}
-              title="检查启动环境与依赖"
+              title={t("instance.inspectHelp")}
             >
-              测试游戏
+              {t("instance.inspect")}
             </button>
-            <button className="ce-button" disabled title={notReady}>
-              补全文件
+            <button
+              className="ce-button"
+              disabled
+              title={t("common.unavailable")}
+            >
+              {t("instance.completeFiles")}
             </button>
-            <button className="ce-button" disabled title={notReady}>
-              重置
+            <button
+              className="ce-button"
+              disabled
+              title={t("common.unavailable")}
+            >
+              {t("ui.reset")}
             </button>
             <InstanceDelete
               id={instance.id}
@@ -869,8 +940,12 @@ export function InstancePanel({
               }
               onTaskStart={onTaskStart}
             />
-            <button className="ce-button" disabled title={notReady}>
-              修补核心
+            <button
+              className="ce-button"
+              disabled
+              title={t("common.unavailable")}
+            >
+              {t("instance.patchCore")}
             </button>
           </div>
         </section>
@@ -893,7 +968,9 @@ export function InstancePanel({
                 if (descriptionDialog.scope !== metadataScope.current) return;
                 void updateMetadata(
                   { description: descriptionDialog.draft },
-                  descriptionDialog.draft ? "已保存实例描述" : "已清除实例描述",
+                  descriptionDialog.draft
+                    ? t("instance.descriptionSaved")
+                    : t("instance.descriptionCleared"),
                   descriptionDialog.revision,
                 );
               }}
@@ -926,11 +1003,13 @@ export function InstancePanel({
                 }
               }}
             >
-              <h2 id="ce-instance-description-title">修改实例描述</h2>
+              <h2 id="ce-instance-description-title">
+                {t("instance.descriptionEdit")}
+              </h2>
               <textarea
                 autoFocus
                 className="ce-field"
-                aria-label="实例描述"
+                aria-label={t("instance.description")}
                 maxLength={4096}
                 rows={4}
                 value={descriptionDialog.draft}
@@ -946,14 +1025,14 @@ export function InstancePanel({
                 }}
               />
               <p id="ce-instance-description-hint">
-                最多 4096 个字符，留空可清除描述。
+                {t("instance.descriptionHelp")}
               </p>
               {metadataError && (
                 <>
                   <p className="rd-name-error" role="alert">
                     {metadataError}
                   </p>
-                  <p>重新读取会关闭编辑窗口并载入已保存的描述。</p>
+                  <p>{t("instance.descriptionReloadHelp")}</p>
                 </>
               )}
               <div className="rd-name-actions">
@@ -963,10 +1042,10 @@ export function InstancePanel({
                   disabled={metadataWritesDisabled}
                 >
                   {metadataActivity === "read"
-                    ? "正在读取…"
+                    ? t("ui.reading")
                     : metadataWorking
-                      ? "正在保存…"
-                      : "确定"}
+                      ? t("ui.saving")
+                      : t("ui.confirm")}
                 </button>
                 {metadataError && (
                   <button
@@ -975,7 +1054,9 @@ export function InstancePanel({
                     disabled={metadataWorking}
                     onClick={() => void reloadMetadata()}
                   >
-                    {metadataActivity === "read" ? "正在读取…" : "重新读取"}
+                    {metadataActivity === "read"
+                      ? t("ui.reading")
+                      : t("ui.reread")}
                   </button>
                 )}
                 <button
@@ -984,7 +1065,7 @@ export function InstancePanel({
                   disabled={metadataWorking}
                   onClick={closeDescription}
                 >
-                  取消
+                  {t("common.cancel")}
                 </button>
               </div>
             </form>
@@ -1037,11 +1118,11 @@ export function InstancePanel({
                 }
               }}
             >
-              <h2 id="ce-instance-rename-title">修改实例名</h2>
+              <h2 id="ce-instance-rename-title">{t("instance.rename")}</h2>
               <input
                 autoFocus
                 className="ce-field"
-                aria-label="新的实例名称"
+                aria-label={t("instance.newName")}
                 value={renameDialog.draft}
                 disabled={
                   renameActivity?.scope === currentMetadataScope &&
@@ -1066,9 +1147,7 @@ export function InstancePanel({
                   });
                 }}
               />
-              <p id="ce-instance-rename-hint">
-                修改物理实例名和对应的版本文件；模组、配置和存档会保留。
-              </p>
+              <p id="ce-instance-rename-hint">{t("instance.renameHelp")}</p>
               {(renameDialog.error ||
                 (renameDialog.draft !== instance.id && renameNameError)) && (
                 <p className="rd-name-error" role="alert">
@@ -1081,8 +1160,11 @@ export function InstancePanel({
                     {renameDialog.plan.id} → {renameDialog.plan.new_name}
                   </p>
                   <p>
-                    将更新 {renameDialog.plan.dependent_instances.length}{" "}
-                    个引用此实例的版本。
+                    {t("instance.dependentsCount", {
+                      count: formatNumber(
+                        renameDialog.plan.dependent_instances.length,
+                      ),
+                    })}
                   </p>
                   {!!renameDialog.plan.dependent_instances.length && (
                     <ul>
@@ -1093,9 +1175,11 @@ export function InstancePanel({
                         ))}
                       {renameDialog.plan.dependent_instances.length > 5 && (
                         <li>
-                          另有{" "}
-                          {renameDialog.plan.dependent_instances.length - 5}{" "}
-                          个版本
+                          {t("instance.moreVersions", {
+                            count: formatNumber(
+                              renameDialog.plan.dependent_instances.length - 5,
+                            ),
+                          })}
                         </li>
                       )}
                     </ul>
@@ -1112,11 +1196,11 @@ export function InstancePanel({
                 >
                   {renameWorking
                     ? renameActivity?.kind === "start"
-                      ? "正在提交…"
-                      : "正在检查…"
+                      ? t("ui.submitting")
+                      : t("ui.checking")
                     : renameDialog.plan
-                      ? "确定改名"
-                      : "检查改名"}
+                      ? t("instance.confirmRename")
+                      : t("instance.checkRename")}
                 </button>
                 <button
                   type="button"
@@ -1127,7 +1211,7 @@ export function InstancePanel({
                   }
                   onClick={closeRename}
                 >
-                  取消
+                  {t("common.cancel")}
                 </button>
               </div>
             </form>
@@ -1140,41 +1224,49 @@ export function InstancePanel({
     const used = system
       ? system.total_memory_bytes - system.available_memory_bytes
       : 0;
-    const gib = (bytes: number) => (bytes / 1073741824).toFixed(1);
+    const gib = (bytes: number) =>
+      formatNumber(bytes / 1073741824, {
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1,
+      });
     return (
       <>
         <section className="ce-card">
-          <h2 className="ce-card-title">启动选项</h2>
+          <h2 className="ce-card-title">{t("instance.launchOptions")}</h2>
           <div className="instance-launch-fields">
             <label className="ce-row">
-              <span>实例隔离</span>
+              <span>{t("instance.isolation")}</span>
               <select
                 className="ce-field"
-                value={instance.isolated ? "开启" : "关闭"}
+                value={instance.isolated ? t("ui.on") : t("ui.off")}
                 disabled
-                title={notReady}
+                title={t("common.unavailable")}
               >
-                <option>开启</option>
-                <option>关闭</option>
+                <option value="on">{t("ui.on")}</option>
+                <option value="off">{t("ui.off")}</option>
               </select>
             </label>
             <label className="ce-row">
-              <span>游戏窗口标题</span>
-              <select className="ce-field" disabled title={notReady}>
-                <option>跟随全局设置</option>
+              <span>{t("instance.windowTitle")}</span>
+              <select
+                className="ce-field"
+                disabled
+                title={t("common.unavailable")}
+              >
+                <option>{t("ui.followGlobal")}</option>
               </select>
             </label>
             <label className="ce-check">
-              <input type="checkbox" disabled title={notReady} />
-              默认窗口标题
+              <input type="checkbox" disabled title={t("common.unavailable")} />
+              {t("instance.defaultTitle")}
             </label>
             <label className="ce-row">
-              <span>自定义信息</span>
+              <span>{t("instance.customInfo")}</span>
               <input
                 className="ce-field"
-                placeholder="跟随全局设置"
+                placeholder={t("ui.followGlobal")}
                 disabled
-                title={notReady}
+                title={t("common.unavailable")}
               />
             </label>
             <JavaSelect
@@ -1189,11 +1281,11 @@ export function InstancePanel({
           </div>
         </section>
         <section className="ce-card ce-memory-card">
-          <h2 className="ce-card-title">游戏内存</h2>
+          <h2 className="ce-card-title">{t("instance.memory")}</h2>
           {system &&
             allocation * 1073741824 > system.available_memory_bytes && (
               <div className="ce-memory-warning">
-                你给游戏分配的内存过多，这可能引发游戏崩溃。建议优先考虑「自动分配」选项！
+                {t("instance.memoryWarning")}
               </div>
             )}
           <label className="ce-memory-mode">
@@ -1207,7 +1299,7 @@ export function InstancePanel({
                 void saveMemory("global");
               }}
             />
-            跟随全局设置
+            {t("ui.followGlobal")}
           </label>
           <label className="ce-memory-mode">
             <input
@@ -1216,9 +1308,9 @@ export function InstancePanel({
               checked={false}
               readOnly
               disabled
-              title={notReady}
+              title={t("common.unavailable")}
             />
-            自动配置
+            {t("instance.memoryAuto")}
           </label>
           <div className="ce-memory-custom">
             <label className="ce-memory-mode">
@@ -1232,11 +1324,11 @@ export function InstancePanel({
                   void saveMemory("custom");
                 }}
               />
-              自定义
+              {t("ui.custom")}
             </label>
             <input
               type="range"
-              aria-label="实例内存 GiB"
+              aria-label={t("instance.memoryLabel")}
               min="2"
               max={Math.max(14, memory)}
               value={memory}
@@ -1250,8 +1342,8 @@ export function InstancePanel({
             />
           </div>
           <div className="ce-memory-labels">
-            <span>已使用内存</span>
-            <span>游戏分配</span>
+            <span>{t("instance.usedMemory")}</span>
+            <span>{t("instance.allocatedMemory")}</span>
           </div>
           <div className="ce-memory-bar">
             <span
@@ -1266,28 +1358,42 @@ export function InstancePanel({
             <span>
               {system
                 ? `${gib(used)} GiB / ${gib(system.total_memory_bytes)} GiB`
-                : "内存信息暂不可用"}
+                : t("instance.memoryUnavailable")}
             </span>
             <span>
-              {allocation.toFixed(1)} GiB
+              {formatNumber(allocation, {
+                minimumFractionDigits: 1,
+                maximumFractionDigits: 1,
+              })}{" "}
+              GiB
               {system
-                ? ` (可用 ${gib(system.available_memory_bytes)} GiB)`
+                ? t("instance.availableMemory", {
+                    memory: gib(system.available_memory_bytes),
+                  })
                 : ""}
             </span>
           </div>
         </section>
         <section className="ce-card">
-          <h2 className="ce-card-title">服务器</h2>
+          <h2 className="ce-card-title">{t("nav.server")}</h2>
           <div className="instance-launch-fields">
             <label className="ce-row">
-              <span>限制验证方式</span>
-              <select className="ce-field" disabled title={notReady}>
-                <option>无限制</option>
+              <span>{t("instance.authentication")}</span>
+              <select
+                className="ce-field"
+                disabled
+                title={t("common.unavailable")}
+              >
+                <option>{t("ui.unrestricted")}</option>
               </select>
             </label>
             <label className="ce-row">
-              <span>自动进入服务器</span>
-              <input className="ce-field" disabled title={notReady} />
+              <span>{t("instance.autoServer")}</span>
+              <input
+                className="ce-field"
+                disabled
+                title={t("common.unavailable")}
+              />
             </label>
           </div>
         </section>
@@ -1348,24 +1454,28 @@ function ServerPanel({ id, api }: { id: string; api: Api }) {
   return (
     <div className="ce-server-panel">
       <section className="ce-card">
-        <h2 className="ce-card-title">快捷操作</h2>
+        <h2 className="ce-card-title">{t("server.actions")}</h2>
         <div className="ce-actions">
           <button
             className="ce-button primary"
             onClick={() => setRefresh((v) => v + 1)}
-            title="重新读取本地服务器列表；在线状态检测尚未开放"
+            title={t("server.refreshHelp")}
           >
-            刷新所有服务器
+            {t("server.refresh")}
           </button>
-          <button className="ce-button" disabled title={notReady}>
-            添加新服务器
+          <button
+            className="ce-button"
+            disabled
+            title={t("common.unavailable")}
+          >
+            {t("server.add")}
           </button>
         </div>
       </section>
       {error ? (
         <p className="ce-empty">{error}</p>
       ) : !servers.length ? (
-        <p className="ce-empty">暂无服务器</p>
+        <p className="ce-empty">{t("server.empty")}</p>
       ) : (
         servers.map((v, i) => (
           <section className="ce-card ce-server-row" key={v.ip + i}>
@@ -1380,14 +1490,22 @@ function ServerPanel({ id, api }: { id: string; api: Api }) {
               <strong>{v.name}</strong>
               <small>
                 <Signal size={14} />
-                未检测状态
+                {t("server.unchecked")}
               </small>
             </div>
             <span className="ce-server-message">{v.ip}</span>
-            <button disabled title={notReady} aria-label={"加入 " + v.name}>
+            <button
+              disabled
+              title={t("common.unavailable")}
+              aria-label={t("server.join", { name: v.name })}
+            >
               <Play size={16} />
             </button>
-            <button disabled title={notReady} aria-label={"设置 " + v.name}>
+            <button
+              disabled
+              title={t("common.unavailable")}
+              aria-label={t("server.settings", { name: v.name })}
+            >
               <SettingsIcon size={16} />
             </button>
           </section>

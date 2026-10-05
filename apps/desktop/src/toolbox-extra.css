@@ -33,7 +33,7 @@
 
 .toolbox-generator-status {
   margin: 8px 0 0;
-  color: #9299a3;
+  color: var(--ce-muted-text, #9299a3);
   font-size: 12px;
   line-height: 16px;
   text-align: center;

@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type {
   ResourceInstallFile,
   ResourceInstallPlan,
@@ -83,7 +84,7 @@ function checkTarget(
     value.minecraft_version !== target.minecraft_version ||
     value.loader !== (loader === "vanilla" ? "minecraft" : loader)
   )
-    throw new Error("更新结果与当前实例或游戏目录不一致，请重新读取资源");
+    throw new Error(t("updateValidation.resultTarget"));
 }
 
 export function checkResourceUpdates(
@@ -94,7 +95,7 @@ export function checkResourceUpdates(
 ) {
   checkTarget(value, rootId, target);
   if (!Array.isArray(value.entries) || !Array.isArray(value.warnings))
-    throw new Error("更新检测结果无效，请重新检查");
+    throw new Error(t("updateValidation.resultInvalid"));
   const identities = new Map(
     files.map((file) => [file.file_name, file.fingerprint]),
   );
@@ -112,11 +113,11 @@ export function checkResourceUpdates(
           !entry.new_version_id ||
           !entry.new_version))
     )
-      throw new Error("本地资源或更新信息已变化，请重新读取资源");
+      throw new Error(t("updateValidation.infoChanged"));
     seen.add(entry.file_name);
   }
   if (files.some((file) => !seen.has(file.file_name)))
-    throw new Error("本地资源已变化，请重新读取资源后检查更新");
+    throw new Error(t("updateValidation.resourcesChanged"));
 }
 
 /** Confirmation ownership protects the visible selection. The backend still
@@ -137,7 +138,7 @@ export function checkResourceUpdatePlan(
     !plan.replacements.length ||
     !files.length
   )
-    throw new Error("更新计划无效，请重新检查");
+    throw new Error(t("updateValidation.planInvalid"));
   const chosen = new Map(
     files.map((file) => [file.file_name, file.fingerprint]),
   );
@@ -157,11 +158,11 @@ export function checkResourceUpdatePlan(
       file.enabled === file.old_file_name.endsWith(".disabled") ||
       file.enabled === file.new_file_name.endsWith(".disabled")
     )
-      throw new Error("更新计划与所选文件或禁用状态不一致，请重新检查");
+      throw new Error(t("updateValidation.planMismatch"));
     seen.add(file.old_file_name);
   }
   if (files.some((file) => !seen.has(file.file_name)))
-    throw new Error("更新计划缺少所选文件，请重新检查");
+    throw new Error(t("updateValidation.planMissing"));
   const all = [...plan.replacements, ...plan.adds, ...plan.reuse];
   if (
     !Number.isSafeInteger(plan.total_bytes) ||
@@ -182,5 +183,5 @@ export function checkResourceUpdatePlan(
       0,
     ) !== plan.download_bytes
   )
-    throw new Error("更新计划的文件大小或复用状态无效，请重新检查");
+    throw new Error(t("updateValidation.planSize"));
 }

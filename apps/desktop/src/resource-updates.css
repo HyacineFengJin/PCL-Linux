@@ -24,14 +24,14 @@
   color: #9b8554;
 }
 .ce-resource-update-content > .rd-name-error {
-  color: #c44b3b;
+  color: var(--ce-danger-text, #c44b3b);
   font-size: 12px;
 }
 .ce-resource-update-status {
   margin: 0 8px 8px;
   font-size: 12px;
   line-height: 18px;
-  color: #92999f;
+  color: var(--ce-muted-text, #92999f);
   overflow-wrap: anywhere;
 }
 .ce-resource-update-status strong {
@@ -49,5 +49,5 @@
   color: var(--blue);
 }
 .ce-resource-update-undo:not([role="alert"]) {
-  color: #92999f;
+  color: var(--ce-muted-text, #92999f);
 }

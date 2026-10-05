@@ -9,6 +9,7 @@
 - 模组加载器安装包目录，以及 Modrinth 模组、整合包、数据包、资源包和光影包搜索、版本详情与依赖浏览。
 - Modrinth 模组、资源包和光影安装，必要依赖规划、SHA-512 校验和相同内容复用。
 - 本地 Modrinth 模组正式版更新、前置替换确认、禁用状态保留与更新撤销。
+- Modrinth 版本文件独立另存、命名格式和本次会话的保存目录复用。
 - 游戏版本扫描、搜索、选择与实例设置。
 - 实例描述、内置图标、列表分类与收藏管理，以及可恢复的物理实例重命名。
 - 已有实例的组件重置、核心备份与中断恢复；按内容选择导出和导入本地 ZIP，并保存导出配置。
@@ -19,8 +20,11 @@
 - 版本继承、依赖库与 Linux 原生库解析。
 - 游戏进程管理、退出状态与日志查看。
 - PCL CE 风格导航、账号侧栏、实例修改／导出、资源详情及任务管理界面。
+- 启动器外观、媒体、功能隐藏、简体中文／English、设置备份与本地诊断。
+- 共享下载并发与速度限制、代理与 DoH、日志导出清理及应用入口恢复。
+- 项目发行检查、校验下载、便携更新与回退，以及独立游戏监控。
 
-项目仍在开发中，目前支持游戏与上述加载器安装、已有游戏启动、本地资源管理、Modrinth 资源安装与模组更新。OptiFine、LabyMod 自动安装、在线整合包安装和单文件另存尚未提供；部分早期版本暂不支持自动安装。Microsoft 正版登录暂未开放，服务接入由项目维护者完成。
+项目仍在开发中，目前支持游戏与上述加载器安装、已有游戏启动、本地资源管理、Modrinth 资源安装与模组更新。OptiFine、LabyMod 自动安装、在线整合包安装尚未提供；部分早期版本暂不支持自动安装。Microsoft 正版登录暂未开放，服务接入由项目维护者完成。
 
 ## 构建与运行
 
@@ -47,10 +51,11 @@ cd PCL-Linux
 - `crates/core/`：版本、依赖和启动核心。
 - `crates/install/`：官方版本目录、文件下载、校验和安装。
 - `crates/auth/`：Microsoft 认证和系统密钥环。
+- `crates/network/`：代理、DoH 与共享下载策略。
 - `crates/cli/`：命令行入口。
 
 ```sh
-cargo test --locked -p pcl-core -p pcl-install -p pcl-cli -p pcl-auth -p pcl-desktop --features pcl-desktop/custom-protocol
+cargo test --workspace --locked --features pcl-desktop/custom-protocol
 npm run preview:data --prefix apps/desktop
 npm run dev --prefix apps/desktop
 ```
@@ -65,7 +70,7 @@ npm run dev --prefix apps/desktop
 
 ## English
 
-PCL Linux is an experimental native Linux launcher for Minecraft: Java Edition, built with Rust, Tauri 2, React, and TypeScript. It installs vanilla, Fabric, and modern Forge/NeoForge versions with custom instance names, launches existing game installations, and displays game logs. Java can be selected automatically or registered manually, with global and per-instance choices. Tasks support cancellation and incomplete-file cleanup. Local management includes multiple game directories, instance display preferences, physical renaming with reference migration and recovery, mod toggling, resource imports, and recoverable removal. Supported existing instances can reset their loader components with core backups and interruption recovery, or export selected content to a local ZIP. The launcher can import its own local ZIP exports under a custom name and restore recoverably deleted instances. Modrinth mods, resource packs and shaders can be installed with required dependencies, SHA-512 verification and exact-content reuse. Local Modrinth mods support compatible release updates, required-dependency planning, disabled-state preservation and recoverable replacement with persistent undo. Some legacy layouts, OptiFine/LabyMod installation, online modpacks, and standalone file saving are not yet available.
+PCL Linux is an experimental native Linux launcher for Minecraft: Java Edition, built with Rust, Tauri 2, React, and TypeScript. It installs vanilla, Fabric, and modern Forge/NeoForge versions with custom instance names, launches existing game installations, and displays game logs. Java can be selected automatically or registered manually, with global and per-instance choices. Tasks support cancellation and incomplete-file cleanup. Local management includes multiple game directories, instance display preferences, physical renaming with reference migration and recovery, mod toggling, resource imports, and recoverable removal. Supported existing instances can reset their loader components with core backups and interruption recovery, or export selected content to a local ZIP. The launcher can import its own local ZIP exports under a custom name and restore recoverably deleted instances. Modrinth mods, resource packs and shaders can be installed with required dependencies, SHA-512 verification and exact-content reuse. Local Modrinth mods support compatible release updates, required-dependency planning, disabled-state preservation and recoverable replacement with persistent undo. Some legacy layouts, OptiFine/LabyMod installation, and online modpacks are not yet available.
 
 Microsoft sign-in is not yet available. The project maintainers are responsible for completing the service integration.
 

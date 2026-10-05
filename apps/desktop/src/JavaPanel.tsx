@@ -1,3 +1,4 @@
+import { t, formatNumber } from "./i18n";
 import { PlusCircle } from "lucide-react";
 import type { Api, JavaAddResult, JavaSelection, Settings } from "./types";
 import { useJavaAction, useJavaCatalog } from "./javaManagement";
@@ -30,9 +31,7 @@ export function JavaPanel({
   )
     unavailable.unshift({
       path: selected.path,
-      error: loading
-        ? "正在检查此 Java…"
-        : "未找到此 Java，请重新添加或选择自动",
+      error: loading ? t("java.checkingSelected") : t("java.selectedMissing"),
     });
   function select(java: JavaSelection) {
     void action.run(async () => {
@@ -58,23 +57,23 @@ export function JavaPanel({
               if (!isCurrent()) return;
               if (result.status === "selected") await onRefresh();
               else if (result.status === "unavailable")
-                onNotify(result.message || "所选 Java 不可用，请选择其他 Java");
+                onNotify(result.message || t("java.unavailableSelection"));
             })
           }
         >
           <PlusCircle size={20} />
-          添加
+          {t("ui.add")}
         </button>
       </div>
-      <section className="ce-card ce-java-list" aria-label="Java 运行时">
+      <section className="ce-card ce-java-list" aria-label={t("java.runtimes")}>
         <button
           className={`ce-java-auto ce-java-row ${selected.mode === "auto" ? "is-selected" : ""}`}
           aria-pressed={selected.mode === "auto"}
           disabled={action.disabled}
           onClick={() => select({ mode: "auto" })}
         >
-          <strong>自动选择</strong>
-          <p>Java 选择自动档，依据游戏需要自动选择合适的 Java</p>
+          <strong>{t("java.auto")}</strong>
+          <p>{t("java.autoHelp")}</p>
         </button>
         {catalog.runtimes.map((java) => (
           <button
@@ -86,7 +85,7 @@ export function JavaPanel({
             disabled={action.disabled}
             onClick={() => select({ mode: "manual", path: java.path })}
           >
-            <div>JDK {java.major}</div>
+            <div>JDK {formatNumber(java.major)}</div>
             <p>
               <span>{java.arch}</span> <span>{java.vendor}</span> {java.path}
             </p>
@@ -101,7 +100,7 @@ export function JavaPanel({
             }
             disabled
           >
-            <div>{loading ? "正在检查 Java" : "Java 不可用"}</div>
+            <div>{loading ? t("java.checking") : t("java.unavailable")}</div>
             <p>{java.path}</p>
             <p>{java.error}</p>
           </button>
@@ -115,7 +114,7 @@ export function JavaPanel({
           catalog.runtimes.length === 0 &&
           unavailable.length === 0 && (
             <p className="ce-java-status">
-              {loading ? "正在扫描本机 Java…" : "未找到可用的 Java"}
+              {loading ? t("java.scanning") : t("java.none")}
             </p>
           )}
       </section>

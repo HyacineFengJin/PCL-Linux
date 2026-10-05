@@ -407,7 +407,7 @@ pub async fn modrinth_search(
         _ if query.is_empty() => "downloads",
         _ => "relevance",
     };
-    let client = reqwest::Client::builder()
+    let client = pcl_network::async_client()
         .user_agent("PCL-Linux/0.2.0 (https://github.com/HyacineFengJin/PCL-Linux)")
         .timeout(Duration::from_secs(20))
         .build()

@@ -111,12 +111,21 @@ pub(super) fn start_request(
     }
     let task = admit(&shared, &root, &id, tasks::TaskKind::ResourceUpdate)?;
     let task_id = task.id().to_owned();
+    let download_policy = pcl_network::download_snapshot();
     let worker = shared.clone();
     std::thread::Builder::new()
         .name(format!("pcl-mod-update-{task_id}"))
         .spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                update(&worker, &root, &id, files, &revision, &task)
+                update_with_policy(
+                    &worker,
+                    &root,
+                    &id,
+                    files,
+                    &revision,
+                    &task,
+                    download_policy,
+                )
             }))
             .unwrap_or_else(|_| Err("模组更新意外退出，请检查资源恢复记录".into()));
             finish(task, result, "模组更新完成");
@@ -143,26 +152,29 @@ fn admit(
     Ok(task)
 }
 
-fn update(
+fn update_with_policy(
     shared: &Shared,
     root: &GameRoot,
     id: &str,
     files: Vec<resource_ops::ResourceFile>,
     revision: &str,
     task: &tasks::TaskHandle,
+    download_policy: Arc<pcl_network::DownloadScheduler>,
 ) -> Result<Value> {
     let cancel = task.cancellation_token();
     task.update(progress(0, 0, 0, 0));
-    let batch = tauri::async_runtime::block_on(modrinth_install::download_update_request(
-        Path::new(&root.path),
-        &shared.project,
-        &root.id,
-        id,
-        files,
-        revision,
-        &cancel,
-        |p| transfer_progress(task, p),
-    ))?;
+    let batch =
+        tauri::async_runtime::block_on(modrinth_install::download_update_request_with_policy(
+            Path::new(&root.path),
+            &shared.project,
+            &root.id,
+            id,
+            files,
+            revision,
+            download_policy,
+            &cancel,
+            |p| transfer_progress(task, p),
+        ))?;
     publish_batch(shared, root, id, batch, task)
 }
 

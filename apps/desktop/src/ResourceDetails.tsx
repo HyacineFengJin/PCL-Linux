@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { t, formatNumber, formatRelativeDate, type MessageKey } from "./i18n";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUpToLine,
   Box,
@@ -15,6 +16,8 @@ import {
 import { Collapse } from "./Collapse";
 import type { Api, Instance } from "./types";
 import { ResourceInstall } from "./ResourceInstall";
+import { ResourceSave } from "./ResourceSave";
+import { LauncherNavigationContext } from "./useLauncherPreferences";
 import type { ResourceInstallRequest } from "./resourceInstallPlan";
 import "./resource-details.css";
 
@@ -95,57 +98,39 @@ const loaderNames: Record<string, string> = {
   optifine: "OptiFine",
   minecraft: "Minecraft",
 };
-const categoryNames: Record<string, string> = {
-  library: "支持库",
-  technology: "科技",
-  adventure: "冒险",
-  optimization: "性能优化",
-  utility: "实用",
-  decoration: "装饰",
-  equipment: "装备与工具",
-  magic: "魔法",
-  storage: "仓储",
-  transportation: "管道与物流",
-  worldgen: "世界生成",
-  multiplayer: "多人",
-  lightweight: "轻量整合",
-  kitchen_sink: "大型整合",
-  "game-mechanics": "游戏机制",
-  management: "管理",
-  cursed: "趣味",
-  food: "食物",
-  mobs: "生物",
-  social: "社交",
-  visual: "视觉",
-  combat: "战斗",
+const categoryNames: Record<string, MessageKey> = {
+  library: "category.library",
+  technology: "category.technology",
+  adventure: "category.adventure",
+  optimization: "category.optimization",
+  utility: "category.utility",
+  decoration: "category.decoration",
+  equipment: "category.equipmentTools",
+  magic: "category.magic",
+  storage: "category.warehouse",
+  transportation: "category.transportation",
+  worldgen: "category.worldgen",
+  multiplayer: "category.multiplayer",
+  lightweight: "category.lightweight",
+  kitchen_sink: "category.kitchenSink",
+  "game-mechanics": "category.mechanics",
+  management: "nav.manage",
+  cursed: "category.cursed",
+  food: "category.food",
+  mobs: "category.mobs",
+  social: "category.social",
+  visual: "category.visual",
+  combat: "category.combat",
 };
 const loaderName = (value: string) => loaderNames[value.toLowerCase()] ?? value;
 const isLoader = (value: string) =>
   Object.hasOwn(loaderNames, value.toLowerCase());
-const count = (value?: number) => {
-  if (value === undefined || !Number.isFinite(value)) return "—";
-  if (value >= 100_000_000)
-    return `${Number((value / 100_000_000).toFixed(2))} 亿`;
-  if (value >= 100_000) return `${Number((value / 10_000).toFixed(1))} 万`;
-  return value.toLocaleString("zh-CN");
-};
-const relativeDate = (value?: string) => {
-  if (!value) return "—";
-  const date = Date.parse(value);
-  if (!Number.isFinite(date)) return "—";
-  const seconds = Math.max(0, Math.floor((Date.now() - date) / 1000));
-  for (const [unit, label] of [
-    [31_536_000, "年"],
-    [2_592_000, "个月"],
-    [604_800, "周"],
-    [86_400, "天"],
-    [3_600, "小时"],
-    [60, "分钟"],
-  ] as const) {
-    if (seconds >= unit) return `${Math.floor(seconds / unit)} ${label}前`;
-  }
-  return "刚刚";
-};
+const count = (value?: number) =>
+  value === undefined || !Number.isFinite(value)
+    ? "—"
+    : formatNumber(value, { notation: "compact", maximumFractionDigits: 1 });
+const relativeDate = (value?: string) =>
+  value ? formatRelativeDate(value) : "—";
 const compareVersions = (a: string, b: string) =>
   b.localeCompare(a, "en", { numeric: true });
 const stableGame = (value: string) => /^\d+(?:\.\d+)+$/.test(value);
@@ -155,11 +140,17 @@ const gameFamily = (value: string) =>
     .split(".")
     .slice(0, 2)
     .join(".") || "快照版";
+// Only the locally synthesized fallback is translated. Remote version names
+// and declared game versions are passed through unchanged.
+const displayGroupTitle = (version: Version, title: string) =>
+  version.game_versions.length
+    ? title
+    : title.replace("未标明游戏版本", t("resource.gameUnspecified"));
 const unique = (values: string[]) => [...new Set(values)];
 const fileSize = (value: number) =>
   value < 1_048_576
-    ? `${Number((value / 1024).toFixed(1))} KB`
-    : `${Number((value / 1_048_576).toFixed(1))} MB`;
+    ? `${formatNumber(value / 1024, { maximumFractionDigits: 1 })} KB`
+    : `${formatNumber(value / 1048576, { maximumFractionDigits: 1 })} MB`;
 
 function versionGroups(
   versions: Version[],
@@ -237,7 +228,11 @@ function ReleaseIcon({ type }: { type: string }) {
     <span
       className={`rd-release-icon rd-release-${label.toLowerCase()}`}
       aria-label={
-        type === "beta" ? "测试版" : type === "alpha" ? "开发版" : "正式版"
+        type === "beta"
+          ? t("resource.beta")
+          : type === "alpha"
+            ? t("resource.alpha")
+            : t("download.release")
       }
     >
       {label}
@@ -264,11 +259,16 @@ export function ResourceDetails({
   disabled: boolean;
   onTaskStart: (id: string) => void;
 }) {
+  const saveAvailable = useContext(
+    LauncherNavigationContext,
+  ).standaloneSaveAvailable;
   const [details, setDetails] = useState<Details | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   const [dependencyRetry, setDependencyRetry] = useState(0);
+  // These sentinels identify filters, not display text. Translate at render so
+  // locale changes preserve the selected filter and memoized version groups.
   const [gameFilter, setGameFilter] = useState("全部");
   const [loaderFilter, setLoaderFilter] = useState("全部");
   const [expanded, setExpanded] = useState<string[]>([]);
@@ -282,6 +282,10 @@ export function ResourceDetails({
     filename: string;
   } | null>(null);
   const [installChoice, setInstallChoice] = useState<{
+    context: object;
+    request: ResourceInstallRequest;
+  } | null>(null);
+  const [saveChoice, setSaveChoice] = useState<{
     context: object;
     request: ResourceInstallRequest;
   } | null>(null);
@@ -404,6 +408,7 @@ export function ResourceDetails({
     setSelected(null);
     setFileChoice(null);
     setInstallChoice(null);
+    setSaveChoice(null);
     setPackChoice(null);
     setGameFilter("全部");
     setLoaderFilter("全部");
@@ -512,7 +517,7 @@ export function ResourceDetails({
 
   async function openLink(url: string) {
     if (!url) {
-      onNotify(`${source} 详情接口尚未开放`);
+      onNotify(t("resource.providerUnavailable", { source }));
       return;
     }
     try {
@@ -523,20 +528,21 @@ export function ResourceDetails({
   }
   async function copy(value: string, label: string) {
     if (!value) {
-      onNotify("该资源尚未匹配来源链接");
+      onNotify(t("resource.sourceUnmatched"));
       return;
     }
     try {
       await navigator.clipboard.writeText(value);
-      onNotify(`已复制${label}`);
+      onNotify(t("resource.copied", { label }));
     } catch {
-      onNotify("无法访问剪贴板，请检查系统权限");
+      onNotify(t("resource.clipboardError"));
     }
   }
   function chooseVersion(version: Version, groupTitle: string) {
     setSelected({ version, title: groupTitle });
     setFileChoice(null);
     setInstallChoice(null);
+    setSaveChoice(null);
     setSelectedOpen(true);
     if (pack) {
       setInstanceName(
@@ -575,13 +581,19 @@ export function ResourceDetails({
           </span>
           <span className="rd-version-meta">
             {version.version_number}
-            {dependencyCount > 0 && `  |  ${dependencyCount} 项前置`} | 下载{" "}
-            {count(version.downloads)} 次 | 更新于{" "}
-            {relativeDate(version.date_published)}
+            {dependencyCount > 0 &&
+              t("resource.dependencyCount", {
+                count: formatNumber(dependencyCount),
+              })}{" "}
+            |{" "}
+            {t("resource.downloadMeta", {
+              count: count(version.downloads),
+              date: relativeDate(version.date_published),
+            })}
             {version.version_type === "beta"
-              ? "  |  测试版"
+              ? t("resource.betaSuffix")
               : version.version_type === "alpha"
-                ? "  |  开发版"
+                ? t("resource.alphaSuffix")
                 : ""}
           </span>
         </span>
@@ -616,8 +628,10 @@ export function ResourceDetails({
                 aria-expanded={open}
               >
                 <strong>
-                  {kind === "required" ? "必要前置资源" : "可选前置资源"}（
-                  {entries.length}）
+                  {kind === "required"
+                    ? t("resource.required")
+                    : t("resource.optional")}
+                  （{formatNumber(entries.length)}）
                 </strong>
                 <ChevronDown size={16} className={open ? "is-open" : ""} />
               </button>
@@ -640,7 +654,7 @@ export function ResourceDetails({
                           dependency.file_name ??
                           dependency.project_id ??
                           dependency.version_id ??
-                          "未标明名称的前置资源"}
+                          t("resource.unnamedDependency")}
                       </button>
                       {dependency.project ? (
                         <>
@@ -649,7 +663,9 @@ export function ResourceDetails({
                               .filter((category) => !isLoader(category))
                               .map((category) => (
                                 <span className="rd-category" key={category}>
-                                  {categoryNames[category] ?? category}
+                                  {categoryNames[category]
+                                    ? t(categoryNames[category])
+                                    : category}
                                 </span>
                               ))}
                             {dependency.project.description}
@@ -672,8 +688,8 @@ export function ResourceDetails({
                       ) : (
                         <div className="rd-description">
                           {state?.loading
-                            ? "正在读取前置信息…"
-                            : "该前置资源的详情暂不可用"}
+                            ? t("resource.readingDependency")
+                            : t("resource.dependencyUnavailable")}
                         </div>
                       )}
                     </div>
@@ -685,7 +701,7 @@ export function ResourceDetails({
         })}
         {state?.error && (
           <div className="rd-inline-status" role="status">
-            前置信息读取失败：{state.error}
+            {t("resource.dependencyError", { error: state.error || "" })}
             <button
               className="ce-text-button"
               onClick={() => {
@@ -693,13 +709,13 @@ export function ResourceDetails({
                 setDependencyRetry((value) => value + 1);
               }}
             >
-              重试
+              {t("ui.retry")}
             </button>
           </div>
         )}
         {state?.data?.truncated && (
           <div className="rd-inline-status">
-            前置资源较多，当前显示前 32 项。
+            {t("resource.dependencyTruncated")}
           </div>
         )}
       </>
@@ -719,7 +735,9 @@ export function ResourceDetails({
             <div className="rd-description">
               {categories.map((category) => (
                 <span className="rd-category" key={category}>
-                  {categoryNames[category] ?? category}
+                  {categoryNames[category]
+                    ? t(categoryNames[category])
+                    : category}
                 </span>
               ))}
               {project?.description ?? resource.description}
@@ -730,7 +748,7 @@ export function ResourceDetails({
                 {local
                   ? [resource.local_loader, resource.local_minecraft_version]
                       .filter(Boolean)
-                      .join(" ") || "本地模组"
+                      .join(" ") || t("resource.localMod")
                   : `${loaders.map(loaderName).join(" / ")} ${supportedGames}`}
               </span>
               <span>
@@ -743,7 +761,7 @@ export function ResourceDetails({
               </span>
               <span>
                 <Globe size={12} />
-                {local ? "本地文件" : source}
+                {local ? t("resource.localFile") : source}
               </span>
             </div>
           </div>
@@ -751,27 +769,27 @@ export function ResourceDetails({
         <div className="rd-summary-actions">
           <button onClick={() => openLink(providerUrl)}>
             <Globe size={15} />
-            {source === "local" ? "来源页面" : source}
+            {source === "local" ? t("resource.sourcePage") : source}
           </button>
           <button onClick={() => openLink("https://www.mcmod.cn/")}>
             <Globe size={15} />
-            MC 百科
+            {t("resource.mcmod")}
           </button>
-          <button onClick={() => copy(title, "名称")}>
+          <button onClick={() => copy(title, t("ui.name"))}>
             <Copy size={15} />
-            复制名称
+            {t("resource.copyName")}
           </button>
-          <button onClick={() => copy(providerUrl, "链接")}>
+          <button onClick={() => copy(providerUrl, t("ui.link"))}>
             <Copy size={15} />
-            复制链接
+            {t("resource.copyLink")}
           </button>
-          <button onClick={() => onNotify("简介翻译尚未开放")}>
+          <button onClick={() => onNotify(t("resource.translateUnavailable"))}>
             <Languages size={15} />
-            翻译简介
+            {t("resource.translate")}
           </button>
-          <button onClick={() => onNotify("收藏管理尚未开放")}>
+          <button onClick={() => onNotify(t("resource.favoriteUnavailable"))}>
             <Heart size={15} />
-            收藏
+            {t("resource.favorite")}
           </button>
         </div>
       </section>
@@ -784,12 +802,14 @@ export function ResourceDetails({
               aria-expanded={selectedOpen}
             >
               <strong>
-                所选版本：
-                {[resource.local_loader, resource.local_minecraft_version]
-                  .filter(Boolean)
-                  .join(" ") ||
-                  resource.local_version ||
-                  "本地文件"}
+                {t("resource.selectedVersion", {
+                  version:
+                    [resource.local_loader, resource.local_minecraft_version]
+                      .filter(Boolean)
+                      .join(" ") ||
+                    resource.local_version ||
+                    t("resource.localFile"),
+                })}
               </strong>
               <ChevronDown
                 size={16}
@@ -805,23 +825,26 @@ export function ResourceDetails({
                       {resource.file_name ?? title}
                     </span>
                     <span className="rd-version-meta">
-                      {resource.local_version || "模组版本未标明"}
+                      {resource.local_version ||
+                        t("resource.modVersionUnspecified")}
                       {resource.enabled !== undefined &&
-                        `  |  ${resource.enabled ? "已启用" : "已禁用"}`}
+                        `  |  ${resource.enabled ? t("ui.enabled") : t("ui.disabled")}`}
                     </span>
                   </div>
                 </div>
                 {resource.local_path && (
                   <div className="rd-local-path">
-                    文件位置：{resource.local_path}
+                    {t("resource.fileLocation", {
+                      path: resource.local_path || "",
+                    })}
                   </div>
                 )}
               </div>
             </Collapse>
           </section>
           <section className="ce-card rd-state">
-            <p>版本目录尚未匹配</p>
-            <small>当前显示本地文件信息。来源与前置资源尚未匹配。</small>
+            <p>{t("resource.noCatalog")}</p>
+            <small>{t("resource.localOnlyHelp")}</small>
           </section>
         </>
       ) : (
@@ -830,27 +853,31 @@ export function ResourceDetails({
             className={`ce-card rd-filters ${pack ? "rd-pack-filters" : ""}`}
           >
             <div className="rd-filter-row">
-              {!pack && <span>实例筛选:</span>}
+              {!pack && <span>{t("resource.instanceFilter")}</span>}
               {["全部", ...filters].map((value) => (
                 <button
                   key={value}
                   className={gameFilter === value ? "is-active" : ""}
                   onClick={() => setGameFilter(value)}
                 >
-                  {value}
+                  {value === "全部"
+                    ? t("ui.all")
+                    : value === "快照版"
+                      ? t("download.snapshot")
+                      : value}
                 </button>
               ))}
             </div>
             {!pack && (
               <div className="rd-filter-row">
-                <span>模组加载器筛选:</span>
+                <span>{t("resource.loaderFilter")}</span>
                 {["全部", ...unique(loaders)].map((value) => (
                   <button
                     key={value}
                     className={loaderFilter === value ? "is-active" : ""}
                     onClick={() => setLoaderFilter(value)}
                   >
-                    {value === "全部" ? value : loaderName(value)}
+                    {value === "全部" ? t("ui.all") : loaderName(value)}
                   </button>
                 ))}
               </div>
@@ -859,7 +886,7 @@ export function ResourceDetails({
           {loading && (
             <section className="ce-card rd-state" role="status">
               <LoaderCircle size={18} className="spin" />
-              <p>正在读取资源详情…</p>
+              <p>{t("resource.reading")}</p>
             </section>
           )}
           {error && (
@@ -870,14 +897,14 @@ export function ResourceDetails({
                 onClick={() => setRetry((value) => value + 1)}
               >
                 <RefreshCw size={14} />
-                重新读取
+                {t("ui.reread")}
               </button>
             </section>
           )}
           {!modrinth && (
             <section className="ce-card rd-state">
-              <p>{source} 详情接口尚未开放</p>
-              <small>版本与前置资源将在来源接口接入后显示。</small>
+              <p>{t("resource.providerUnavailable", { source })}</p>
+              <small>{t("resource.providerHelp")}</small>
             </section>
           )}
           {selected && (
@@ -890,7 +917,14 @@ export function ResourceDetails({
                 onClick={() => setSelectedOpen((value) => !value)}
                 aria-expanded={selectedOpen}
               >
-                <strong>所选版本：{selected.title}</strong>
+                <strong>
+                  {t("resource.selectedVersion", {
+                    version: displayGroupTitle(
+                      selected.version,
+                      selected.title,
+                    ),
+                  })}
+                </strong>
                 <ChevronDown
                   size={16}
                   className={selectedOpen ? "is-open" : ""}
@@ -899,7 +933,9 @@ export function ResourceDetails({
               <Collapse open={selectedOpen}>
                 <div className="rd-group-body">
                   {dependencySections(selected.version, "selected")}
-                  <div className="rd-version-list-label">版本列表</div>
+                  <div className="rd-version-list-label">
+                    {t("resource.versionList")}
+                  </div>
                   {versionRow(selected.version, selected.title)}
                   <div className="rd-selected-files">
                     {selected.version.files.map((file, index) =>
@@ -922,6 +958,7 @@ export function ResourceDetails({
                               filename: file.filename,
                             });
                             setInstallChoice(null);
+                            setSaveChoice(null);
                           }}
                         >
                           {file.filename}（{fileSize(file.size)}）
@@ -936,14 +973,49 @@ export function ResourceDetails({
                   <div className="rd-selected-actions">
                     <button
                       className="ce-button primary"
-                      onClick={() =>
-                        pack
-                          ? chooseVersion(selected.version, selected.title)
-                          : onNotify("资源文件下载尚未开放")
+                      disabled={
+                        !pack &&
+                        (!native ||
+                          !saveAvailable ||
+                          disabled ||
+                          !modrinth ||
+                          !selectedFile)
                       }
+                      title={
+                        !pack && (!native || !saveAvailable)
+                          ? t("resource.downloadUnavailable")
+                          : undefined
+                      }
+                      onClick={() => {
+                        if (pack) {
+                          chooseVersion(selected.version, selected.title);
+                          return;
+                        }
+                        if (
+                          installationContext.current !==
+                            renderedInstallationContext ||
+                          !admission.current.native ||
+                          admission.current.disabled ||
+                          !saveAvailable ||
+                          !modrinth ||
+                          !selectedFile
+                        )
+                          return;
+                        setInstallChoice(null);
+                        setSaveChoice({
+                          context: renderedInstallationContext,
+                          request: {
+                            project_id: selected.version.project_id,
+                            version_id: selected.version.id,
+                            file_name: selectedFile.filename,
+                          },
+                        });
+                      }}
                     >
                       <Download size={15} />
-                      {pack ? "安装整合包" : "下载文件"}
+                      {pack
+                        ? t("resource.installPack")
+                        : t("resource.downloadFile")}
                     </button>
                     {installable && (
                       <button
@@ -967,6 +1039,7 @@ export function ResourceDetails({
                             !selectedFile
                           )
                             return;
+                          setSaveChoice(null);
                           setInstallChoice({
                             context: renderedInstallationContext,
                             request: {
@@ -978,7 +1051,7 @@ export function ResourceDetails({
                         }}
                       >
                         <Download size={15} />
-                        安装到实例
+                        {t("resource.install")}
                       </button>
                     )}
                   </div>
@@ -1005,14 +1078,25 @@ export function ResourceDetails({
                   }
                   aria-expanded={open}
                 >
-                  <strong>{group.title}</strong>
+                  <strong>
+                    {group.game === "未标明游戏版本"
+                      ? [
+                          loaderName(group.loader),
+                          t("resource.gameUnspecified"),
+                        ]
+                          .filter(Boolean)
+                          .join(" ")
+                      : group.title}
+                  </strong>
                   <ChevronDown size={16} className={open ? "is-open" : ""} />
                 </button>
                 <Collapse open={open}>
                   <div className="rd-group-body">
                     {first && dependencySections(first, group.id)}
                     {hasDependencies && (
-                      <div className="rd-version-list-label">版本列表</div>
+                      <div className="rd-version-list-label">
+                        {t("resource.versionList")}
+                      </div>
                     )}
                     {group.versions.map((version) =>
                       versionRow(version, group.title),
@@ -1024,15 +1108,26 @@ export function ResourceDetails({
           })}
           {details && !loading && !error && !shownGroups.length && (
             <section className="ce-card rd-state">
-              <p>没有符合筛选条件的版本</p>
+              <p>{t("resource.noFilteredVersions")}</p>
             </section>
           )}
           {details?.versions_truncated && (
             <p className="rd-inline-status">
-              版本较多，当前显示最新的 4000 个版本。
+              {t("resource.versionsTruncated")}
             </p>
           )}
         </>
+      )}
+      {saveChoice?.context === renderedInstallationContext && (
+        <ResourceSave
+          api={api}
+          request={saveChoice.request}
+          contextKey={contextKey}
+          native={native && saveAvailable}
+          disabled={disabled}
+          onTaskStart={onTaskStart}
+          onClose={() => setSaveChoice(null)}
+        />
       )}
       {installChoice?.context === renderedInstallationContext && (
         <ResourceInstall
@@ -1046,6 +1141,7 @@ export function ResourceDetails({
           onTaskStart={onTaskStart}
           onClose={() => {
             setInstallChoice(null);
+            setSaveChoice(null);
             installButton.current?.focus();
           }}
           onNotify={onNotify}
@@ -1092,17 +1188,17 @@ export function ResourceDetails({
                 instanceName.trim() === "." ||
                 instanceName.trim() === ".."
               ) {
-                setNameError("请输入有效的实例名称");
+                setNameError(t("instance.nameInvalid"));
                 return;
               }
               setPackChoice(null);
-              onNotify("整合包安装尚未开放，未创建实例");
+              onNotify(t("resource.packUnavailable"));
             }}
           >
-            <h2 id="rd-name-title">输入实例名称</h2>
+            <h2 id="rd-name-title">{t("instance.enterName")}</h2>
             <input
               className="ce-field"
-              aria-label="实例名称"
+              aria-label={t("instance.name")}
               ref={nameInput}
               maxLength={100}
               value={instanceName}
@@ -1118,14 +1214,14 @@ export function ResourceDetails({
             )}
             <div className="rd-name-actions">
               <button className="ce-button primary" type="submit">
-                确定
+                {t("ui.confirm")}
               </button>
               <button
                 className="ce-button"
                 type="button"
                 onClick={() => setPackChoice(null)}
               >
-                取消
+                {t("common.cancel")}
               </button>
             </div>
           </form>

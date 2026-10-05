@@ -1,8 +1,13 @@
+import { t, formatNumber } from "./i18n";
 import { useEffect, useState } from "react";
 import { ArrowRight, ChevronDown } from "lucide-react";
 import "./settings-panel.css";
 import { Collapse } from "./Collapse";
 import { JavaPanel } from "./JavaPanel";
+import type {
+  LauncherPreferenceView,
+  LauncherPreferencePatch,
+} from "./launcherTypes";
 import type { Api, Settings } from "./types";
 type SystemInfo = {
   total_memory_bytes: number;
@@ -16,20 +21,29 @@ type Props = {
   native: boolean;
   disabled: boolean;
   onInstances: () => void;
+  showInstanceSettings?: boolean;
+  launcherPreferences?: LauncherPreferenceView;
+  onLauncherPatch?: (
+    patch: LauncherPreferencePatch,
+  ) => Promise<LauncherPreferenceView>;
+  launcherBusy?: boolean;
+  exitAfterLaunchAvailable?: boolean;
   onNotify: (message: string) => void;
   onRefresh: () => Promise<void>;
 };
-const unavailable = "此选项尚未开放，当前不会应用到游戏启动";
+const unavailable = () => t("settings.unavailable");
 const jvm =
   "-XX:+UseG1GC -XX:-UseAdaptiveSizePolicy -XX:-OmitStackTraceInFastThrow -Djdk.lang.Process.allowAmbiguousCommands=true -Dfml.ignoreInvalidMinecraftCertificates=True -Dfml.ignorePatchDiscrepancies=True -Dlog4j2.formatMsgNoLookups=true";
 function Field({
   label,
   value,
   multiline = false,
+  dropdown = false,
 }: {
   label: string;
   value: string;
   multiline?: boolean;
+  dropdown?: boolean;
 }) {
   return (
     <label className="ce-settings-row">
@@ -40,7 +54,7 @@ function Field({
           value={value}
           readOnly
           disabled
-          title={unavailable}
+          title={unavailable()}
         />
       ) : (
         <div className="ce-settings-control">
@@ -49,18 +63,9 @@ function Field({
             value={value}
             readOnly
             disabled
-            title={unavailable}
+            title={unavailable()}
           />
-          {[
-            "默认实例隔离",
-            "游戏窗口标题",
-            "启动器可见性",
-            "进程优先级",
-            "窗口大小",
-            "正版验证方式",
-            "IP 协议偏好",
-            "渲染器",
-          ].includes(label) && <ChevronDown size={17} />}
+          {dropdown && <ChevronDown size={17} />}
         </div>
       )}
     </label>
@@ -74,6 +79,11 @@ export function SettingsPanel({
   native,
   disabled,
   onInstances,
+  showInstanceSettings = true,
+  launcherPreferences,
+  onLauncherPatch,
+  launcherBusy = false,
+  exitAfterLaunchAvailable = false,
   onNotify,
   onRefresh,
 }: Props) {
@@ -117,49 +127,104 @@ export function SettingsPanel({
   if (!["launch", "启动", "game"].includes(section))
     return (
       <section className="ce-card">
-        <h2 className="ce-card-title">此设置页面尚未开放</h2>
+        <h2 className="ce-card-title">{t("settings.pageUnavailable")}</h2>
       </section>
     );
-  const gib = (bytes: number) => (bytes / 1073741824).toFixed(1);
+  const gib = (bytes: number) =>
+    formatNumber(bytes / 1073741824, {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    });
   const used = system
     ? system.total_memory_bytes - system.available_memory_bytes
     : 0;
   return (
     <div className="ce-settings-panel">
       <section className="ce-card">
-        <h2 className="ce-card-title">启动选项</h2>
+        <h2 className="ce-card-title">{t("instance.launchOptions")}</h2>
         <div className="ce-settings-fields">
-          <Field label="默认实例隔离" value="隔离所有实例" />
-          <Field label="游戏窗口标题" value="默认" />
-          <Field label="自定义信息" value="PCL CE" />
           <Field
-            label="启动器可见性"
-            value="游戏启动后隐藏，游戏退出后重新打开"
+            dropdown
+            label={t("settings.isolation")}
+            value={t("settings.allIsolated")}
           />
-          <Field label="进程优先级" value="中（平衡）" />
-          <Field label="窗口大小" value="默认" />
-          <Field label="正版验证方式" value="设备代码流" />
-          <Field label="IP 协议偏好" value="Java 默认" />
+          <Field
+            dropdown
+            label={t("settings.windowTitle")}
+            value={t("common.default")}
+          />
+          <Field label={t("settings.customInfo")} value="PCL CE" />
+          <label className="ce-settings-row">
+            <span>{t("settings.visibility")}</span>
+            <select
+              className="ce-field"
+              value={
+                launcherPreferences?.preferences.launch_visibility || "always"
+              }
+              disabled={
+                !native ||
+                !onLauncherPatch ||
+                !launcherPreferences?.revision ||
+                !!launcherPreferences.warning ||
+                launcherBusy
+              }
+              onChange={(event) =>
+                void onLauncherPatch?.({
+                  launch_visibility: event.target
+                    .value as LauncherPreferenceView["preferences"]["launch_visibility"],
+                }).catch((error) => onNotify(String(error)))
+              }
+            >
+              <option value="always">{t("settings.alwaysVisible")}</option>
+              <option value="hide_while_game">
+                {t("settings.hideWhileGame")}
+              </option>
+              <option
+                value="exit_after_launch"
+                disabled={!exitAfterLaunchAvailable}
+              >
+                {t("settings.exitAfterLaunch")}
+              </option>
+            </select>
+          </label>
+          <Field
+            dropdown
+            label={t("settings.priority")}
+            value={t("settings.balanced")}
+          />
+          <Field
+            dropdown
+            label={t("settings.windowSize")}
+            value={t("common.default")}
+          />
+          <Field
+            dropdown
+            label={t("settings.authentication")}
+            value={t("settings.deviceFlow")}
+          />
+          <Field
+            dropdown
+            label={t("settings.ip")}
+            value={t("settings.javaDefault")}
+          />
         </div>
       </section>
       <section className="ce-card ce-memory-card">
-        <h2 className="ce-card-title">游戏内存</h2>
+        <h2 className="ce-card-title">{t("instance.memory")}</h2>
         {system && memory * 1073741824 > system.available_memory_bytes && (
-          <div className="ce-memory-warning">
-            你给游戏分配的内存过多，这可能引发游戏崩溃。建议优先考虑「自动分配」选项！
-          </div>
+          <div className="ce-memory-warning">{t("settings.memoryWarning")}</div>
         )}
-        <label className="ce-memory-mode" title={unavailable}>
+        <label className="ce-memory-mode" title={unavailable()}>
           <input type="radio" disabled checked={false} readOnly />
-          自动配置
+          {t("settings.auto")}
         </label>
         <div className="ce-memory-custom">
           <label className="ce-memory-mode">
             <input type="radio" checked readOnly />
-            自定义
+            {t("settings.custom")}
           </label>
           <input
-            aria-label="游戏内存 GiB"
+            aria-label={t("settings.memoryGib")}
             type="range"
             min="2"
             max={Math.max(14, settings.memory_gib)}
@@ -173,8 +238,8 @@ export function SettingsPanel({
           />
         </div>
         <div className="ce-memory-labels">
-          <span>已使用内存 / 已安装内存</span>
-          <span>游戏分配</span>
+          <span>{t("settings.usedTotal")}</span>
+          <span>{t("settings.allocated")}</span>
         </div>
         <div className="ce-memory-bar">
           <span
@@ -189,11 +254,19 @@ export function SettingsPanel({
           <span>
             {system
               ? `${gib(used)} GiB / ${gib(system.total_memory_bytes)} GiB`
-              : "内存信息暂不可用"}
+              : t("settings.memoryUnavailable")}
           </span>
           <span>
-            {memory.toFixed(1)} GiB
-            {system ? ` (可用 ${gib(system.available_memory_bytes)} GiB)` : ""}
+            {formatNumber(memory, {
+              minimumFractionDigits: 1,
+              maximumFractionDigits: 1,
+            })}{" "}
+            GiB
+            {system
+              ? t("settings.availableMemory", {
+                  memory: gib(system.available_memory_bytes),
+                })
+              : ""}
           </span>
         </div>
       </section>
@@ -203,7 +276,7 @@ export function SettingsPanel({
           onClick={() => setAdvanced(!advanced)}
           aria-expanded={advanced}
         >
-          <h2 className="ce-card-title">高级启动选项</h2>
+          <h2 className="ce-card-title">{t("settings.advanced")}</h2>
           <ChevronDown
             className={`ce-disclosure-arrow ${advanced ? "is-open" : ""}`}
             size={20}
@@ -211,21 +284,25 @@ export function SettingsPanel({
         </button>
         <Collapse open={advanced}>
           <div className="ce-advanced-content">
-            <Field label="渲染器" value="游戏默认" />
-            <Field label="JVM 参数头部" value={jvm} multiline />
-            <Field label="游戏参数尾部" value="" />
-            <Field label="启动前执行命令" value="" />
+            <Field
+              dropdown
+              label={t("settings.renderer")}
+              value={t("settings.gameDefault")}
+            />
+            <Field label={t("settings.jvm")} value={jvm} multiline />
+            <Field label={t("settings.gameArgs")} value="" />
+            <Field label={t("settings.command")} value="" />
             <div className="ce-advanced-checks">
               {[
-                "禁用 Java Launch Wrapper",
-                "禁用 LegacyFix",
-                "要求 Java 使用高性能显卡",
-                "使用 java.exe 而不是 javaw.exe",
-                "禁用 LWJGL Unsafe Agent",
-                "禁用自动崩溃分析",
-                "锁定内存分配（-Xms = -Xmx）",
+                t("settings.disableWrapper"),
+                t("settings.disableLegacyFix"),
+                t("settings.gpu"),
+                t("settings.javaExe"),
+                t("settings.disableUnsafe"),
+                t("settings.disableCrash"),
+                t("settings.lockMemory"),
               ].map((label, i) => (
-                <label key={label} title={unavailable}>
+                <label key={label} title={unavailable()}>
                   <input
                     type="checkbox"
                     checked={i === 0 || i === 2}
@@ -239,11 +316,11 @@ export function SettingsPanel({
           </div>
         </Collapse>
       </section>
-      <Collapse open={advanced}>
+      <Collapse open={advanced && showInstanceSettings}>
         <div className="ce-settings-footer">
           <button className="ce-button" onClick={onInstances}>
             <ArrowRight size={20} />
-            实例独立设置
+            {t("settings.instance")}
           </button>
         </div>
       </Collapse>

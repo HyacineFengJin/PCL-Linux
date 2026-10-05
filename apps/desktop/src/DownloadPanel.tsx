@@ -1,3 +1,10 @@
+import {
+  t,
+  formatNumber,
+  formatDate,
+  formatRelativeDate,
+  type MessageKey,
+} from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -41,6 +48,8 @@ export type DownloadStatus = {
     | "resource_download"
     | "resource_update"
     | "resource_update_restore"
+    | "resource_save"
+    | "launcher_logs"
     | null;
   stage:
     | "idle"
@@ -85,7 +94,11 @@ export const idleDownload: DownloadStatus = {
 const active = (status: DownloadStatus) =>
   ["preparing", "downloading", "processing"].includes(status.stage);
 const kindName = (kind: string) =>
-  kind === "release" ? "正式版" : kind === "snapshot" ? "快照版" : "旧版";
+  kind === "release"
+    ? t("download.release")
+    : kind === "snapshot"
+      ? t("download.snapshot")
+      : t("download.legacy");
 
 export function DownloadPanel({
   api,
@@ -225,6 +238,8 @@ export function DownloadPanel({
                 "resource_update",
                 "resource_update_restore",
               ].includes(next.kind || ""))) &&
+          next.kind !== "resource_save" &&
+          next.kind !== "launcher_logs" &&
           next.version &&
           completed.current !==
             (next.task_id ||
@@ -293,21 +308,21 @@ export function DownloadPanel({
   const groups = [
     {
       id: "release",
-      title: "正式版",
+      title: t("download.release"),
       entries: catalog.filter(
         (e) => e.kind === "release" && !aprilVersions.has(e.id),
       ),
     },
     {
       id: "snapshot",
-      title: "预览版",
+      title: t("download.preview"),
       entries: catalog.filter(
         (e) => e.kind === "snapshot" && !aprilVersions.has(e.id),
       ),
     },
     {
       id: "old",
-      title: "远古版",
+      title: t("download.ancient"),
       entries: catalog.filter(
         (e) =>
           !["release", "snapshot"].includes(e.kind) && !aprilVersions.has(e.id),
@@ -315,7 +330,7 @@ export function DownloadPanel({
     },
     {
       id: "april",
-      title: "愚人节版",
+      title: t("download.april"),
       entries: catalog.filter((e) => aprilVersions.has(e.id)),
     },
   ];
@@ -354,11 +369,11 @@ export function DownloadPanel({
           <small>
             {newest
               ? entry.kind === "release"
-                ? "最新正式版"
-                : "最新预览版"
+                ? t("download.latestRelease")
+                : t("download.latestPreview")
               : kindName(entry.kind)}
-            ，发布于{" "}
-            {new Date(entry.release_time).toLocaleString("zh-CN", {
+            {t("download.published")}{" "}
+            {formatDate(new Date(entry.release_time), {
               year: "numeric",
               month: "numeric",
               day: "numeric",
@@ -368,7 +383,7 @@ export function DownloadPanel({
             })}
           </small>
         </span>
-        {ids.has(entry.id) && <span className="tag">已安装</span>}
+        {ids.has(entry.id) && <span className="tag">{t("ui.installed")}</span>}
       </button>
     );
   }
@@ -414,7 +429,7 @@ export function DownloadPanel({
         ...idleDownload,
         stage: "preparing",
         phase: "metadata",
-        message: "正在准备安装…",
+        message: t("download.preparing"),
         task_id: taskId,
         root_id: targetRootId,
         version: options.name,
@@ -458,11 +473,7 @@ export function DownloadPanel({
   }
   return (
     <>
-      {gameBusy && (
-        <div className="auth-notice">
-          游戏正在准备或运行，请结束游戏后再安装新版本。
-        </div>
-      )}
+      {gameBusy && <div className="auth-notice">{t("download.gameBusy")}</div>}
       {error && (
         <div className="error-banner" role="alert">
           <TriangleAlert size={17} />
@@ -470,7 +481,7 @@ export function DownloadPanel({
           <button
             className="icon-button"
             onClick={() => setError("")}
-            aria-label="关闭提示"
+            aria-label={t("ui.closeNotice")}
           >
             <X size={15} />
           </button>
@@ -512,16 +523,16 @@ export function DownloadPanel({
           ) : section !== "minecraft" ? (
             <section className="ce-card">
               <div className="ce-card-title">{section}</div>
-              <p className="muted">此安装包目录尚未接入。</p>
+              <p className="muted">{t("download.catalogUnavailable")}</p>
             </section>
           ) : (
             <>
               <section className="ce-card ce-catalog-latest">
-                <div className="ce-card-title">最新版本</div>
+                <div className="ce-card-title">{t("ui.latest")}</div>
                 {loading ? (
                   <div className="download-empty">
                     <LoaderCircle className="spin" size={22} />
-                    <p>正在获取官方版本目录…</p>
+                    <p>{t("download.catalogLoading")}</p>
                   </div>
                 ) : latest.length ? (
                   latest.map((entry) => versionRow(entry, true))
@@ -529,8 +540,8 @@ export function DownloadPanel({
                   <div className="download-empty">
                     <p>
                       {native
-                        ? "暂未获取到版本目录"
-                        : "版本目录将在桌面应用中显示"}
+                        ? t("download.catalogEmpty")
+                        : t("download.catalogDesktop")}
                     </p>
                     <button
                       className="ce-button"
@@ -538,7 +549,7 @@ export function DownloadPanel({
                       onClick={() => void loadCatalog(true)}
                     >
                       <RefreshCw size={14} />
-                      重新获取
+                      {t("ui.reload")}
                     </button>
                   </div>
                 )}
@@ -557,7 +568,7 @@ export function DownloadPanel({
                     aria-expanded={expanded.includes(group.id)}
                   >
                     <span>
-                      {group.title} ({group.entries.length})
+                      {group.title} ({formatNumber(group.entries.length)})
                     </span>
                     <ChevronDown
                       size={19}
@@ -569,7 +580,7 @@ export function DownloadPanel({
                       {group.entries.length ? (
                         group.entries.map((entry) => versionRow(entry))
                       ) : (
-                        <p className="muted">暂无版本</p>
+                        <p className="muted">{t("ui.noVersions")}</p>
                       )}
                     </div>
                   </Collapse>
@@ -595,6 +606,30 @@ type ModrinthHit = {
   date_modified: string;
 };
 
+// Filter values are provider/UI protocol IDs. Only their rendered labels
+// change language; translating the values would change request routing.
+const resourceLabelKeys: Record<string, MessageKey> = {
+  模组: "resources.mods",
+  整合包: "resources.modpacks",
+  数据包: "resources.datapacks",
+  资源包: "nav.resourcepacks",
+  光影包: "nav.shaderpacks",
+  世界: "resources.worlds",
+  收藏夹: "resources.favorites",
+};
+const filterLabel = (value: string) =>
+  value === "全部"
+    ? t("ui.all")
+    : value === "默认"
+      ? t("common.default")
+      : value === "任意"
+        ? t("ui.any")
+        : value === "更新时间"
+          ? t("ui.updated")
+          : value === "下载量"
+            ? t("ui.downloads")
+            : value;
+
 function CommunityCatalog({
   api,
   label,
@@ -608,6 +643,7 @@ function CommunityCatalog({
   setQuery: (value: string) => void;
   onResourceDetails: (resource: ResourceSummary) => void;
 }) {
+  const displayLabel = t(resourceLabelKeys[label]);
   const [source, setSource] = useState("全部");
   const [tag, setTag] = useState("全部");
   const [sort, setSort] = useState("默认");
@@ -679,17 +715,17 @@ function CommunityCatalog({
     quilt: "Quilt",
   };
   const categoryNames: Record<string, string> = {
-    library: "支持库",
-    optimization: "性能优化",
-    utility: "实用",
-    decoration: "装饰",
-    adventure: "冒险",
-    technology: "科技",
-    worldgen: "世界生成",
-    storage: "存储",
-    equipment: "装备",
-    magic: "魔法",
-    management: "管理",
+    library: t("category.library"),
+    optimization: t("category.optimization"),
+    utility: t("category.utility"),
+    decoration: t("category.decoration"),
+    adventure: t("category.adventure"),
+    technology: t("category.technology"),
+    worldgen: t("category.worldgen"),
+    storage: t("category.storage"),
+    equipment: t("category.equipment"),
+    magic: t("category.magic"),
+    management: t("nav.manage"),
   };
   const tags = [
     ...new Set(
@@ -698,28 +734,9 @@ function CommunityCatalog({
         .filter((value) => !loaderNames[value]),
     ),
   ];
-  function downloads(value: number) {
-    return value >= 100000000
-      ? `${(value / 100000000).toFixed(2).replace(/0+$/, "").replace(/\.$/, "")} 亿`
-      : value >= 10000
-        ? `${(value / 10000).toFixed(1).replace(/\.0$/, "")} 万`
-        : value.toLocaleString("zh-CN");
-  }
-  function updated(value: string) {
-    const days = Math.max(
-      0,
-      Math.floor((Date.now() - new Date(value).getTime()) / 86400000),
-    );
-    return days < 1
-      ? "今天"
-      : days < 7
-        ? `${days} 天前`
-        : days < 30
-          ? `${Math.floor(days / 7)} 周前`
-          : days < 365
-            ? `${Math.floor(days / 30)} 个月前`
-            : `${Math.floor(days / 365)} 年前`;
-  }
+  const downloads = (value: number) =>
+    formatNumber(value, { notation: "compact", maximumFractionDigits: 1 });
+  const updated = (value: string) => formatRelativeDate(value);
   function safeIcon(value: string | null) {
     try {
       const url = new URL(value || "");
@@ -743,38 +760,40 @@ function CommunityCatalog({
         <Search size={19} />
         <input
           className="ce-search"
-          placeholder={`搜索${label}`}
-          aria-label={`搜索${label}`}
+          placeholder={t("ui.searchType", { type: displayLabel })}
+          aria-label={t("ui.searchType", { type: displayLabel })}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
         <button className="ce-button" type="submit">
-          搜索
+          {t("ui.search")}
         </button>
       </form>
       <section className="ce-card ce-community-filters">
         <label className="ce-filter-field">
-          来源
+          {t("ui.source")}
           <select
             className="ce-field"
             value={source}
             onChange={(e) => setSource(e.target.value)}
           >
             {["全部", "Modrinth", "CurseForge"].map((v) => (
-              <option key={v} disabled={v === "CurseForge"}>
-                {v === "CurseForge" ? "CurseForge（尚未接入）" : v}
+              <option key={v} value={v} disabled={v === "CurseForge"}>
+                {v === "CurseForge"
+                  ? t("download.curseforgeUnavailable")
+                  : filterLabel(v)}
               </option>
             ))}
           </select>
         </label>
         <label className="ce-filter-field">
-          标签
+          {t("ui.tags")}
           <select
             className="ce-field"
             value={tag}
             onChange={(e) => setTag(e.target.value)}
           >
-            <option>全部</option>
+            <option>{t("ui.all")}</option>
             {tags.map((value) => (
               <option key={value} value={value}>
                 {categoryNames[value] || value}
@@ -783,20 +802,22 @@ function CommunityCatalog({
           </select>
         </label>
         <label className="ce-filter-field">
-          排序方式
+          {t("ui.sort")}
           <select
             className="ce-field"
             value={sort}
             onChange={(e) => setSort(e.target.value)}
           >
             {["默认", "下载量", "更新时间"].map((v) => (
-              <option key={v}>{v}</option>
+              <option key={v} value={v}>
+                {filterLabel(v)}
+              </option>
             ))}
           </select>
         </label>
         <button
           className="icon-button ce-filter-reset"
-          aria-label="重置筛选"
+          aria-label={t("ui.resetFilters")}
           onClick={() => {
             setQuery("");
             setSource("全部");
@@ -810,27 +831,29 @@ function CommunityCatalog({
           <RefreshCw size={22} />
         </button>
         <label className="ce-filter-field">
-          版本
+          {t("ui.version")}
           <select
             className="ce-field"
             value={version}
             onChange={(e) => setVersion(e.target.value)}
           >
-            <option>任意</option>
+            <option>{t("ui.any")}</option>
             {availableVersions.map((value) => (
               <option key={value}>{value}</option>
             ))}
           </select>
         </label>
         <label className="ce-filter-field">
-          加载器
+          {t("ui.loader")}
           <select
             className="ce-field"
             value={loader}
             onChange={(e) => setLoader(e.target.value)}
           >
             {["任意", "Fabric", "Forge", "NeoForge", "Quilt"].map((v) => (
-              <option key={v}>{v}</option>
+              <option key={v} value={v}>
+                {filterLabel(v)}
+              </option>
             ))}
           </select>
         </label>
@@ -845,14 +868,14 @@ function CommunityCatalog({
           <div className="ce-card ce-community-loading-box" role="status">
             <Pickaxe size={38} strokeWidth={1.5} />
             <i />
-            <p>正在获取 {label} 列表</p>
+            <p>{t("download.loadingType", { type: displayLabel })}</p>
           </div>
         ) : error ? (
           <div className="download-empty" role="alert">
             <TriangleAlert size={24} />
             <p>{error}</p>
             <button className="ce-button" onClick={search}>
-              重试
+              {t("ui.retry")}
             </button>
           </div>
         ) : !hits.length ? (
@@ -860,8 +883,8 @@ function CommunityCatalog({
             <Search size={30} strokeWidth={1.3} />
             <p>
               {label === "世界"
-                ? "世界目录尚未接入。"
-                : `没有符合条件的${label}`}
+                ? t("download.worldsUnavailable")
+                : t("download.noMatching", { type: displayLabel })}
             </p>
           </div>
         ) : (
@@ -883,7 +906,7 @@ function CommunityCatalog({
                 key={hit.project_id}
                 role="button"
                 tabIndex={0}
-                aria-label={`查看 ${hit.title} 详情`}
+                aria-label={t("ui.viewDetails", { name: hit.title })}
                 onClick={() =>
                   onResourceDetails({
                     ...hit,
@@ -956,11 +979,7 @@ function CommunityCatalog({
                       <Download size={13} />
                       {downloads(hit.downloads)}
                     </span>
-                    <span
-                      title={new Date(hit.date_modified).toLocaleString(
-                        "zh-CN",
-                      )}
-                    >
+                    <span title={formatDate(new Date(hit.date_modified))}>
                       <ArrowUpToLine size={13} />
                       {updated(hit.date_modified)}
                     </span>

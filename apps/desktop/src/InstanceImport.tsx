@@ -1,3 +1,4 @@
+import { t, formatNumber } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import type { Api, InstanceImportChoice, InstanceImportPlan } from "./types";
 import {
@@ -11,20 +12,19 @@ export function instanceImportNameError(
   name: string,
   occupiedNames: string[],
 ): string {
-  if (!name.trim()) return "请输入实例名称";
-  if (name !== name.trim()) return "实例名称不能以空白字符开头或结尾";
+  if (!name.trim()) return t("instance.nameRequired");
+  if (name !== name.trim()) return t("instance.nameWhitespace");
   if (
     name === "." ||
     name === ".." ||
     /[\\/:\u0000-\u001f\u007f-\u009f]/.test(name)
   )
-    return "实例名称不能包含路径分隔符、冒号或控制字符";
+    return t("instance.nameCharacters");
   if (name.startsWith(".install-") || name.startsWith(".pcl-"))
-    return "实例名称使用了保留前缀，请修改名称";
+    return t("instance.nameReserved");
   if (new TextEncoder().encode(name).length > 120)
-    return "实例名称过长，请缩短到 120 字节以内";
-  if (occupiedNames.includes(name))
-    return "此游戏目录中已存在同名实例，请修改名称";
+    return t("instance.nameLong");
+  if (occupiedNames.includes(name)) return t("instance.nameExists");
   return "";
 }
 
@@ -114,11 +114,9 @@ export function InstanceImport({
           return;
         }
         if (choice.status === "unavailable")
-          throw new Error(
-            choice.message || "系统文件选择器暂时不可用，请稍后重试",
-          );
+          throw new Error(choice.message || t("ui.pickerUnavailable"));
         if (choice.status !== "selected" || !choice.source)
-          throw new Error("未收到选择的 ZIP 文件，请重新选择");
+          throw new Error(t("import.fileMissing"));
         setDraft({
           scope,
           source: choice.source,
@@ -171,7 +169,7 @@ export function InstanceImport({
           revision: submitted.plan.revision,
         });
         if (!ownsReply()) return;
-        if (!result.id) throw new Error("未收到导入任务，请重新检查后重试");
+        if (!result.id) throw new Error(t("import.taskMissing"));
         setDraft(null);
         closed.current = scope;
         callbacks.current.onTaskStart(result.id);
@@ -183,7 +181,7 @@ export function InstanceImport({
         });
         if (!ownsReply()) return;
         if (plan.name !== submitted.name || !plan.revision)
-          throw new Error("导入计划与当前名称不一致，请重新检查");
+          throw new Error(t("import.planChanged"));
         setDraft({ ...submitted, plan, error: "" });
       }
     } catch (error) {
@@ -200,18 +198,18 @@ export function InstanceImport({
   const nameError = instanceImportNameError(visible.name, occupiedNames);
   return (
     <InstanceOperationDialog
-      title="输入实例名称"
+      title={t("instance.enterName")}
       titleId="ce-instance-import-title"
       busy={!!working}
       committing={working === "start"}
       confirmLabel={
         working === "start"
-          ? "正在提交…"
+          ? t("ui.submitting")
           : working === "prepare"
-            ? "正在检查…"
+            ? t("ui.checking")
             : visible.plan
-              ? "开始导入"
-              : "确定"
+              ? t("import.start")
+              : t("ui.confirm")
       }
       confirmDisabled={!native || disabled || !!nameError}
       onConfirm={() => void submit()}
@@ -219,7 +217,7 @@ export function InstanceImport({
     >
       <input
         className="ce-field"
-        aria-label="导入实例名称"
+        aria-label={t("import.nameLabel")}
         value={visible.name}
         disabled={working === "start"}
         onChange={(event) => {
@@ -248,28 +246,31 @@ export function InstanceImport({
       {visible.plan && (
         <>
           <dl>
-            <dt>整合包</dt>
+            <dt>{t("resources.modpacks")}</dt>
             <dd>
               {visible.plan.pack_name} {visible.plan.pack_version}
             </dd>
             <dt>Minecraft</dt>
             <dd>{visible.plan.minecraft}</dd>
-            <dt>导入内容</dt>
+            <dt>{t("import.content")}</dt>
             <dd>
-              {visible.plan.file_count.toLocaleString("zh-CN")} 个文件，
-              {instanceOperationSize(visible.plan.bytes)}
+              {t("ui.fileCountSize", {
+                count: formatNumber(visible.plan.file_count),
+                size: instanceOperationSize(visible.plan.bytes),
+              })}
             </dd>
             {visible.plan.reused_files > 0 && (
               <>
-                <dt>已有文件</dt>
+                <dt>{t("ui.existingFiles")}</dt>
                 <dd>
-                  {visible.plan.reused_files.toLocaleString("zh-CN")}{" "}
-                  个文件可复用
+                  {t("import.reuseCount", {
+                    count: formatNumber(visible.plan.reused_files),
+                  })}
                 </dd>
               </>
             )}
           </dl>
-          <p>将创建新的实例文件夹。导入完成后可在实例列表中选择它。</p>
+          <p>{t("import.help")}</p>
           {visible.plan.warnings.map((warning, index) => (
             <p key={index} className="ce-instance-plan-warning">
               {warning}

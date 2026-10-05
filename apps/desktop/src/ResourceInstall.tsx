@@ -1,3 +1,4 @@
+import { t, formatNumber, type MessageKey } from "./i18n";
 import { Fragment, useEffect, useRef, useState } from "react";
 import type { Api } from "./types";
 import {
@@ -19,6 +20,7 @@ type DialogState = {
   scope: object;
   plan: ResourceInstallPlan | null;
   error: string;
+  errorKey?: MessageKey;
 };
 
 /** The caller fixes the current root, instance and selected provider file.
@@ -103,13 +105,13 @@ export function ResourceInstall({
     ) {
       setDialog({
         ...next,
-        error: !native
-          ? "资源安装需要在桌面应用中操作"
+        errorKey: !native
+          ? "resourceInstall.desktop"
           : !selectedInstance
-            ? "请先在实例列表选择安装目标"
+            ? "resourceInstall.selectTarget"
             : disabled
-              ? "当前任务结束后可重新检查资源安装"
-              : "未选择有效的资源版本或游戏目录，请重新选择",
+              ? "resourceInstall.taskBusy"
+              : "resourceInstall.invalidTarget",
       });
       return;
     }
@@ -175,7 +177,7 @@ export function ResourceInstall({
         revision: submitted.plan.revision,
       });
       if (!ownsReply()) return;
-      if (!result.id) throw new Error("未收到资源安装任务，请重新检查后重试");
+      if (!result.id) throw new Error(t("resourceInstall.taskMissing"));
       closed.current = scope;
       setDialog(null);
       callbacks.current.onTaskStart(result.id);
@@ -197,18 +199,18 @@ export function ResourceInstall({
   return (
     <div className="rd-resource-install">
       <InstanceOperationDialog
-        title="安装到实例"
+        title={t("resource.install")}
         titleId="ce-resource-install-title"
         busy={!!working}
         committing={working === "start"}
         confirmLabel={
           working === "start"
-            ? "正在提交…"
+            ? t("ui.submitting")
             : working === "prepare"
-              ? "正在检查…"
+              ? t("ui.checking")
               : plan
-                ? "开始安装"
-                : "重新检查"
+                ? t("resourceInstall.start")
+                : t("ui.recheck")
         }
         confirmDisabled={!native || disabled || !selectedInstance || !scopeKey}
         onConfirm={() => void submit()}
@@ -218,38 +220,43 @@ export function ResourceInstall({
          * scroll area keeps the existing confirmation actions in view. */}
         <div className="rd-resource-install-content">
           <dl>
-            <dt>目标实例</dt>
-            <dd>{selectedInstance?.id ?? "尚未选择实例"}</dd>
+            <dt>{t("resourceInstall.target")}</dt>
+            <dd>{selectedInstance?.id ?? t("resourceInstall.noTarget")}</dd>
             <dt>Minecraft</dt>
             <dd>{selectedInstance?.minecraft_version ?? "—"}</dd>
-            <dt>模组加载器</dt>
+            <dt>{t("resourceInstall.loader")}</dt>
             <dd>{selectedInstance?.loader ?? "—"}</dd>
             {plan && (
               <>
-                <dt>文件</dt>
+                <dt>{t("ui.file")}</dt>
                 <dd>
-                  {plan.files.length} 个文件（{reused} 个已存在，将复用）
+                  {t("resourceInstall.filesCount", {
+                    count: formatNumber(plan.files.length),
+                    reused: formatNumber(reused),
+                  })}
                 </dd>
-                <dt>下载大小</dt>
+                <dt>{t("resourceInstall.downloadSize")}</dt>
                 <dd>{instanceOperationSize(plan.download_bytes)}</dd>
-                <dt>总大小</dt>
+                <dt>{t("resourceInstall.totalSize")}</dt>
                 <dd>{instanceOperationSize(plan.total_bytes)}</dd>
               </>
             )}
           </dl>
           {plan && (
             <>
-              <p>所选文件</p>
+              <p>{t("resourceInstall.selectedFile")}</p>
               <dl>
                 {selected.map((file) => (
                   <Fragment key={JSON.stringify([file.kind, file.file_name])}>
-                    <dt>资源</dt>
+                    <dt>{t("ui.resource")}</dt>
                     <dd>
                       {file.title}
                       <br />
                       {file.file_name}（{instanceOperationSize(file.size)}）
                       {file.reused &&
-                        `；已存在，将复用 ${file.existing_file_name ?? file.file_name}`}
+                        t("resourceInstall.reuseFile", {
+                          name: file.existing_file_name ?? file.file_name,
+                        })}
                     </dd>
                   </Fragment>
                 ))}
@@ -257,21 +264,27 @@ export function ResourceInstall({
               {required.length > 0 && (
                 <>
                   <p>
-                    <strong>必要前置资源（{required.length}）</strong>
+                    <strong>
+                      {t("resourceInstall.requiredCount", {
+                        count: formatNumber(required.length),
+                      })}
+                    </strong>
                   </p>
                   <dl>
                     {required.map((file) => (
                       <Fragment
                         key={JSON.stringify([file.kind, file.file_name])}
                       >
-                        <dt>前置资源</dt>
+                        <dt>{t("resourceInstall.dependency")}</dt>
                         <dd>
                           {file.title}
                           <br />
                           {file.file_name}（{instanceOperationSize(file.size)}）
                           {file.reused
-                            ? `；已存在，将复用 ${file.existing_file_name ?? file.file_name}`
-                            : "；随所选文件安装"}
+                            ? t("resourceInstall.reuseFile", {
+                                name: file.existing_file_name ?? file.file_name,
+                              })
+                            : t("resourceInstall.alongside")}
                         </dd>
                       </Fragment>
                     ))}
@@ -287,12 +300,12 @@ export function ResourceInstall({
           )}
           {working === "prepare" && (
             <p className="rd-inline-status" role="status">
-              正在检查资源文件、必要前置与实例兼容性…
+              {t("resourceInstall.checking")}
             </p>
           )}
-          {visible?.error && (
+          {(visible?.error || visible?.errorKey) && (
             <p className="rd-name-error" role="status">
-              {visible.error}
+              {visible?.errorKey ? t(visible.errorKey) : visible?.error}
             </p>
           )}
         </div>

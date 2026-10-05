@@ -127,18 +127,19 @@ pub async fn prepare_update(
     let provider = HttpProvider::new(cancel)?;
     prepare_with(&provider, target, selected, cancel).await
 }
-pub async fn download_update_request(
+pub async fn download_update_request_with_policy(
     root: &Path,
     project: &Path,
     root_id: &str,
     id: &str,
     selected: Vec<ResourceFile>,
     revision: &str,
+    scheduler: std::sync::Arc<pcl_network::DownloadScheduler>,
     cancel: &AtomicBool,
     report: impl Fn(DownloadProgress),
 ) -> Result<VerifiedUpdateBatch> {
     let target = target::capture(root, project, root_id, id, cancel)?;
-    let provider = HttpProvider::new(cancel)?;
+    let provider = HttpProvider::new(cancel)?.with_download_policy(scheduler);
     let prepared = prepare_with(&provider, target, selected, cancel).await;
     report(DownloadProgress {
         phase: "metadata".into(),

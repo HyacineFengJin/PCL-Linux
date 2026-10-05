@@ -117,8 +117,10 @@ impl Downloads {
                 | TaskKind::InstanceDelete
                 | TaskKind::InstanceRestore
                 | TaskKind::ResourceDownload
+                | TaskKind::ResourceSave
                 | TaskKind::ResourceUpdate
                 | TaskKind::ResourceUpdateRestore
+                | TaskKind::LauncherLogs
         ) {
             return Err("此任务不在任务管理页面中".into());
         }
@@ -179,20 +181,19 @@ impl Downloads {
         // latest ID was assigned. Publish it once more after committing that ID.
         task.publish();
         let downloads = self.clone();
+        let download_policy = pcl_network::download_snapshot();
         std::thread::Builder::new()
             .name(format!("pcl-install-{task_id}"))
             .spawn(move || {
                 let cancel = task.cancellation_token();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     Installer::new().and_then(|installer| {
-                        installer.with_project(&project).install_request(
-                            &root,
-                            &request,
-                            &cancel,
-                            |progress| {
+                        installer
+                            .with_download_policy(download_policy)
+                            .with_project(&project)
+                            .install_request(&root, &request, &cancel, |progress| {
                                 downloads.progress(&task, progress);
-                            },
-                        )
+                            })
                     })
                 }))
                 .unwrap_or_else(|_| Err("安装任务意外退出，请重试".into()));
@@ -292,8 +293,10 @@ mod tests {
             TaskKind::InstanceDelete,
             TaskKind::InstanceRestore,
             TaskKind::ResourceDownload,
+            TaskKind::ResourceSave,
             TaskKind::ResourceUpdate,
             TaskKind::ResourceUpdateRestore,
+            TaskKind::LauncherLogs,
         ] {
             let tasks = Arc::new(Tasks::new());
             let downloads = Downloads::new(tasks.clone());

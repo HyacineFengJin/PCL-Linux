@@ -16,7 +16,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -1382,10 +1382,30 @@ fn commit(
         .map_err(|e| format!("取消清理失败：重置已完成，但暂存清理失败：{e}"))
 }
 
+#[cfg(test)]
 pub fn execute(
     root: &Path,
     project: &Path,
     plan: ResetPlan,
+    cancel: &AtomicBool,
+    callback: impl Fn(Progress) + Send + Sync,
+) -> Result<Value> {
+    execute_with_policy(
+        root,
+        project,
+        plan,
+        pcl_network::download_snapshot(),
+        cancel,
+        callback,
+    )
+}
+/// Submission captures the scheduler before its worker enters filesystem
+/// preparation. Later preference changes cannot alter this reset's transfers.
+pub fn execute_with_policy(
+    root: &Path,
+    project: &Path,
+    plan: ResetPlan,
+    scheduler: Arc<pcl_network::DownloadScheduler>,
     cancel: &AtomicBool,
     callback: impl Fn(Progress) + Send + Sync,
 ) -> Result<Value> {
@@ -1406,6 +1426,7 @@ pub fn execute(
             components: plan.components.clone(),
         };
         Installer::new()?
+            .with_download_policy(scheduler)
             .with_project(project)
             .with_cache_source(&plan.root)?
             .install_request(&stage.fd_path(), &request, cancel, |mut p| {

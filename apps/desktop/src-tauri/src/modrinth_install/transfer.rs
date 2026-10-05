@@ -3,10 +3,50 @@
 use super::{provider::HttpProvider, target::Dir, *};
 use sha2::{Digest, Sha512};
 use std::{
+    collections::VecDeque,
+    future::{poll_fn, Future},
     io::{Seek, SeekFrom, Write},
+    pin::Pin,
     sync::atomic::Ordering,
     time::{Duration, Instant},
 };
+
+type QueuedTransfer<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + 'a>>;
+/// Poll only the configured number of borrowed transfers. No detached task can
+/// outlive this owner: an error drops every in-flight response, anonymous file
+/// and already-verified result before returning to the publisher.
+pub(super) async fn collect_bounded<'a, T>(
+    mut pending: VecDeque<QueuedTransfer<'a, T>>,
+    limit: usize,
+) -> Result<Vec<T>> {
+    if !(1..=64).contains(&limit) {
+        return Err("资源下载并行数量无效".into());
+    }
+    let mut active = Vec::new();
+    let mut ready = Vec::new();
+    loop {
+        while active.len() < limit {
+            let Some(job) = pending.pop_front() else {
+                break;
+            };
+            active.push(job);
+        }
+        if active.is_empty() {
+            return Ok(ready);
+        }
+        let (index, result) = poll_fn(|context| {
+            for (index, job) in active.iter_mut().enumerate() {
+                if let std::task::Poll::Ready(result) = job.as_mut().poll(context) {
+                    return std::task::Poll::Ready((index, result));
+                }
+            }
+            std::task::Poll::Pending
+        })
+        .await;
+        drop(active.swap_remove(index));
+        ready.push(result?);
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct DownloadProgress {
@@ -51,7 +91,7 @@ fn progress(
         network_bytes: provider.network_bytes.load(Ordering::Relaxed),
     });
 }
-pub(super) async fn response_into_file(
+pub(crate) async fn response_into_file(
     provider: &HttpProvider<'_>,
     request: reqwest::RequestBuilder,
     expected_size: u64,
@@ -64,7 +104,19 @@ pub(super) async fn response_into_file(
     if expected_size == 0 || expected_size > MAX_FILE_BYTES {
         return Err("Modrinth文件大小无效或超过限制".into());
     }
-    let deadline = Instant::now() + Duration::from_secs(30 * 60);
+    // Payload pacing consumes wall time, so limited transfers receive a larger
+    // bounded total deadline. DNS/headers and stalled reads keep short limits.
+    let duration = if provider.downloads.policy().total_rate_limit_mib_per_second > 0 {
+        24 * 60 * 60
+    } else {
+        30 * 60
+    };
+    let deadline = Instant::now() + Duration::from_secs(duration);
+    let _permit = provider
+        .downloads
+        .acquire(cancel)
+        .await
+        .map_err(|error| transfer_error(cancel, error))?;
     let mut response = provider::cancellable(
         cancel,
         Instant::now() + Duration::from_secs(30),
@@ -102,15 +154,24 @@ pub(super) async fn response_into_file(
         let next = bytes
             .checked_add(chunk.len() as u64)
             .ok_or("资源文件长度超出范围")?;
-        received(chunk.len() as u64);
         if next > expected_size {
             return Err("Modrinth文件实际大小超过官方声明，暂存内容已丢弃".into());
         }
-        target::cancelled(cancel)?;
-        destination
-            .write_all(&chunk)
-            .map_err(|e| format!("资源匿名暂存写入失败：{e}"))?;
-        digest.update(&chunk);
+        for slice in chunk.chunks(pcl_network::DOWNLOAD_SLICE_BYTES) {
+            provider::cancellable(
+                cancel,
+                deadline,
+                provider.downloads.throttle(slice.len() as u64, cancel),
+            )
+            .await?
+            .map_err(|error| transfer_error(cancel, error))?;
+            target::cancelled(cancel)?;
+            destination
+                .write_all(slice)
+                .map_err(|e| format!("资源匿名暂存写入失败：{e}"))?;
+            digest.update(slice);
+            received(slice.len() as u64);
+        }
         bytes = next;
     }
     target::cancelled(cancel)?;
@@ -122,6 +183,13 @@ pub(super) async fn response_into_file(
         .seek(SeekFrom::Start(0))
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+fn transfer_error(cancel: &AtomicBool, error: String) -> String {
+    if cancel.load(Ordering::Acquire) {
+        CANCELLED.into()
+    } else {
+        error
+    }
 }
 pub(super) async fn download(
     provider: &HttpProvider<'_>,
@@ -137,20 +205,8 @@ pub(super) async fn download(
     }
     let staging = project.ensure(".pcl-rust")?.ensure("resource-downloads")?;
     let stage_key = staging.key()?;
-    let mut files = Vec::new();
     let mut completed = 0u64;
-    let mut bytes_done = 0u64;
-    progress(
-        provider,
-        &plan,
-        &report,
-        "checking",
-        "官方文件与必需依赖已核对".into(),
-        completed,
-        bytes_done,
-    );
     for file in &plan.files {
-        target::cancelled(cancel)?;
         if file.reused {
             completed += 1;
             progress(
@@ -160,63 +216,102 @@ pub(super) async fn download(
                 "reuse",
                 format!("复用相同内容：{}", file.file_name),
                 completed,
-                bytes_done,
+                0,
             );
-            continue;
         }
-        let url = provider::cdn_url(&file.url)?;
-        let mut destination = staging.anonymous()?;
-        response_into_file(
-            provider,
-            provider
-                .client
-                .get(url)
-                .header(reqwest::header::ACCEPT_ENCODING, "identity"),
-            file.size,
-            &file.sha512,
-            &mut destination,
-            cancel,
-            |amount| {
-                bytes_done = bytes_done.saturating_add(amount);
+    }
+    let counters = std::sync::Mutex::new((completed, 0u64));
+    progress(
+        provider,
+        &plan,
+        &report,
+        "checking",
+        "官方文件与必需依赖已核对".into(),
+        completed,
+        0,
+    );
+    let jobs = plan
+        .files
+        .iter()
+        .enumerate()
+        .filter(|(_, file)| !file.reused)
+        .map(|(index, file)| {
+            let counters = &counters;
+            let plan = &plan;
+            let report = &report;
+            let staging = &staging;
+            let project = &project;
+            let stage_key = &stage_key;
+            Box::pin(async move {
+                target::cancelled(cancel)?;
+                let url = provider::cdn_url(&file.url)?;
+                let mut destination = staging.anonymous()?;
+                response_into_file(
+                    provider,
+                    provider
+                        .client
+                        .get(url)
+                        .header(reqwest::header::ACCEPT_ENCODING, "identity"),
+                    file.size,
+                    &file.sha512,
+                    &mut destination,
+                    cancel,
+                    |amount| {
+                        let mut counters = counters.lock().unwrap();
+                        counters.1 = counters.1.saturating_add(amount);
+                        progress(
+                            provider,
+                            plan,
+                            report,
+                            "downloading",
+                            format!("下载{}", file.file_name),
+                            counters.0,
+                            counters.1,
+                        );
+                    },
+                )
+                .await?;
+                if Dir::open(&plan.target.project)?.key() != Ok(plan.target.project_key.clone())
+                    || project
+                        .child(".pcl-rust")?
+                        .child("resource-downloads")?
+                        .key()
+                        != Ok(stage_key.clone())
+                {
+                    return Err("匿名资源暂存目录已被替换，暂存内容已丢弃".into());
+                }
+                let mut counters = counters.lock().unwrap();
+                counters.0 += 1;
                 progress(
                     provider,
-                    &plan,
-                    &report,
-                    "downloading",
-                    format!("下载{}", file.file_name),
-                    completed,
-                    bytes_done,
+                    plan,
+                    report,
+                    "verified",
+                    format!("校验完成：{}", file.file_name),
+                    counters.0,
+                    counters.1,
                 );
-            },
-        )
-        .await?;
-        if Dir::open(&plan.target.project)?.key() != Ok(plan.target.project_key.clone())
-            || project
-                .child(".pcl-rust")?
-                .child("resource-downloads")?
-                .key()
-                != Ok(stage_key.clone())
-        {
-            return Err("匿名资源暂存目录已被替换，暂存内容已丢弃".into());
-        }
-        files.push(VerifiedFile {
-            kind: file.kind.clone(),
-            file_name: file.file_name.clone(),
-            size: file.size,
-            sha512: file.sha512.clone(),
-            file: destination,
-        });
-        completed += 1;
-        progress(
-            provider,
-            &plan,
-            &report,
-            "verified",
-            format!("校验完成：{}", file.file_name),
-            completed,
-            bytes_done,
-        );
-    }
+                Ok((
+                    index,
+                    VerifiedFile {
+                        kind: file.kind.clone(),
+                        file_name: file.file_name.clone(),
+                        size: file.size,
+                        sha512: file.sha512.clone(),
+                        file: destination,
+                    },
+                ))
+            }) as QueuedTransfer<'_, (usize, VerifiedFile)>
+        })
+        .collect();
+    let mut ordered = collect_bounded(
+        jobs,
+        usize::from(provider.downloads.policy().max_concurrent_transfers),
+    )
+    .await?;
+    ordered.sort_by_key(|(index, _)| *index);
+    let files = ordered.into_iter().map(|(_, file)| file).collect();
+    let (completed, bytes_done) = counters.into_inner().map_err(|_| "资源下载进度锁异常")?;
     target::check(&plan.target, cancel)?;
     progress(
         provider,

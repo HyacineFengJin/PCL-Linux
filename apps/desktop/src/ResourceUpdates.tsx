@@ -1,3 +1,4 @@
+import { t, formatNumber, type MessageKey } from "./i18n";
 import { Fragment, useEffect, useRef, useState } from "react";
 import type { Api } from "./types";
 import {
@@ -21,6 +22,7 @@ type DialogState = {
   scope: object;
   plan: ResourceUpdatePlan | null;
   error: string;
+  errorKey?: MessageKey;
 };
 
 /** Existing CE confirmation structure. Planning can be dismissed locally; start
@@ -94,11 +96,11 @@ export function ResourceUpdates({
     if (!root.allowed() || !scopeKey || !files.length) {
       setDialog({
         ...next,
-        error: !native
-          ? "模组更新需要在桌面应用中操作"
+        errorKey: !native
+          ? "updates.desktop"
           : disabled
-            ? "当前操作结束后可重新检查更新"
-            : "请选择可更新的模组文件",
+            ? "updates.busy"
+            : "updates.selectFiles",
       });
       return;
     }
@@ -183,18 +185,18 @@ export function ResourceUpdates({
   return (
     <div className="ce-resource-update-dialog">
       <InstanceOperationDialog
-        title="更新模组"
+        title={t("updates.title")}
         titleId="ce-resource-update-title"
         busy={!!working}
         committing={working === "start"}
         confirmLabel={
           working === "start"
-            ? "正在提交…"
+            ? t("ui.submitting")
             : working === "prepare"
-              ? "正在检查…"
+              ? t("ui.checking")
               : plan
-                ? "开始更新"
-                : "重新检查"
+                ? t("updates.start")
+                : t("ui.recheck")
         }
         confirmDisabled={!native || disabled || !scopeKey || !files.length}
         onConfirm={() => void submit()}
@@ -202,33 +204,40 @@ export function ResourceUpdates({
       >
         <div className="ce-resource-update-content">
           <dl>
-            <dt>目标实例</dt>
+            <dt>{t("resourceInstall.target")}</dt>
             <dd>{instance.id}</dd>
             <dt>Minecraft</dt>
             <dd>{instance.minecraft_version}</dd>
-            <dt>模组加载器</dt>
+            <dt>{t("resourceInstall.loader")}</dt>
             <dd>{instance.loader}</dd>
             {plan && (
               <>
-                <dt>更新内容</dt>
+                <dt>{t("updates.content")}</dt>
                 <dd>
-                  替换 {plan.replacements.length} 个文件，新增{" "}
-                  {plan.adds.length} 个文件，复用 {plan.reuse.length} 个文件
+                  {t("updates.planCounts", {
+                    replaced: formatNumber(plan.replacements.length),
+                    added: formatNumber(plan.adds.length),
+                    reused: formatNumber(plan.reuse.length),
+                  })}
                 </dd>
-                <dt>下载大小</dt>
+                <dt>{t("resourceInstall.downloadSize")}</dt>
                 <dd>{instanceOperationSize(plan.download_bytes)}</dd>
-                <dt>总大小</dt>
+                <dt>{t("resourceInstall.totalSize")}</dt>
                 <dd>{instanceOperationSize(plan.total_bytes)}</dd>
               </>
             )}
           </dl>
           {plan && (
             <>
-              <p>所选更新与必要前置</p>
+              <p>{t("updates.selectedDependencies")}</p>
               <dl>
                 {plan.replacements.map((file) => (
                   <Fragment key={file.old_file_name}>
-                    <dt>{file.required ? "必要前置更新" : "所选更新"}</dt>
+                    <dt>
+                      {file.required
+                        ? t("updates.requiredUpdate")
+                        : t("updates.selectedUpdate")}
+                    </dt>
                     <dd>
                       {file.title}
                       <br />
@@ -237,24 +246,32 @@ export function ResourceUpdates({
                       {file.old_file_name} → {file.new_file_name}（
                       {instanceOperationSize(file.size)}）
                       <br />
-                      {file.enabled ? "保持启用" : "保持禁用"}
+                      {file.enabled
+                        ? t("updates.keepEnabled")
+                        : t("updates.keepDisabled")}
                     </dd>
                   </Fragment>
                 ))}
               </dl>
               {plan.adds.length > 0 && (
                 <>
-                  <p>新增前置资源</p>
+                  <p>{t("updates.newDependencies")}</p>
                   <dl>
                     {plan.adds.map((file) => (
                       <Fragment key={`${file.kind}:${file.file_name}`}>
-                        <dt>{file.required ? "必要前置" : "新增文件"}</dt>
+                        <dt>
+                          {file.required
+                            ? t("updates.required")
+                            : t("updates.newFile")}
+                        </dt>
                         <dd>
                           {file.title}
                           <br />
                           {file.file_name}（{instanceOperationSize(file.size)}
                           ）；
-                          {file.kind === "mods" ? "新增为启用状态" : "新增文件"}
+                          {file.kind === "mods"
+                            ? t("updates.newEnabled")
+                            : t("updates.newFile")}
                         </dd>
                       </Fragment>
                     ))}
@@ -263,11 +280,15 @@ export function ResourceUpdates({
               )}
               {plan.reuse.length > 0 && (
                 <>
-                  <p>复用已有文件</p>
+                  <p>{t("updates.reuse")}</p>
                   <dl>
                     {plan.reuse.map((file) => (
                       <Fragment key={`${file.kind}:${file.file_name}`}>
-                        <dt>{file.required ? "必要前置" : "已有文件"}</dt>
+                        <dt>
+                          {file.required
+                            ? t("updates.required")
+                            : t("ui.existingFiles")}
+                        </dt>
                         <dd>
                           {file.title}
                           <br />
@@ -275,15 +296,15 @@ export function ResourceUpdates({
                           {instanceOperationSize(file.size)}
                           ）；
                           {file.kind === "mods"
-                            ? "保持原文件与启用状态"
-                            : "保持原文件"}
+                            ? t("updates.keepOriginalState")
+                            : t("updates.keepOriginal")}
                         </dd>
                       </Fragment>
                     ))}
                   </dl>
                 </>
               )}
-              <p>确认后将替换所选旧文件。更新成功后可撤销本次更新。</p>
+              <p>{t("updates.confirmHelp")}</p>
               {plan.warnings.map((warning, index) => (
                 <p className="ce-instance-plan-warning" key={index}>
                   {warning}
@@ -293,12 +314,12 @@ export function ResourceUpdates({
           )}
           {working === "prepare" && (
             <p className="rd-inline-status" role="status">
-              正在检查更新文件、必要前置与兼容性…
+              {t("updates.checking")}
             </p>
           )}
-          {visible?.error && (
+          {(visible?.error || visible?.errorKey) && (
             <p className="rd-name-error" role="alert">
-              {visible.error}
+              {visible?.errorKey ? t(visible.errorKey) : visible?.error}
             </p>
           )}
         </div>
@@ -333,20 +354,20 @@ export function ResourceUpdateStatus({
   ).length;
   const message =
     updates.phase === "checking"
-      ? "正在检查模组更新…"
+      ? t("updates.scanning")
       : updates.phase === "error"
-        ? "更新检测失败"
+        ? t("updates.failed")
         : updates.phase === "idle"
-          ? "尚未检查模组更新"
+          ? t("updates.unchecked")
           : available
-            ? `检测到 ${available} 个可更新模组`
+            ? t("updates.available", { count: formatNumber(available) })
             : unchanged
-              ? "已识别模组没有兼容更新"
+              ? t("updates.noCompatible")
               : unknown && !blocked
-                ? "无法识别已安装模组"
+                ? t("updates.unrecognized")
                 : blocked && !unknown
-                  ? "这些模组暂不可更新"
-                  : "没有可确认的更新";
+                  ? t("updates.blocked")
+                  : t("updates.noConfirmed");
   return (
     <div
       className={
@@ -357,8 +378,11 @@ export function ResourceUpdateStatus({
       <strong>{message}</strong>
       {updates.phase === "ready" && (
         <p>
-          {unchanged} 个已识别模组无兼容更新，{unknown} 个无法识别，{blocked}{" "}
-          个暂不可更新
+          {t("updates.summary", {
+            unchanged: formatNumber(unchanged),
+            unknown: formatNumber(unknown),
+            blocked: formatNumber(blocked),
+          })}
         </p>
       )}
       {updates.error && <p>{updates.error}</p>}
@@ -370,7 +394,7 @@ export function ResourceUpdateStatus({
         disabled={disabled || updates.busy}
         onClick={onRetry}
       >
-        {updates.phase === "ready" ? "重新检查" : "检查更新"}
+        {updates.phase === "ready" ? t("ui.recheck") : t("updates.check")}
       </button>
     </div>
   );
@@ -392,8 +416,9 @@ export function ResourceUpdateUndo({
     >
       <span>
         {updates.restoring
-          ? "正在提交撤销更新…"
-          : updates.historyError || `上次更新：${entry.files.join("、")}`}
+          ? t("updates.undoSubmitting")
+          : updates.historyError ||
+            t("updates.last", { files: entry.files.join(", ") })}
       </span>
       {entry && (
         <button
@@ -401,7 +426,7 @@ export function ResourceUpdateUndo({
           disabled={disabled || updates.busy || !!updates.historyError}
           onClick={() => void updates.undo(entry)}
         >
-          撤销更新
+          {t("updates.undo")}
         </button>
       )}
       {updates.historyError && (
@@ -410,7 +435,7 @@ export function ResourceUpdateUndo({
           disabled={disabled || updates.busy}
           onClick={() => void updates.readHistory()}
         >
-          刷新
+          {t("ui.refresh")}
         </button>
       )}
     </div>

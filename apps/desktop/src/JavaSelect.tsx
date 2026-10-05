@@ -1,3 +1,4 @@
+import { t, formatNumber } from "./i18n";
 import type { Api, Instance, JavaRuntime, Settings } from "./types";
 import { useJavaAction, useJavaCatalog } from "./javaManagement";
 
@@ -54,7 +55,7 @@ export function JavaSelect({
     !catalog.runtimes.some((runtime) => runtime.path === override.path) &&
     !unavailable.some((runtime) => runtime.path === override.path)
   )
-    unavailable.unshift({ path: override.path, error: "未找到此 Java" });
+    unavailable.unshift({ path: override.path, error: t("java.missing") });
   let selectionError = "";
   if (!loading && effective.mode === "manual") {
     const runtime = catalog.runtimes.find(
@@ -63,15 +64,20 @@ export function JavaSelect({
     if (!runtime)
       selectionError =
         catalog.unavailable.find((java) => java.path === effective.path)
-          ?.error || "未找到所选 Java，请选择其他 Java";
+          ?.error || t("java.chooseOther");
     else if (!javaCompatible(runtime, instance))
-      selectionError = `此实例需要 Java ${instance.java_major}${requiresExactJava(instance) ? "，所选 Java 版本必须相同" : " 或更新版本"}`;
+      selectionError = t(
+        requiresExactJava(instance)
+          ? "java.requiresExact"
+          : "java.requiresNewer",
+        { version: formatNumber(instance.java_major) },
+      );
     if (selectionError && !override)
-      selectionError = `全局 Java：${selectionError}`;
+      selectionError = t("java.globalError", { error: selectionError });
   }
   return (
     <label className="ce-row">
-      <span>游戏 Java</span>
+      <span>{t("java.game")}</span>
       <div className="ce-java-select-control">
         <select
           className="ce-field"
@@ -102,21 +108,22 @@ export function JavaSelect({
             });
           }}
         >
-          <option value="follow">跟随全局设置</option>
-          <option value="auto">自动选择</option>
+          <option value="follow">{t("ui.followGlobal")}</option>
+          <option value="auto">{t("java.auto")}</option>
           {catalog.runtimes.map((java) => (
             <option
               key={java.path}
               value={`manual:${java.path}`}
               disabled={!javaCompatible(java, instance)}
             >
-              JDK {java.major} · {java.vendor} · {java.path}
-              {!javaCompatible(java, instance) ? "（版本不兼容）" : ""}
+              JDK {formatNumber(java.major)} · {java.vendor} · {java.path}
+              {!javaCompatible(java, instance) ? t("java.incompatible") : ""}
             </option>
           ))}
           {unavailable.map((java) => (
             <option key={java.path} value={`manual:${java.path}`} disabled>
-              {loading ? "正在检查 Java" : "Java 不可用"} · {java.path}
+              {loading ? t("java.checking") : t("java.unavailable")} ·{" "}
+              {java.path}
             </option>
           ))}
         </select>

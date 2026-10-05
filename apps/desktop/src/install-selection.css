@@ -21,11 +21,11 @@
 }
 .ce-install-name > .icon-button {
   margin-right: 8px;
-  color: #8b9299;
+  color: var(--ce-muted-text, #8b9299);
 }
 .ce-install-name-error {
   margin: -18px 16px 18px;
-  color: #b34d4d;
+  color: var(--ce-danger-text, #b34d4d);
   font-size: 12px;
   overflow-wrap: anywhere;
 }
@@ -53,7 +53,7 @@
   font-weight: 600;
 }
 .ce-install-toggle > span {
-  color: #92969c;
+  color: var(--ce-muted-text, #92969c);
   flex: 1;
 }
 .ce-install-toggle > svg {
@@ -76,7 +76,7 @@
   border-radius: 4px;
   min-height: 42px;
   padding: 5px 12px;
-  color: #424b55;
+  color: var(--ce-text, #424b55);
 }
 .ce-install-version > img {
   width: 28px;
@@ -94,12 +94,12 @@
 }
 .ce-install-version small {
   font-size: 12px;
-  color: #8a929c;
+  color: var(--ce-muted-text, #8a929c);
 }
 .ce-install-version:hover:not(:disabled),
 .ce-install-version.selected {
-  background: #e7f1fc;
-  color: #2078da;
+  background: var(--ce-tinted-surface, #e7f1fc);
+  color: var(--ce-link, #2078da);
 }
 .ce-install-all {
   font-size: 14px;
@@ -143,7 +143,7 @@
   padding: 3px 8px;
   background: #f6f9fccc;
   border-radius: 4px;
-  color: #737b85;
+  color: var(--ce-muted-text, #737b85);
 }
 
 .ce-install-toggle .ce-disclosure-arrow {

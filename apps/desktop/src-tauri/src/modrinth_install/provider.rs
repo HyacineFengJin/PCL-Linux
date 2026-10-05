@@ -14,22 +14,22 @@ const API: &str = "https://api.modrinth.com/v2/";
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
 const MAX_HTTP_REQUESTS: u64 = 256;
 const MAX_METADATA_BYTES: u64 = 32 * 1024 * 1024;
-pub(super) type FutureResult<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+pub(crate) type FutureResult<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
-pub(super) fn id(value: &str) -> Result<()> {
+pub(crate) fn id(value: &str) -> Result<()> {
     if value.len() != 8 || !value.bytes().all(|b| b.is_ascii_alphanumeric()) {
         return Err("Modrinth项目或版本ID无效".into());
     }
     Ok(())
 }
-pub(super) fn file_name(value: &str) -> Result<()> {
+pub(crate) fn file_name(value: &str) -> Result<()> {
     pcl_core::identifier(value)?;
     if value.len() > 255 || value.trim() != value || value.chars().any(char::is_control) {
         return Err("Modrinth文件名无效".into());
     }
     Ok(())
 }
-pub(super) fn cdn_url(value: &str) -> Result<reqwest::Url> {
+pub(crate) fn cdn_url(value: &str) -> Result<reqwest::Url> {
     let url = reqwest::Url::parse(value).map_err(|_| "Modrinth文件链接无效")?;
     if value.len() > 4096
         || url.scheme() != "https"
@@ -43,7 +43,7 @@ pub(super) fn cdn_url(value: &str) -> Result<reqwest::Url> {
     }
     Ok(url)
 }
-pub(super) fn sha512(value: &str) -> Result<()> {
+pub(crate) fn sha512(value: &str) -> Result<()> {
     if value.len() != 128
         || !value
             .bytes()
@@ -55,19 +55,19 @@ pub(super) fn sha512(value: &str) -> Result<()> {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub(super) struct Project {
+pub(crate) struct Project {
     pub id: String,
     pub title: String,
     pub project_type: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub(super) struct Hashes {
+pub(crate) struct Hashes {
     pub sha512: String,
     #[serde(default)]
     pub sha1: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub(super) struct ApiFile {
+pub(crate) struct ApiFile {
     pub filename: String,
     pub size: u64,
     pub url: String,
@@ -77,7 +77,7 @@ pub(super) struct ApiFile {
     pub file_type: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub(super) struct Dependency {
+pub(crate) struct Dependency {
     #[serde(default)]
     pub project_id: Option<String>,
     #[serde(default)]
@@ -87,7 +87,7 @@ pub(super) struct Dependency {
     pub dependency_type: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub(super) struct Version {
+pub(crate) struct Version {
     pub id: String,
     pub project_id: String,
     pub name: String,
@@ -100,7 +100,7 @@ pub(super) struct Version {
     #[serde(default)]
     pub dependencies: Vec<Dependency>,
 }
-pub(super) fn validate_version(version: &Version) -> Result<()> {
+pub(crate) fn validate_version(version: &Version) -> Result<()> {
     id(&version.id)?;
     id(&version.project_id)?;
     if version.name.len() > 2048
@@ -159,7 +159,7 @@ pub(super) fn validate_version(version: &Version) -> Result<()> {
     Ok(())
 }
 
-pub(super) trait Provider: Sync {
+pub(crate) trait Provider: Sync {
     fn project<'a>(&'a self, id: &'a str) -> FutureResult<'a, Project>;
     fn version<'a>(&'a self, id: &'a str) -> FutureResult<'a, Version>;
     fn versions<'a>(
@@ -230,17 +230,18 @@ pub(super) async fn cancellable<F: Future>(
     }
 }
 
-pub(super) struct HttpProvider<'a> {
+pub(crate) struct HttpProvider<'a> {
     pub client: reqwest::Client,
     pub cancel: &'a AtomicBool,
     pub network_bytes: AtomicU64,
+    pub downloads: std::sync::Arc<pcl_network::DownloadScheduler>,
     metadata_bytes: AtomicU64,
     requests: AtomicU64,
     deadline: Instant,
 }
 impl<'a> HttpProvider<'a> {
     pub fn new(cancel: &'a AtomicBool) -> Result<Self> {
-        let client = reqwest::Client::builder()
+        let client = pcl_network::async_client()
             .user_agent("PCL-Linux/0.2.0 (https://github.com/HyacineFengJin/PCL-Linux)")
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))
@@ -250,10 +251,32 @@ impl<'a> HttpProvider<'a> {
             client,
             cancel,
             network_bytes: AtomicU64::new(0),
+            downloads: pcl_network::download_snapshot(),
             metadata_bytes: AtomicU64::new(0),
             requests: AtomicU64::new(0),
             deadline: Instant::now() + Duration::from_secs(180),
         })
+    }
+    pub fn with_download_policy(
+        mut self,
+        scheduler: std::sync::Arc<pcl_network::DownloadScheduler>,
+    ) -> Self {
+        self.downloads = scheduler;
+        self
+    }
+    /// Large paced artifacts can outlive the metadata preparation deadline.
+    /// Renewal keeps the same immutable HTTP client/network snapshot, while a
+    /// fresh bounded metadata budget permits the final authority recheck.
+    pub(crate) fn renewed_metadata_session(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            cancel: self.cancel,
+            network_bytes: AtomicU64::new(0),
+            downloads: self.downloads.clone(),
+            metadata_bytes: AtomicU64::new(0),
+            requests: AtomicU64::new(0),
+            deadline: Instant::now() + Duration::from_secs(180),
+        }
     }
     async fn read<T: DeserializeOwned>(&self, request: reqwest::RequestBuilder) -> Result<T> {
         if self.requests.fetch_add(1, Ordering::Relaxed) >= MAX_HTTP_REQUESTS {

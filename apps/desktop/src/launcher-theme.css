@@ -1,0 +1,72 @@
+/* The light theme keeps each screenshot color as its declaration fallback.
+   Dark colors share semantic tokens, so dialogs and resource lists follow the
+   same contrast rules without filters changing game icons or user images. */
+:root {
+  --ce-opacity: 1;
+  --ce-animation-factor: 1;
+  --ce-font: "Segoe UI", "PCL UI", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  --ce-motd-font: var(--ce-font);
+  font-family: var(--ce-font);
+}
+:root[data-launcher-theme="dark"] {
+  color-scheme: dark;
+  --ce-text: #dce7f3;
+  --ce-muted-text: #a4b2c4;
+  --ce-link: #7cbcff;
+  --ce-danger-text: #ff998d;
+  --ce-surface: #273548;
+  --ce-tinted-surface: #243c59;
+  --ce-border: #52667e;
+  --line: #52667e;
+  --muted: #a4b2c4;
+  color: #dce7f3;
+}
+:root[data-launcher-theme="light"] { color-scheme: light; }
+.app-shell { position: relative; isolation: isolate; }
+.titlebar { background: rgb(32 120 218 / var(--ce-opacity)); }
+.body-layout {
+  position: relative;
+  z-index: 1;
+  background: radial-gradient(ellipse at top right, rgb(158 216 255 / var(--ce-opacity)), transparent 68%),
+    linear-gradient(0deg, rgb(197 214 255 / var(--ce-opacity)), rgb(232 243 255 / var(--ce-opacity)));
+}
+aside { background: rgb(248 250 255 / calc(.95 * var(--ce-opacity))); }
+.ce-card { background: rgb(248 250 252 / calc(.94 * var(--ce-opacity))); }
+:root[data-launcher-theme="dark"] .body-layout {
+  background: radial-gradient(ellipse at top right, rgb(36 83 121 / var(--ce-opacity)), transparent 68%),
+    linear-gradient(0deg, rgb(29 38 60 / var(--ce-opacity)), rgb(28 42 60 / var(--ce-opacity)));
+}
+:root[data-launcher-theme="dark"] aside { background: rgb(30 42 59 / calc(.95 * var(--ce-opacity))); }
+:root[data-launcher-theme="dark"] .ce-card { background: rgb(38 51 68 / calc(.94 * var(--ce-opacity))); }
+:root[data-launcher-theme="dark"] .extra-blue-notice { background: var(--ce-tinted-surface); }
+:root[data-launcher-theme="dark"] :is(.ce-button,.btn) { border-color: var(--ce-border); }
+:root[data-launcher-theme="dark"] :is(.ce-button.primary,.btn.primary) { border-color: var(--ce-link); }
+:root[data-launcher-theme="dark"] .ce-button.danger { border-color: var(--ce-danger-text); }
+:root[data-launcher-theme="dark"] :is(.ce-check input,.ce-radio input) { border-color: #879caf; }
+:root[data-launcher-theme="dark"] :is(.ce-field,.field,.rd-name-dialog,.auth-dialog,.ce-root-menu,.ce-profile-list,.toast) {
+  background-color: #273548;
+  color: #dce7f3;
+  border-color: #52667e;
+}
+.app-shell[data-advanced-materials="true"] :is(aside,.ce-card,.toast) { backdrop-filter: blur(12px); }
+.launcher-title-image { max-width: 130px; max-height: 32px; object-fit: contain; }
+.launcher-background { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+.launcher-background :is(img,video) { width: 100%; height: 100%; object-fit: cover; }
+.app-shell[data-has-background="true"] .body-layout { background: transparent; }
+.app-shell[data-has-background="true"][data-background-overlay="true"] .body-layout {
+  background: linear-gradient(120deg, rgb(197 214 255 / .3), rgb(158 216 255 / .3));
+}
+:root[data-launcher-theme="dark"] .app-shell[data-has-background="true"][data-background-overlay="true"] .body-layout {
+  background: rgb(18 30 48 / .35);
+}
+.launcher-home a { color: var(--ce-link, #0065df); }
+.launcher-home p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.launcher-tip { margin-top: 16px; line-height: 1.6; color: var(--ce-muted-text, #9299a3); }
+.launcher-home { max-width: 100%; }
+.launcher-setting-summary { margin: 0 7px; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.launcher-setting-summary dt { font-weight: 500; }
+.launcher-setting-summary dd { margin: 0 0 8px; }
+.ce-server-message { font-family: var(--ce-motd-font); }
+@media (prefers-reduced-motion: reduce) {
+  .app-shell[data-advanced-materials="true"] :is(aside,.ce-card,.toast) { backdrop-filter: none; }
+}

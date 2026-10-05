@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { Instance } from "./types";
 
 export type ResourceInstallTarget = Pick<
@@ -80,7 +81,7 @@ export function checkResourceInstallPlan(
         (!request.file_name || file.file_name === request.file_name),
     )
   )
-    throw new Error("资源计划与当前实例或所选文件不一致，请重新检查");
+    throw new Error(t("resourceInstall.planChanged"));
   if (
     !Number.isSafeInteger(plan.total_bytes) ||
     !Number.isSafeInteger(plan.download_bytes) ||
@@ -97,5 +98,5 @@ export function checkResourceInstallPlan(
       .filter((file) => !file.reused)
       .reduce((sum, file) => sum + file.size, 0) !== plan.download_bytes
   )
-    throw new Error("资源计划的文件大小无效，请重新检查");
+    throw new Error(t("resourceInstall.invalidSize"));
 }

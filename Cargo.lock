@@ -2868,6 +2868,7 @@ name = "pcl-auth"
 version = "0.1.0"
 dependencies = [
  "keyring",
+ "pcl-network",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -2904,11 +2905,15 @@ dependencies = [
  "chrono",
  "fastnbt",
  "flate2",
+ "gdk",
+ "gtk",
  "libc",
  "pcl-auth",
  "pcl-core",
  "pcl-install",
+ "pcl-network",
  "reqwest 0.12.28",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -2926,6 +2931,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "pcl-core",
+ "pcl-network",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -2933,6 +2939,16 @@ dependencies = [
  "tempfile",
  "tokio",
  "zip",
+]
+
+[[package]]
+name = "pcl-network"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

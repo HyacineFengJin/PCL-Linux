@@ -1,3 +1,4 @@
+import { t, formatNumber } from "./i18n";
 import { useEffect, useRef, type ReactNode } from "react";
 import type { Api } from "./types";
 
@@ -35,8 +36,8 @@ export function useInstanceOperationScope(
 
 export function instanceOperationSize(bytes: number) {
   return bytes >= 1048576
-    ? `${(bytes / 1048576).toFixed(1)} MiB`
-    : `${bytes.toLocaleString("zh-CN")} 字节`;
+    ? `${formatNumber(bytes / 1048576, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MiB`
+    : t("ui.bytes", { count: formatNumber(bytes) });
 }
 
 /** Existing CE name/confirmation dialog; start admission is the boundary after
@@ -48,6 +49,7 @@ export function InstanceOperationDialog({
   busy,
   committing,
   confirmLabel,
+  cancelLabel = t("common.cancel"),
   confirmDisabled,
   onConfirm,
   onClose,
@@ -58,6 +60,7 @@ export function InstanceOperationDialog({
   busy: boolean;
   committing: boolean;
   confirmLabel: string;
+  cancelLabel?: string;
   confirmDisabled: boolean;
   onConfirm: () => void;
   onClose: () => void;
@@ -127,7 +130,7 @@ export function InstanceOperationDialog({
             disabled={committing}
             onClick={onClose}
           >
-            取消
+            {cancelLabel}
           </button>
         </div>
       </form>

@@ -31,9 +31,11 @@ pub enum TaskKind {
     InstanceDelete,
     InstanceRestore,
     ResourceDownload,
+    ResourceSave,
     ResourceUpdate,
     ResourceUpdateRestore,
     ResourceOperation,
+    LauncherLogs,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -251,9 +253,11 @@ impl Tasks {
                     TaskKind::InstanceDelete => "delete-check",
                     TaskKind::InstanceRestore => "restore-check",
                     TaskKind::ResourceDownload => "resource-check",
+                    TaskKind::ResourceSave => "resource-save-check",
                     TaskKind::ResourceUpdate => "resource-update-check",
                     TaskKind::ResourceUpdateRestore => "resource-update-restore-check",
                     TaskKind::ResourceOperation => "resources",
+                    TaskKind::LauncherLogs => "launcher-logs",
                 }
                 .into(),
                 message: match kind {
@@ -265,9 +269,11 @@ impl Tasks {
                     TaskKind::InstanceDelete => "正在检查实例删除范围…",
                     TaskKind::InstanceRestore => "正在检查实例恢复记录…",
                     TaskKind::ResourceDownload => "正在获取资源与必需前置信息…",
+                    TaskKind::ResourceSave => "正在检查文件保存信息…",
                     TaskKind::ResourceUpdate => "正在检查模组更新与必需前置…",
                     TaskKind::ResourceUpdateRestore => "正在检查模组更新恢复记录…",
                     TaskKind::ResourceOperation => "正在检查资源文件…",
+                    TaskKind::LauncherLogs => "正在检查日志文件…",
                 }
                 .into(),
                 progress: 0.0,
@@ -322,9 +328,11 @@ impl Tasks {
                     TaskKind::InstanceDelete => "正在取消删除…",
                     TaskKind::InstanceRestore => "正在取消恢复…",
                     TaskKind::ResourceDownload => "正在取消资源下载并清理未完成文件…",
+                    TaskKind::ResourceSave => "正在取消文件下载并清理未完成文件…",
                     TaskKind::ResourceUpdate => "正在取消模组更新并清理未完成文件…",
                     TaskKind::ResourceUpdateRestore => "正在取消模组更新恢复…",
                     TaskKind::ResourceOperation => "正在取消资源操作…",
+                    TaskKind::LauncherLogs => "正在取消日志操作…",
                 }
                 .into();
             }
@@ -502,11 +510,13 @@ impl Tasks {
                             TaskKind::InstanceDelete => "删除已取消，原实例已保留",
                             TaskKind::InstanceRestore => "恢复已取消，可恢复文件已保留",
                             TaskKind::ResourceDownload => "资源下载已取消，未完成文件已清理",
+                            TaskKind::ResourceSave => "文件下载已取消，未完成文件已清理",
                             TaskKind::ResourceUpdate => "模组更新已取消，未完成文件已清理",
                             TaskKind::ResourceUpdateRestore => {
                                 "模组恢复已取消，更新结果与恢复记录已保留"
                             }
                             TaskKind::ResourceOperation => "资源操作已取消",
+                            TaskKind::LauncherLogs => "日志操作已取消",
                         }
                         .into()
                     } else {

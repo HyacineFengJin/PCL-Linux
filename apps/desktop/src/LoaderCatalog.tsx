@@ -1,3 +1,4 @@
+import { t, formatNumber, type MessageKey } from "./i18n";
 import { useEffect, useState } from "react";
 import {
   Box,
@@ -16,26 +17,30 @@ export function Favorites() {
   return (
     <div className="ce-state-stage ce-favorites-empty">
       <div className="ce-card ce-favorites-toolbar">
-        <select className="ce-field" disabled title="收藏夹管理尚未开放">
-          <option>默认</option>
+        <select
+          className="ce-field"
+          disabled
+          title={t("favorites.unavailable")}
+        >
+          <option>{t("common.default")}</option>
         </select>
         <button
           className="icon-button"
           disabled
-          title="收藏夹管理尚未开放"
-          aria-label="收藏夹设置"
+          title={t("favorites.unavailable")}
+          aria-label={t("favorites.settings")}
         >
           <Settings size={16} />
         </button>
       </div>
       <section className="ce-card ce-state-box">
-        <h2>还没有收藏内容</h2>
-        <p>在资源详细信息界面中可以点击收藏按钮进行收藏</p>
+        <h2>{t("favorites.empty")}</h2>
+        <p>{t("favorites.help")}</p>
       </section>
     </div>
   );
 }
-type Group = { minecraft: string; versions: string[] };
+type Group = { minecraft: string; versions: string[]; labelKey?: MessageKey };
 type VersionEntry = { id: string; kind: string; release_time: string };
 export const installerPages = [
   "installer-minecraft",
@@ -50,60 +55,51 @@ export const installerPages = [
 ];
 const providers: Record<
   string,
-  { name: string; intro: string; website: string }
+  { name: string; introKey: MessageKey; website: string }
 > = {
   "installer-minecraft": {
     name: "Minecraft",
-    intro:
-      "Minecraft 是一款沙盒游戏，你可以在方块组成的世界中探索、建造和冒险。",
+    introKey: "loader.minecraftIntro",
     website: "https://www.minecraft.net/",
   },
   NeoForge: {
     name: "NeoForge",
-    intro:
-      "NeoForge 是 Minecraft 1.20.1+ 的模组加载器，你需要先安装它才能安装各种 NeoForge 模组，它也兼容一些 Forge 模组。",
+    introKey: "loader.neoforgeIntro",
     website: "https://neoforged.net/",
   },
   Forge: {
     name: "Forge",
-    intro:
-      "Forge 是 Minecraft 的模组加载器，你需要先安装它才能安装各种 Forge 模组。",
+    introKey: "loader.forgeIntro",
     website: "https://files.minecraftforge.net/",
   },
   OptiFine: {
     name: "OptiFine",
-    intro:
-      "OptiFine 是 Minecraft 的画面与性能优化模组，提供光影支持和更多视频设置。",
+    introKey: "loader.optifineIntro",
     website: "https://optifine.net/downloads",
   },
   Cleanroom: {
     name: "Cleanroom",
-    intro:
-      "Cleanroom 是基于 Forge 的 Minecraft 1.12.2 模组加载器，让旧版模组能够使用现代 Java 运行。",
+    introKey: "loader.cleanroomIntro",
     website: "https://cleanroommc.com/",
   },
   Fabric: {
     name: "Fabric",
-    intro:
-      "Fabric 是轻量的 Minecraft 模组加载器，你需要先安装它才能安装各种 Fabric 模组。",
+    introKey: "loader.fabricIntro",
     website: "https://fabricmc.net/",
   },
   "Legacy Fabric": {
     name: "Legacy Fabric",
-    intro:
-      "Legacy Fabric 将 Fabric 模组加载器带到较旧的 Minecraft 版本，你需要先安装它才能使用对应的模组。",
+    introKey: "loader.legacyFabricIntro",
     website: "https://legacyfabric.net/",
   },
   LabyMod: {
     name: "LabyMod",
-    intro:
-      "LabyMod 为 Minecraft 提供界面增强和多种游戏辅助功能，安装器可在官网获取。",
+    introKey: "loader.labyIntro",
     website: "https://laby.net/client",
   },
   LiteLoader: {
     name: "LiteLoader",
-    intro:
-      "LiteLoader 是面向旧版 Minecraft 的轻量模组加载器，可用于加载对应的客户端模组。",
+    introKey: "loader.liteloaderIntro",
     website: "https://www.liteloader.com/",
   },
 };
@@ -181,22 +177,25 @@ export function LoaderCatalog({
       live = false;
     };
   }, [api, loader, minecraft, websiteOnly, retry]);
-  const shownGroups = minecraft
+  const shownGroups: Group[] = minecraft
     ? [
         {
-          minecraft: "正式版",
+          minecraft: "vanilla-release",
+          labelKey: "download.release" as const,
           versions: catalog
             .filter((v) => v.kind === "release")
             .map((v) => v.id),
         },
         {
-          minecraft: "预览版",
+          minecraft: "vanilla-preview",
+          labelKey: "download.preview" as const,
           versions: catalog
             .filter((v) => v.kind === "snapshot")
             .map((v) => v.id),
         },
         {
-          minecraft: "远古版",
+          minecraft: "vanilla-ancient",
+          labelKey: "download.ancient" as const,
           versions: catalog
             .filter((v) => !["release", "snapshot"].includes(v.kind))
             .map((v) => v.id),
@@ -206,15 +205,17 @@ export function LoaderCatalog({
   return (
     <>
       <section className="ce-card ce-loader-intro">
-        <h2 className="ce-card-title">{provider.name} 简介</h2>
+        <h2 className="ce-card-title">
+          {provider.name} {t("ui.introduction")}
+        </h2>
         <p>
-          {provider.intro}
+          {t(provider.introKey)}
           <br />
           {minecraft
-            ? "本页面列出 Minecraft 的原版游戏文件版本。"
+            ? t("loader.minecraftFiles")
             : websiteOnly
-              ? "请前往官网下载适用于 Linux 的安装器。"
-              : `本页面提供 ${provider.name} 安装器下载，在下载后你需要手动打开安装器进行安装。`}
+              ? t("loader.linuxInstaller")
+              : t("loader.manualHelp", { name: provider.name })}
         </p>
         <button
           className="ce-button primary"
@@ -225,13 +226,13 @@ export function LoaderCatalog({
             );
           }}
         >
-          打开官网
+          {t("ui.website")}
         </button>
       </section>
       {(minecraft ? catalogLoading : loading) ? (
         <section className="ce-card">
           <p className="ce-empty" role="status">
-            正在获取安装包目录…
+            {t("loader.loading")}
           </p>
         </section>
       ) : error ? (
@@ -240,13 +241,13 @@ export function LoaderCatalog({
             {error}
           </p>
           <button className="ce-button" onClick={() => setRetry((v) => v + 1)}>
-            重新获取
+            {t("ui.reload")}
           </button>
         </section>
       ) : websiteOnly ? (
         <section className="ce-card">
-          <h2 className="ce-card-title">安装器</h2>
-          <p className="ce-empty">LabyMod 安装器由官网提供。</p>
+          <h2 className="ce-card-title">{t("loader.installer")}</h2>
+          <p className="ce-empty">{t("loader.labyInstaller")}</p>
           <button
             className="ce-button primary"
             onClick={() =>
@@ -255,12 +256,12 @@ export function LoaderCatalog({
               )
             }
           >
-            前往官网下载
+            {t("loader.downloadWebsite")}
           </button>
         </section>
       ) : !shownGroups.length ? (
         <section className="ce-card">
-          <p className="ce-empty">暂无安装包目录</p>
+          <p className="ce-empty">{t("loader.empty")}</p>
         </section>
       ) : (
         shownGroups.map((group) => (
@@ -276,7 +277,12 @@ export function LoaderCatalog({
                 )
               }
             >
-              {group.minecraft} ({group.versions.length})
+              {group.labelKey
+                ? t(group.labelKey)
+                : group.minecraft === "安装器"
+                  ? t("loader.installer")
+                  : group.minecraft}{" "}
+              ({formatNumber(group.versions.length)})
               <ChevronDown
                 size={17}
                 className={`ce-disclosure-arrow ${expanded.includes(group.minecraft) ? "is-open" : ""}`}
@@ -288,7 +294,9 @@ export function LoaderCatalog({
                   className="ce-loader-entry"
                   disabled
                   title={
-                    minecraft ? "单文件下载尚未开放" : "安装器下载尚未开放"
+                    minecraft
+                      ? t("loader.singleFileUnavailable")
+                      : t("loader.downloadUnavailable")
                   }
                   key={v}
                 >
@@ -298,9 +306,11 @@ export function LoaderCatalog({
                     {loader === "OptiFine" ? v.replaceAll("_", " ") : v}
                     <small>
                       {minecraft
-                        ? group.minecraft
+                        ? group.labelKey
+                          ? t(group.labelKey)
+                          : group.minecraft
                         : group.minecraft === "安装器"
-                          ? "安装器"
+                          ? t("loader.installer")
                           : `Minecraft ${group.minecraft}`}
                     </small>
                   </div>

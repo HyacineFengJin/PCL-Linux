@@ -1,16 +1,10 @@
 use crate::{ui_data, Shared};
 use serde::{Deserialize, Serialize};
-use std::{
-    fs,
-    io::Read,
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, UNIX_EPOCH},
-};
+use std::{fs, io::Read, path::PathBuf, sync::Arc, time::Duration};
 use tauri::State;
 
 fn client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    pcl_network::async_client()
         .user_agent("PCL-Linux/0.2.0 (https://github.com/HyacineFengJin/PCL-Linux)")
         .timeout(Duration::from_secs(20))
         .build()
@@ -355,99 +349,6 @@ pub async fn project_feedback() -> Result<Vec<Issue>, String> {
             })
         })
         .collect())
-}
-#[derive(Serialize)]
-pub struct LogRow {
-    name: String,
-    path: String,
-    modified: u64,
-    current: bool,
-}
-#[tauri::command]
-pub async fn launcher_logs(
-    root_id: Option<String>,
-    state: State<'_, Arc<Shared>>,
-) -> Result<Vec<LogRow>, String> {
-    let root = PathBuf::from(state.config.resolve(root_id.as_deref())?.path);
-    let current = state.log.lock().unwrap().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let folder = root.join(".pcl-linux/logs");
-        if !folder.exists() {
-            return Ok(Vec::new());
-        }
-        let root = root.canonicalize().map_err(|e| e.to_string())?;
-        let folder = folder.canonicalize().map_err(|e| e.to_string())?;
-        if !folder.starts_with(&root) {
-            return Err("日志目录超出游戏目录".into());
-        }
-        let mut rows = Vec::new();
-        for item in fs::read_dir(folder).map_err(|e| e.to_string())? {
-            let item = item.map_err(|e| e.to_string())?;
-            let path = item.path().canonicalize().map_err(|e| e.to_string())?;
-            if !path.starts_with(&root)
-                || path.extension().and_then(|s| s.to_str()) != Some("log")
-                || !path.is_file()
-            {
-                continue;
-            }
-            let modified = item
-                .metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            rows.push(LogRow {
-                name: item.file_name().to_string_lossy().into_owned(),
-                path: path.display().to_string(),
-                modified,
-                current: current
-                    .as_ref()
-                    .and_then(|p| p.canonicalize().ok())
-                    .as_ref()
-                    == Some(&path),
-            });
-        }
-        rows.sort_by(|a, b| b.modified.cmp(&a.modified));
-        Ok(rows)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-#[tauri::command]
-pub async fn launcher_read_log(
-    name: String,
-    root_id: Option<String>,
-    state: State<'_, Arc<Shared>>,
-) -> Result<String, String> {
-    if name.contains('/') || name.contains('\\') || !name.ends_with(".log") {
-        return Err("无效日志名".into());
-    }
-    let root = PathBuf::from(state.config.resolve(root_id.as_deref())?.path);
-    let s = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let folder = root
-            .join(".pcl-linux/logs")
-            .canonicalize()
-            .map_err(|e| e.to_string())?;
-        let path = folder
-            .join(name)
-            .canonicalize()
-            .map_err(|e| e.to_string())?;
-        if !folder.starts_with(&root) || !path.starts_with(&folder) {
-            return Err("日志目录超出游戏目录".into());
-        }
-        let mut data = Vec::new();
-        fs::File::open(path)
-            .map_err(|e| e.to_string())?
-            .take(1024 * 1024)
-            .read_to_end(&mut data)
-            .map_err(|e| e.to_string())?;
-        Ok(s.accounts
-            .redact(String::from_utf8_lossy(&data).into_owned()))
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 #[derive(Deserialize, Serialize)]
 pub struct Server {

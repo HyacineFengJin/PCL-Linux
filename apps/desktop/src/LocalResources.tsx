@@ -1,6 +1,8 @@
+import { t, formatNumber } from "./i18n";
 /** Existing CE local-resource list, selection and local file operations.
  * Update inspection/confirmation is owned by the separate update components. */
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
+import { LauncherNavigationContext } from "./useLauncherPreferences";
 import {
   Box,
   Search,
@@ -23,7 +25,7 @@ import {
 } from "./ResourceUpdates";
 import { useResourceUpdates } from "./useResourceUpdates";
 import type { ResourceFile, ResourceUpdateTarget } from "./resourceUpdateTypes";
-const notReady = "此功能尚未开放";
+
 export type LocalResourceDetails = {
   name: string;
   path: string;
@@ -93,6 +95,8 @@ export function ResourcePanel({
   native: boolean;
   onTaskStart: (id: string) => void;
 }) {
+  const navigation = useContext(LauncherNavigationContext);
+  const hideUpdates = navigation.isHidden("feature.mod_updates");
   const [entries, setEntries] = useState<Resource[]>([]),
     [query, setQuery] = useState(""),
     [error, setError] = useState(""),
@@ -109,6 +113,9 @@ export function ResourcePanel({
     [removalChoice, setRemovalChoice] = useState<ResourceRemovalChoice | null>(
       null,
     );
+  useEffect(() => {
+    if (hideUpdates) setFilter("all");
+  }, [hideUpdates]);
   const alive = useRef(false),
     scopeGeneration = useRef(0),
     readGeneration = useRef(0),
@@ -226,11 +233,13 @@ export function ResourcePanel({
     updates.busy ||
     !!updates.choice;
   const updateFor = (resource: Resource) =>
-    updates.result?.entries.find(
-      (entry) =>
-        entry.file_name === resource.file_name &&
-        entry.fingerprint === resource.fingerprint,
-    );
+    !hideUpdates
+      ? updates.result?.entries.find(
+          (entry) =>
+            entry.file_name === resource.file_name &&
+            entry.fingerprint === resource.fingerprint,
+        )
+      : undefined;
   const filtered = entries
     .filter((v) =>
       [v.name, v.file_name, v.description].some((value) =>
@@ -288,18 +297,20 @@ export function ResourcePanel({
       if (!isCurrent(scope)) return;
       if ("status" in result && result.status === "cancelled") return;
       if ("status" in result && result.status === "unavailable") {
-        const message =
-          result.message || "系统文件选择器暂时不可用，请稍后重试。";
+        const message = result.message || t("local.pickerUnavailable");
         setActionError(message);
         onNotify(message);
         return;
       }
       setSelected([]);
       setDetail(null);
-      setWorking("正在重新读取资源…");
+      setWorking(t("local.rereading"));
       await readResources(scope, false);
       if (isCurrent(scope))
-        onNotify(result.message || `已处理 ${result.changed} 个文件`);
+        onNotify(
+          result.message ||
+            t("local.processed", { count: formatNumber(result.changed) }),
+        );
     } catch (e) {
       if (isCurrent(scope)) {
         const message = String(e);
@@ -316,17 +327,19 @@ export function ResourcePanel({
   function setEnabled(resources: Resource[], enabled: boolean) {
     const files = filesFor(resources);
     if (section !== "mods" || !files) return;
-    void writeResources(enabled ? "正在启用模组…" : "正在禁用模组…", () =>
-      api<ResourceWriteResult>("resource_set_enabled", {
-        id,
-        kind: section,
-        files,
-        enabled,
-      }),
+    void writeResources(
+      enabled ? t("local.enabling") : t("local.disabling"),
+      () =>
+        api<ResourceWriteResult>("resource_set_enabled", {
+          id,
+          kind: section,
+          files,
+          enabled,
+        }),
     );
   }
   function importResources() {
-    void writeResources("正在选择并导入本地文件…", () =>
+    void writeResources(t("local.importing"), () =>
       api<ResourceImportResult>("resource_import", { id, kind: section }),
     );
   }
@@ -379,7 +392,7 @@ export function ResourcePanel({
                 disabled={mutationBlocked}
                 onClick={() =>
                   void writeResources(
-                    "正在恢复上次未完成的操作…",
+                    t("local.recovering"),
                     () =>
                       api<ResourceWriteResult>("resource_recover", {
                         id,
@@ -389,7 +402,7 @@ export function ResourcePanel({
                   )
                 }
               >
-                恢复未完成操作
+                {t("local.recover")}
               </button>
             )}
             <button
@@ -397,7 +410,7 @@ export function ResourcePanel({
               onClick={refreshResources}
               disabled={!!working || loading}
             >
-              刷新
+              {t("ui.refresh")}
             </button>
           </div>
         )}
@@ -409,18 +422,18 @@ export function ResourcePanel({
     toolbar = (
       <section className="ce-card resource-toolbar">
         <button className="ce-button primary" onClick={() => onOpen(section)}>
-          打开文件夹
+          {t("common.openFolder")}
         </button>
         <button
           className="ce-button"
           disabled={writesDisabled}
-          title={!writableKind ? notReady : undefined}
+          title={!writableKind ? t("common.unavailable") : undefined}
           onClick={importResources}
         >
-          从文件安装
+          {t("local.installFile")}
         </button>
-        <button className="ce-button" disabled title={notReady}>
-          下载新资源
+        <button className="ce-button" disabled title={t("common.unavailable")}>
+          {t("local.downloadNew")}
         </button>
         <button
           className="ce-button"
@@ -433,18 +446,20 @@ export function ResourcePanel({
             )
           }
         >
-          {allVisibleSelected ? "取消全选" : "全选"}
+          {allVisibleSelected ? t("ui.deselectAll") : t("ui.selectAll")}
         </button>
-        <button className="ce-button" disabled title={notReady}>
-          导出信息
+        <button className="ce-button" disabled title={t("common.unavailable")}>
+          {t("local.exportInfo")}
         </button>
         {latestRemoval && writableKind && (
           <button
             className="ce-button"
             disabled={writesDisabled}
-            title={`恢复上次删除的 ${latestRemoval.files.length} 个文件`}
+            title={t("local.restoreCount", {
+              count: formatNumber(latestRemoval.files.length),
+            })}
             onClick={() =>
-              void writeResources("正在恢复已删除的文件…", () =>
+              void writeResources(t("local.restoring"), () =>
                 api<ResourceWriteResult>("resource_restore", {
                   id,
                   kind: section,
@@ -453,7 +468,7 @@ export function ResourcePanel({
               )
             }
           >
-            撤销删除
+            {t("trash.undo")}
           </button>
         )}
       </section>
@@ -494,10 +509,11 @@ export function ResourcePanel({
             }
           }}
         >
-          <h2 id="ce-resource-remove-title">删除资源</h2>
+          <h2 id="ce-resource-remove-title">{t("local.deleteResources")}</h2>
           <p id="ce-resource-remove-description">
-            确定删除这 {removalChoice.files.length} 个文件吗？删除后可以通过
-            “撤销删除”恢复。
+            {t("local.removeConfirm", {
+              count: formatNumber(removalChoice.files.length),
+            })}
           </p>
           <ul className="ce-resource-remove-files">
             {removalChoice.files.map((file, index) => (
@@ -512,13 +528,13 @@ export function ResourcePanel({
               className="ce-button"
               onClick={() => setRemovalChoice(null)}
             >
-              取消
+              {t("common.cancel")}
             </button>
             <button
               className="ce-button primary"
               disabled={writesDisabled}
               onClick={() =>
-                void writeResources("正在删除资源…", () =>
+                void writeResources(t("local.deleting"), () =>
                   api<ResourceWriteResult>("resource_remove", {
                     id,
                     kind: section,
@@ -527,7 +543,7 @@ export function ResourcePanel({
                 )
               }
             >
-              删除
+              {t("ui.delete")}
             </button>
           </div>
         </div>
@@ -544,23 +560,23 @@ export function ResourcePanel({
         {operationFeedback}
         <div className="ce-state-stage">
           <section className="ce-card ce-state-box">
-            <h2>尚未安装资源</h2>
+            <h2>{t("local.empty")}</h2>
             <p>
-              你可以从已经下载好的文件安装资源。
+              {t("local.installHelp")}
               <br />
-              如果你已经安装了资源，可能是实例隔离设置有误，请在设置中调整实例隔离选项。
+              {t("local.isolationHelp")}
             </p>
             <div className="ce-actions">
               <button
                 className="ce-button primary"
                 disabled={writesDisabled}
-                title={!writableKind ? notReady : undefined}
+                title={!writableKind ? t("common.unavailable") : undefined}
                 onClick={importResources}
               >
-                从文件安装
+                {t("local.installFile")}
               </button>
               <button className="ce-button" onClick={() => onOpen(section)}>
-                打开文件夹
+                {t("common.openFolder")}
               </button>
             </div>
           </section>
@@ -573,8 +589,8 @@ export function ResourcePanel({
       <label className="ce-card ce-searchbar">
         <Search size={17} />
         <input
-          placeholder="搜索资源：名称 / 描述 / 标签"
-          aria-label="搜索资源"
+          placeholder={t("local.searchPlaceholder")}
+          aria-label={t("local.search")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -589,9 +605,9 @@ export function ResourcePanel({
               aria-pressed={filter === "all"}
               onClick={() => setFilter("all")}
             >
-              全部 ({entries.length})
+              {t("local.allCount", { count: formatNumber(entries.length) })}
             </button>
-            {section === "mods" && (
+            {section === "mods" && !hideUpdates && (
               <button
                 className={filter === "updates" ? "ce-pill" : ""}
                 aria-pressed={filter === "updates"}
@@ -600,9 +616,9 @@ export function ResourcePanel({
                   setSelected([]);
                 }}
               >
-                可更新
+                {t("local.updatable")}
                 {updates.phase === "checking"
-                  ? " (检查中)"
+                  ? t("local.checkingSuffix")
                   : updateCount !== undefined
                     ? ` (${updateCount})`
                     : ""}
@@ -612,15 +628,15 @@ export function ResourcePanel({
           <button
             onClick={() => setDescending(!descending)}
             title={
-              descending ? "当前降序，点击改为升序" : "当前升序，点击改为降序"
+              descending ? t("local.sortDescending") : t("local.sortAscending")
             }
           >
             <ArrowDownUp size={17} />
-            排序：资源名称
+            {t("local.sortName")}
           </button>
         </div>
         {loading ? (
-          <p className="ce-empty">正在读取资源…</p>
+          <p className="ce-empty">{t("local.reading")}</p>
         ) : error ? (
           <div className="ce-empty ce-resource-read-error" role="alert">
             <p>{error}</p>
@@ -629,7 +645,7 @@ export function ResourcePanel({
               disabled={!!working}
               onClick={refreshResources}
             >
-              重新读取
+              {t("ui.reread")}
             </button>
           </div>
         ) : filter === "updates" && !filtered.length ? (
@@ -643,10 +659,10 @@ export function ResourcePanel({
             }
           />
         ) : !filtered.length ? (
-          <p className="ce-empty">没有找到资源</p>
+          <p className="ce-empty">{t("local.notFound")}</p>
         ) : (
           <>
-            {section === "mods" && (
+            {section === "mods" && !hideUpdates && (
               <ResourceUpdateStatus
                 updates={updates}
                 onRetry={refreshResources}
@@ -658,7 +674,7 @@ export function ResourcePanel({
             )}
             <div
               role="listbox"
-              aria-label="本地资源"
+              aria-label={t("local.resources")}
               aria-multiselectable="true"
             >
               {filtered.map((v) => (
@@ -692,14 +708,17 @@ export function ResourcePanel({
                   </span>
                   <div className="ce-resource-text">
                     <strong>
-                      {v.name}
+                      {section === "mods" &&
+                      navigation.modDisplayStyle === "file_name"
+                        ? v.file_name || v.name
+                        : v.name || v.file_name}
                       {updateFor(v)?.status === "update_available" ? (
                         <small className="ce-resource-update-version">
                           {" "}
                           |{" "}
                           {updateFor(v)?.old_version ||
                             v.version ||
-                            "已安装版本"}{" "}
+                            t("local.installedVersion")}{" "}
                           → {updateFor(v)?.new_version} ↑
                         </small>
                       ) : (
@@ -713,13 +732,13 @@ export function ResourcePanel({
                       {updateFor(v)?.status === "unknown" && (
                         <small title={updateFor(v)?.reason ?? undefined}>
                           {" "}
-                          | 无法识别
+                          {t("local.unknownSuffix")}
                         </small>
                       )}
                       {updateFor(v)?.status === "blocked" && (
                         <small title={updateFor(v)?.reason ?? undefined}>
                           {" "}
-                          | 暂不可更新
+                          {t("local.blockedSuffix")}
                         </small>
                       )}
                     </strong>
@@ -727,9 +746,9 @@ export function ResourcePanel({
                       {v.file_name || v.name}
                       {v.description ? `: ${v.description}` : ""}
                     </small>
-                    {!v.enabled && <small>已禁用</small>}
+                    {!v.enabled && <small>{t("ui.disabled")}</small>}
                     {writableKind && !writableResourceFile(v) && (
-                      <small>只读</small>
+                      <small>{t("ui.readonly")}</small>
                     )}
                   </div>
                   <div
@@ -738,10 +757,13 @@ export function ResourcePanel({
                   >
                     <span
                       className="ce-resource-action-tip"
-                      data-tooltip="详情"
+                      data-tooltip={t("ui.details")}
                     >
                       <button
-                        aria-label={v.name + "：详情"}
+                        aria-label={t("ui.resourceAction", {
+                          name: v.name,
+                          action: t("ui.details"),
+                        })}
                         onClick={() => openDetails(v)}
                       >
                         <Info size={15} />
@@ -749,10 +771,13 @@ export function ResourcePanel({
                     </span>
                     <span
                       className="ce-resource-action-tip"
-                      data-tooltip="打开文件位置"
+                      data-tooltip={t("local.openLocation")}
                     >
                       <button
-                        aria-label={v.name + "：打开所在文件夹"}
+                        aria-label={t("ui.resourceAction", {
+                          name: v.name,
+                          action: t("local.openFolder"),
+                        })}
                         onClick={() => onOpen(section)}
                       >
                         <FolderOpen size={15} />
@@ -762,12 +787,12 @@ export function ResourcePanel({
                       className="ce-resource-action-tip"
                       data-tooltip={
                         section !== "mods"
-                          ? "仅模组支持启用和禁用"
+                          ? t("local.modsOnly")
                           : !writableResourceFile(v)
-                            ? "只读：无法确认普通文件身份"
+                            ? t("local.identityReadonly")
                             : v.enabled
-                              ? "禁用"
-                              : "启用"
+                              ? t("ui.disable")
+                              : t("ui.enable")
                       }
                     >
                       <button
@@ -776,7 +801,10 @@ export function ResourcePanel({
                           section !== "mods" ||
                           !writableResourceFile(v)
                         }
-                        aria-label={v.name + (v.enabled ? "：禁用" : "：启用")}
+                        aria-label={t("ui.resourceAction", {
+                          name: v.name,
+                          action: t(v.enabled ? "ui.disable" : "ui.enable"),
+                        })}
                         onClick={() => setEnabled([v], !v.enabled)}
                       >
                         {v.enabled ? (
@@ -790,15 +818,18 @@ export function ResourcePanel({
                       className="ce-resource-action-tip"
                       data-tooltip={
                         !writableKind
-                          ? "删除（尚未开放）"
+                          ? t("local.deleteUnavailable")
                           : !writableResourceFile(v)
-                            ? "只读：无法确认普通文件身份"
-                            : "删除（可恢复）"
+                            ? t("local.identityReadonly")
+                            : t("local.deleteRecoverable")
                       }
                     >
                       <button
                         disabled={writesDisabled || !writableResourceFile(v)}
-                        aria-label={v.name + "：删除"}
+                        aria-label={t("ui.resourceAction", {
+                          name: v.name,
+                          action: t("ui.delete"),
+                        })}
                         onClick={() => chooseRemoval([v])}
                       >
                         <Trash2 size={15} />
@@ -812,40 +843,49 @@ export function ResourcePanel({
         )}
       </section>
       {selectedEntries.length > 0 && (
-        <div className="ce-resource-selection-bar" aria-label="所选资源操作">
+        <div
+          className="ce-resource-selection-bar"
+          aria-label={t("local.selectionActions")}
+        >
           <div className="ce-resource-selection-count">
-            已选择 {selectedEntries.length} 个文件
-            {writableKind && !selectedWritable && <span>（包含只读项目）</span>}
+            {t("local.selectedCount", {
+              count: formatNumber(selectedEntries.length),
+            })}
+            {writableKind && !selectedWritable && (
+              <span>{t("local.readonlySelectionSuffix")}</span>
+            )}
           </div>
           <div className="ce-resource-selection-actions">
-            <button
-              disabled={writesDisabled || !selectedUpdatable}
-              title={
-                !selectedUpdatable ? "所选模组未全部检测为可更新" : undefined
-              }
-              onClick={() => {
-                const files = filesFor(selectedEntries);
-                if (files) updates.open(files);
-              }}
-            >
-              <Upload size={16} />
-              更新
-            </button>
+            {!hideUpdates && (
+              <button
+                disabled={writesDisabled || !selectedUpdatable}
+                title={
+                  !selectedUpdatable ? t("local.notAllUpdatable") : undefined
+                }
+                onClick={() => {
+                  const files = filesFor(selectedEntries);
+                  if (files) updates.open(files);
+                }}
+              >
+                <Upload size={16} />
+                {t("ui.update")}
+              </button>
+            )}
             <button
               disabled={
                 writesDisabled || section !== "mods" || !selectedWritable
               }
               title={
                 section !== "mods"
-                  ? "仅模组支持启用和禁用"
+                  ? t("local.modsOnly")
                   : !selectedWritable
-                    ? "所选资源包含只读项目"
+                    ? t("local.selectionReadonly")
                     : undefined
               }
               onClick={() => setEnabled(selectedEntries, true)}
             >
               <CircleCheck size={16} />
-              启用
+              {t("ui.enable")}
             </button>
             <button
               disabled={
@@ -853,41 +893,41 @@ export function ResourcePanel({
               }
               title={
                 section !== "mods"
-                  ? "仅模组支持启用和禁用"
+                  ? t("local.modsOnly")
                   : !selectedWritable
-                    ? "所选资源包含只读项目"
+                    ? t("local.selectionReadonly")
                     : undefined
               }
               onClick={() => setEnabled(selectedEntries, false)}
             >
               <CircleMinus size={16} />
-              禁用
+              {t("ui.disable")}
             </button>
-            <button disabled title={notReady}>
+            <button disabled title={t("common.unavailable")}>
               <Heart size={16} />
-              收藏
+              {t("resource.favorite")}
             </button>
-            <button disabled title={notReady}>
+            <button disabled title={t("common.unavailable")}>
               <Share2 size={16} />
-              分享所选
+              {t("local.shareSelected")}
             </button>
             <button
               disabled={writesDisabled || !selectedWritable}
               title={
                 !writableKind
-                  ? notReady
+                  ? t("common.unavailable")
                   : !selectedWritable
-                    ? "所选资源包含只读项目"
-                    : "删除后可以撤销"
+                    ? t("local.selectionReadonly")
+                    : t("local.undoable")
               }
               onClick={() => chooseRemoval(selectedEntries)}
             >
               <Trash2 size={16} />
-              删除
+              {t("ui.delete")}
             </button>
             <button onClick={() => setSelected([])}>
               <X size={16} />
-              取消选择
+              {t("ui.deselect")}
             </button>
           </div>
         </div>
@@ -919,26 +959,32 @@ export function ResourcePanel({
             onClick={(event) => event.stopPropagation()}
           >
             <div className="ce-local-detail-heading">
-              <h2 id="ce-local-detail-title">资源详情</h2>
+              <h2 id="ce-local-detail-title">{t("local.details")}</h2>
               <button
                 autoFocus
-                aria-label="关闭资源详情"
+                aria-label={t("local.closeDetails")}
                 onClick={() => setDetail(null)}
               >
                 <X size={18} />
               </button>
             </div>
             <strong>{detail.name}</strong>
-            {detail.version && <p>版本：{detail.version}</p>}
+            {detail.version && (
+              <p>{t("local.version", { version: detail.version })}</p>
+            )}
             {detail.description && <p>{detail.description}</p>}
-            <p>文件：{detail.file_name || detail.name}</p>
-            <p>状态：{detail.enabled ? "已启用" : "已禁用"}</p>
+            <p>{t("local.file", { name: detail.file_name || detail.name })}</p>
+            <p>
+              {t("local.state", {
+                state: t(detail.enabled ? "ui.enabled" : "ui.disabled"),
+              })}
+            </p>
             <p className="ce-local-detail-path">{detail.path}</p>
             <button
               className="ce-button primary"
               onClick={() => onOpen(section)}
             >
-              打开所在文件夹
+              {t("local.openFolder")}
             </button>
           </section>
         </div>

@@ -431,6 +431,11 @@ impl Accounts {
         self.persist(&i.book)?;
         Ok(Some(identity))
     }
+    /// A detached game monitor receives this snapshot through an anonymous
+    /// pipe. Never serialize it to account/settings files or diagnostic DTOs.
+    pub fn redaction_snapshot(&self) -> Vec<String> {
+        self.inner.lock().unwrap().redactions.clone()
+    }
     pub fn redact(&self, text: String) -> String {
         let i = self.inner.lock().unwrap();
         i.redactions

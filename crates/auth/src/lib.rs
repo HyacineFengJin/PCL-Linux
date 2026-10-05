@@ -164,7 +164,7 @@ impl MicrosoftClient {
             return Err("Microsoft Client ID 必须是应用注册的 UUID".into());
         }
         Ok(Self {
-            http: Client::builder()
+            http: pcl_network::blocking_client()
                 .timeout(Duration::from_secs(15))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()

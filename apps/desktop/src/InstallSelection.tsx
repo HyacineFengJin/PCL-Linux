@@ -1,3 +1,4 @@
+import { t, formatNumber, type MessageKey } from "./i18n";
 import { useEffect, useState } from "react";
 import {
   ArrowLeft,
@@ -17,9 +18,9 @@ import forge from "./assets/game-icons/forge.png";
 import neoForge from "./assets/game-icons/neoforge.png";
 import "./install-selection.css";
 const providers = ["Forge", "NeoForge", "Fabric", "LabyMod", "OptiFine"];
-const unavailableProviders: Record<string, string> = {
-  LabyMod: "LabyMod 安装暂未开放",
-  OptiFine: "OptiFine 安装暂未开放",
+const unavailableProviders: Record<string, MessageKey> = {
+  LabyMod: "install.labyUnavailable",
+  OptiFine: "install.optifineUnavailable",
 };
 
 export type InstallComponent = { provider: string; version: string };
@@ -29,20 +30,20 @@ export type InstallOptions = {
 };
 
 export function installNameError(name: string, installed: { id: string }[]) {
-  if (!name.trim()) return "请输入实例名称";
-  if (name !== name.trim()) return "实例名称不能以空白字符开头或结尾";
-  if (name.startsWith(".install-")) return "实例名称不能使用 .install- 前缀";
+  if (!name.trim()) return t("instance.nameRequired");
+  if (name !== name.trim()) return t("instance.nameWhitespace");
+  if (name.startsWith(".install-")) return t("instance.namePrefix");
   if (
     name === "." ||
     name === ".." ||
     /[/\\:]/.test(name) ||
     /\p{Cc}/u.test(name)
   )
-    return "实例名称不能包含路径分隔符、冒号或控制字符";
+    return t("instance.nameCharacters");
   if (new TextEncoder().encode(name).length > 120)
-    return "实例名称过长，请缩短到 120 字节以内";
+    return t("instance.nameLong");
   if (installed.some((instance) => instance.id === name))
-    return "此游戏目录中已存在同名实例，请修改名称";
+    return t("instance.nameExists");
   return "";
 }
 
@@ -129,12 +130,18 @@ export function InstallSelection({
   const instanceName = nameEdited ? name : automaticName;
   const nameError = installNameError(instanceName, installed);
   const componentError = components
-    .map((component) => unavailableProviders[component.provider])
+    .map((component) =>
+      unavailableProviders[component.provider]
+        ? t(unavailableProviders[component.provider])
+        : undefined,
+    )
     .find(Boolean);
   const canInstall = native && !disabled && !nameError && !componentError;
   const unavailable = !native
-    ? "界面预览不能下载文件"
-    : nameError || componentError || (disabled ? "当前无法开始安装" : "");
+    ? t("install.previewUnavailable")
+    : nameError ||
+      componentError ||
+      (disabled ? t("install.startUnavailable") : "");
   function submit() {
     if (canInstall) onStart({ name: instanceName, components });
   }
@@ -143,7 +150,7 @@ export function InstallSelection({
       <section className="ce-card ce-install-name">
         <button
           className="icon-button"
-          aria-label="返回版本列表"
+          aria-label={t("install.back")}
           onClick={onBack}
         >
           <ArrowLeft size={19} />
@@ -151,7 +158,7 @@ export function InstallSelection({
         <img src={grass} alt="" />
         <input
           className="ce-field"
-          aria-label="实例名称"
+          aria-label={t("instance.name")}
           value={instanceName}
           maxLength={120}
           disabled={disabled}
@@ -175,20 +182,22 @@ export function InstallSelection({
       {providers.map((provider) => {
         const values = catalogs[provider] || [];
         const incompatible = conflict(provider);
-        const unavailableProvider = unavailableProviders[provider];
+        const unavailableProvider = unavailableProviders[provider]
+          ? t(unavailableProviders[provider])
+          : undefined;
         const expanded = open.includes(provider);
         const subtitle =
           choices[provider] ||
           unavailableProvider ||
           (incompatible
-            ? "与所选组件不兼容"
+            ? t("install.incompatible")
             : loading.includes(provider)
-              ? "正在获取…"
+              ? t("ui.loading")
               : errors[provider]
-                ? "暂不可用"
+                ? t("ui.temporarilyUnavailable")
                 : values.length
-                  ? "可以添加"
-                  : "没有可用版本");
+                  ? t("install.addable")
+                  : t("install.noVersion"));
         return (
           <section
             className={`ce-card ce-install-provider ${incompatible ? "incompatible" : ""}`}
@@ -232,20 +241,22 @@ export function InstallSelection({
                     }
                   >
                     <X size={13} />
-                    取消选择
+                    {t("ui.deselect")}
                   </button>
                 )}
                 {loading.includes(provider) ? (
                   <p className="muted">
                     <LoaderCircle size={16} className="spin" />{" "}
-                    正在获取兼容版本…
+                    {t("install.loadingCompatible")}
                   </p>
                 ) : errors[provider] ? (
                   <p className="muted" role="status">
                     {errors[provider]}
                   </p>
                 ) : !values.length ? (
-                  <p className="muted">没有适用于 Minecraft {version} 的版本</p>
+                  <p className="muted">
+                    {t("install.noMinecraftVersion", { version })}
+                  </p>
                 ) : (
                   <>
                     <button
@@ -260,11 +271,13 @@ export function InstallSelection({
                       <ComponentIcon name={provider} />
                       <span>
                         <strong>{values[0]}</strong>
-                        <small>最新版本</small>
+                        <small>{t("ui.latest")}</small>
                       </span>
                     </button>
                     <div className="ce-install-all">
-                      全部版本 ({values.length})
+                      {t("install.allVersions", {
+                        count: formatNumber(values.length),
+                      })}
                     </div>
                     {values.map((value) => (
                       <button
@@ -298,7 +311,7 @@ export function InstallSelection({
           onClick={submit}
         >
           <Download size={19} />
-          开始下载
+          {t("install.start")}
         </button>
         {unavailable && <small role="status">{unavailable}</small>}
       </div>

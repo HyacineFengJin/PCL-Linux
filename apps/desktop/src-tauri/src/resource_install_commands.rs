@@ -110,12 +110,21 @@ pub(super) fn start_request(
     )?;
     let task_id = task.id().to_owned();
     shared.downloads.track(&task);
+    let download_policy = pcl_network::download_snapshot();
     let worker = shared.clone();
     std::thread::Builder::new()
         .name(format!("pcl-resource-{task_id}"))
         .spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                install(&worker, &root, &id, request, &revision, &task)
+                install_with_policy(
+                    &worker,
+                    &root,
+                    &id,
+                    request,
+                    &revision,
+                    &task,
+                    download_policy,
+                )
             }))
             .unwrap_or_else(|_| Err("资源安装意外退出，请检查未完成的资源安装恢复记录".into()));
             finish(task, result);
@@ -124,13 +133,14 @@ pub(super) fn start_request(
     Ok(json!({"id":task_id}))
 }
 
-fn install(
+fn install_with_policy(
     shared: &Shared,
     root: &GameRoot,
     id: &str,
     request: modrinth_install::InstallRequest,
     revision: &str,
     task: &tasks::TaskHandle,
+    download_policy: Arc<pcl_network::DownloadScheduler>,
 ) -> Result<Value> {
     let cancel = task.cancellation_token();
     task.update(tasks::TaskProgress {
@@ -144,13 +154,14 @@ fn install(
         network_bytes: 0,
         steps: steps(0, None),
     });
-    let batch = tauri::async_runtime::block_on(modrinth_install::download_request(
+    let batch = tauri::async_runtime::block_on(modrinth_install::download_request_with_policy(
         Path::new(&root.path),
         &shared.project,
         &root.id,
         id,
         request,
         revision,
+        download_policy,
         &cancel,
         |p| transfer_progress(task, p),
     ))?;

@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -102,6 +102,7 @@ pub struct Installer {
     java: Option<PathBuf>,
     project: Option<PathBuf>,
     cache_source: Option<cache::CacheSource>,
+    downloads: Arc<pcl_network::DownloadScheduler>,
     #[cfg(test)]
     endpoint: Option<String>,
 }
@@ -170,7 +171,7 @@ fn verify(path: &Path, hash: &str, size: u64, cancel: &AtomicBool) -> Result<boo
 impl Installer {
     pub fn new() -> Result<Self> {
         Ok(Self {
-            client: Client::builder()
+            client: pcl_network::async_client()
                 .user_agent("PCL-Linux/0.1")
                 .connect_timeout(Duration::from_secs(15))
                 .timeout(Duration::from_secs(120))
@@ -180,6 +181,7 @@ impl Installer {
             java: None,
             project: None,
             cache_source: None,
+            downloads: pcl_network::download_snapshot(),
             #[cfg(test)]
             endpoint: None,
         })
@@ -190,6 +192,12 @@ impl Installer {
     }
     pub fn with_project(mut self, path: impl AsRef<Path>) -> Self {
         self.project = Some(path.as_ref().to_path_buf());
+        self
+    }
+    /// Capture this once at submission. Existing transfers keep their slots and
+    /// byte clock even if the launcher's later preference snapshot changes.
+    pub fn with_download_policy(mut self, scheduler: Arc<pcl_network::DownloadScheduler>) -> Self {
+        self.downloads = scheduler;
         self
     }
     /// Reuse only SHA1/size-verified library and asset bytes by copying them into
@@ -248,7 +256,7 @@ impl Installer {
                 retry_wait(cancel, attempt)?;
             }
             let mut out = Vec::new();
-            let body = self.transfer(&url, limit, cancel, |chunk| {
+            let body = self.metadata_transfer(&url, limit, cancel, |chunk| {
                 out.extend_from_slice(chunk);
                 Ok(())
             });
@@ -278,6 +286,7 @@ impl Installer {
         root: &Path,
         d: &Download,
         cancel: &AtomicBool,
+        abort: &AtomicBool,
         done: &AtomicU64,
         total: u64,
         bytes: &AtomicU64,
@@ -291,8 +300,10 @@ impl Installer {
         let path = pcl_core::safe_join(root, &d.relative)?;
         if verify(&path, &d.hash, d.size, cancel)?
             || match &self.cache_source {
-                Some(cache) => cache.copy(root, d, cancel)?,
-                None => false,
+                Some(cache) if !self.downloads.policy().forbid_cross_root_cache_copy => {
+                    cache.copy(root, d, cancel)?
+                }
+                _ => false,
             }
         {
             done.fetch_add(1, Ordering::Relaxed);
@@ -320,12 +331,15 @@ impl Installer {
         let mut last = String::new();
         for _ in 0..3 {
             check(cancel)?;
+            if abort.load(Ordering::Acquire) {
+                return Err("其他下载失败，传输已停止".into());
+            }
             let mut transferred = 0;
             let mut file =
                 tempfile::NamedTempFile::new_in(path.parent().unwrap()).map_err(error)?;
             let result = (|| {
                 let mut digest = Sha1::new();
-                self.transfer(&url, d.size, cancel, |chunk| {
+                self.transfer_with_abort(&url, d.size, cancel, abort, |chunk| {
                     file.write_all(chunk).map_err(error)?;
                     transferred += chunk.len() as u64;
                     digest.update(chunk);
@@ -436,6 +450,9 @@ impl Installer {
                 // Worker snapshots can reach this lock in a different order
                 // from their samples; serialize the delivered network counter.
                 p.network_bytes = p.network_bytes.max(previous.network_bytes);
+                if p.stage == "downloading" && previous.stage == "downloading" {
+                    p.completed = p.completed.max(previous.completed);
+                }
                 if p.stage == "complete" {
                     p.completed = previous.completed;
                     p.total = previous.total;
@@ -667,8 +684,11 @@ impl Installer {
             let downloaded = AtomicU64::new(0);
             let next = AtomicU64::new(0);
             let failure = Mutex::new(None);
+            let abort = AtomicBool::new(false);
             std::thread::scope(|scope| {
-                for _ in 0..4 {
+                for _ in 0..usize::from(self.downloads.policy().max_concurrent_transfers)
+                    .min(downloads.len())
+                {
                     scope.spawn(|| loop {
                         if failure.lock().unwrap().is_some() {
                             break;
@@ -681,6 +701,7 @@ impl Installer {
                             &root,
                             d,
                             cancel,
+                            &abort,
                             &done,
                             total,
                             &bytes,
@@ -696,6 +717,9 @@ impl Installer {
                             Ok(false) => {}
                             Err(e) => {
                                 record_failure(&failure, e);
+                                // In-flight siblings drop their full HTTP
+                                // future, then clean partial files before join.
+                                abort.store(true, Ordering::Release);
                                 break;
                             }
                         }
@@ -816,6 +840,9 @@ impl Installer {
         installation
     }
 }
+#[cfg(test)]
+#[path = "download_policy_tests.rs"]
+mod download_policy_tests;
 fn record_failure(failure: &Mutex<Option<String>>, new: String) {
     let mut failure = failure.lock().unwrap();
     if failure.is_none()

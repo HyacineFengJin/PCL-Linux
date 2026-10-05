@@ -3,7 +3,7 @@
   justify-content: center;
   gap: 13px;
   margin-top: -18px;
-  color: #4c5660;
+  color: var(--ce-text, #4c5660);
 }
 .ce-profile-actions .icon-button {
   width: 24px;
@@ -19,12 +19,12 @@
   background: #fff;
   border-radius: 7px;
   box-shadow: 0 4px 18px #1a243666;
-  color: #343e4b;
+  color: var(--ce-text, #343e4b);
 }
 .ce-account-type-modal h2 {
   font-size: 24px;
   font-weight: 400;
-  color: #156acd;
+  color: var(--ce-link, #156acd);
   margin: 0 0 14px;
   padding: 0 6px 9px;
   border-bottom: 2px solid #156acd;
@@ -49,8 +49,8 @@
 }
 .ce-account-types > button:hover:not(:disabled),
 .ce-account-types > button.selected {
-  background: #e6f1fc;
-  color: #2078da;
+  background: var(--ce-tinted-surface, #e6f1fc);
+  color: var(--ce-link, #2078da);
 }
 .ce-account-types > button:disabled {
   opacity: 0.5;
@@ -70,7 +70,7 @@
   text-align: center;
 }
 .ce-launch-preparing > svg {
-  color: #2078da;
+  color: var(--ce-link, #2078da);
 }
 .ce-launch-preparing h2 {
   font-size: 19px;
@@ -82,7 +82,7 @@
 }
 .ce-launch-preparing small {
   display: block;
-  color: #818b96;
+  color: var(--ce-muted-text, #818b96);
   margin-bottom: 12px;
 }
 
@@ -124,7 +124,7 @@
   color: inherit;
 }
 .ce-profile-list-row:hover:not(:disabled) {
-  background: #e6f1fc;
+  background: var(--ce-tinted-surface, #e6f1fc);
 }
 .ce-profile-list-avatar {
   width: 32px;
@@ -148,7 +148,7 @@
 }
 .ce-profile-list-row small {
   font-size: 12px;
-  color: #9299a3;
+  color: var(--ce-muted-text, #9299a3);
 }
 .ce-profile-list-row:disabled {
   opacity: 1;
@@ -157,8 +157,8 @@
   align-self: center;
   width: 45px;
   height: 32px;
-  color: #2078da;
-  border-color: #bad5fa;
+  color: var(--ce-link, #2078da);
+  border-color: var(--ce-border, #bad5fa);
 }
 
 .ce-launch-preparing {

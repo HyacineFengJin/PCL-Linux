@@ -54,6 +54,113 @@ impl Drop for ChoosingGuard {
 }
 
 impl Desktop {
+    pub async fn choose_launcher_file(
+        self: &Arc<Self>,
+        window: tauri::WebviewWindow,
+        initial: PathBuf,
+        kind: &str,
+    ) -> Result<ResourceChoice, String> {
+        self.choose_named_launcher_file(window, initial, kind, None)
+            .await
+    }
+
+    /// A fixed operation selects the dialog contract. The selected pathname is
+    /// only a proposal: services still validate its type, ownership and revision
+    /// after the user finishes the chooser.
+    pub async fn choose_named_launcher_file(
+        self: &Arc<Self>,
+        window: tauri::WebviewWindow,
+        initial: PathBuf,
+        kind: &str,
+        suggested: Option<String>,
+    ) -> Result<ResourceChoice, String> {
+        let (title, save, extension, extensions, name) = match kind {
+            "export_settings" => (
+                "导出启动器设置",
+                true,
+                "json",
+                vec!["json"],
+                "launcher-settings.json",
+            ),
+            "import_settings" => ("导入启动器设置", false, "json", vec!["json"], ""),
+            "export_log_zip" => (
+                "导出全部游戏日志",
+                true,
+                "zip",
+                vec!["zip"],
+                "game-logs.zip",
+            ),
+            "export_log_text" => ("导出游戏日志", true, "log", vec!["log", "txt"], "game.log"),
+            "title_image" => (
+                "选择标题图片",
+                false,
+                "png",
+                vec!["png", "jpg", "jpeg", "gif", "webp"],
+                "",
+            ),
+            "home_file" => ("选择主页文件", false, "json", vec!["json"], ""),
+            _ => return Err("未知启动器文件操作".into()),
+        };
+        if self.choosing.swap(true, Ordering::SeqCst) {
+            return Err("已有文件选择窗口，请先完成或取消选择".into());
+        }
+        let guard = ChoosingGuard(self.clone());
+        #[cfg(target_os = "linux")]
+        if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
+            return Ok(ResourceChoice::unavailable(
+                "无法连接桌面文件选择服务，请在桌面会话中运行启动器",
+            ));
+        }
+        let mut picker = window
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .set_title(title)
+            .add_filter("支持的文件", &extensions);
+        if initial.is_dir() {
+            picker = picker.set_directory(initial);
+        }
+        if save {
+            picker = picker.set_file_name(suggested.as_deref().unwrap_or(name));
+        }
+        Ok(tauri::async_runtime::spawn_blocking(move || {
+            let _guard = guard;
+            let picked = if save {
+                picker.blocking_save_file()
+            } else {
+                picker.blocking_pick_file()
+            };
+            match picked {
+                None => ResourceChoice {
+                    status: "cancelled",
+                    paths: Vec::new(),
+                    message: None,
+                },
+                Some(file) => match file.into_path() {
+                    Ok(mut path) if path.is_absolute() && path.to_str().is_some() => {
+                        if save && path.extension().is_none() {
+                            path.set_extension(extension);
+                        }
+                        if !extensions
+                            .iter()
+                            .any(|ext| path.extension().and_then(|v| v.to_str()) == Some(*ext))
+                        {
+                            return ResourceChoice::unavailable("请选择支持的文件格式");
+                        }
+                        ResourceChoice {
+                            status: "selected",
+                            paths: vec![path],
+                            message: None,
+                        }
+                    }
+                    _ => ResourceChoice::unavailable("所选位置不是可访问的本地文件路径"),
+                },
+            }
+        })
+        .await
+        .unwrap_or_else(|_| ResourceChoice::unavailable("桌面文件选择服务未能完成请求")))
+    }
+
     pub async fn pick_instance_zip(
         self: &Arc<Self>,
         window: tauri::WebviewWindow,
@@ -337,5 +444,56 @@ impl Desktop {
         .await
         .unwrap_or_else(|_| DirectoryChoice::unavailable("桌面文件夹选择服务未能完成请求"));
         Ok(choice)
+    }
+}
+
+impl Desktop {
+    /// Resource saves use their authoritative suggested filename. A picker
+    /// result grants a proposed destination, not permission to overwrite it.
+    pub async fn choose_resource_save(
+        self: &Arc<Self>,
+        window: tauri::WebviewWindow,
+        initial: PathBuf,
+        suggested: String,
+    ) -> Result<ResourceChoice, String> {
+        if self.choosing.swap(true, Ordering::SeqCst) {
+            return Err("已有文件选择窗口，请先完成或取消选择".into());
+        }
+        let guard = ChoosingGuard(self.clone());
+        #[cfg(target_os = "linux")]
+        if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
+            return Ok(ResourceChoice::unavailable(
+                "无法连接桌面文件选择服务，请在桌面会话中运行启动器",
+            ));
+        }
+        let mut picker = window
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .set_title("保存资源文件")
+            .set_file_name(&suggested);
+        if initial.is_dir() {
+            picker = picker.set_directory(initial);
+        }
+        Ok(tauri::async_runtime::spawn_blocking(move || {
+            let _guard = guard;
+            match picker.blocking_save_file() {
+                None => ResourceChoice {
+                    status: "cancelled",
+                    paths: Vec::new(),
+                    message: None,
+                },
+                Some(file) => match file.into_path() {
+                    Ok(path) if path.is_absolute() && path.to_str().is_some() => ResourceChoice {
+                        status: "selected",
+                        paths: vec![path],
+                        message: None,
+                    },
+                    _ => ResourceChoice::unavailable("请选择可访问的本地文件路径"),
+                },
+            }
+        })
+        .await
+        .unwrap_or_else(|_| ResourceChoice::unavailable("桌面文件选择服务未能完成请求")))
     }
 }

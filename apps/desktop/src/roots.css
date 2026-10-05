@@ -3,7 +3,7 @@
 }
 .ce-root-entry .folder-entry {
   padding-right: 38px;
-  color: #38424f;
+  color: var(--ce-text, #38424f);
 }
 .ce-root-entry .folder-entry:before {
   display: none;
@@ -15,14 +15,14 @@
   display: block;
 }
 .ce-root-entry .folder-entry:hover {
-  background: #e7effa;
+  background: var(--ce-tinted-surface, #e7effa);
 }
 .ce-root-entry .folder-entry strong {
   max-width: 100%;
   overflow-wrap: anywhere;
 }
 .ce-root-entry .folder-entry.unavailable small:last-child {
-  color: #bb7868;
+  color: var(--ce-danger-text, #bb7868);
 }
 .ce-root-options {
   position: absolute;
@@ -41,7 +41,7 @@
   padding: 5px;
   border: 1px solid #d3e2ed;
   border-radius: 5px;
-  background: #f7faff;
+  background: var(--ce-surface, #f7faff);
   box-shadow: 0 5px 18px #203f5d36;
 }
 .ce-root-menu button {
@@ -55,10 +55,10 @@
   border: 0;
   border-radius: 3px;
   background: transparent;
-  color: #38424f;
+  color: var(--ce-text, #38424f);
 }
 .ce-root-menu button:hover:not(:disabled) {
-  background: #e7effa;
+  background: var(--ce-tinted-surface, #e7effa);
   color: var(--blue);
 }
 .ce-root-menu button:disabled {

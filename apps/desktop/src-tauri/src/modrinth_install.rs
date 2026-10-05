@@ -15,11 +15,11 @@
 #[path = "modrinth_install/plan.rs"]
 mod plan;
 #[path = "modrinth_install/provider.rs"]
-mod provider;
+pub(crate) mod provider;
 #[path = "modrinth_install/target.rs"]
 mod target;
 #[path = "modrinth_install/transfer.rs"]
-mod transfer;
+pub(crate) mod transfer;
 #[path = "modrinth_install/updates.rs"]
 mod updates;
 
@@ -32,8 +32,8 @@ pub use transfer::{DownloadProgress, VerifiedBatch};
 #[cfg(test)]
 pub(crate) use updates::test_update_batch;
 pub use updates::{
-    check_updates, download_update_request, prepare_update, recheck_update_target, UpdateCheck,
-    UpdatePlan, VerifiedUpdateBatch,
+    check_updates, download_update_request_with_policy, prepare_update, recheck_update_target,
+    UpdateCheck, UpdatePlan, VerifiedUpdateBatch,
 };
 type Result<T> = std::result::Result<T, String>;
 pub const CANCELLED: &str = "资源下载已取消";
@@ -99,22 +99,22 @@ pub async fn prepare(
     plan::prepare(&provider, target, request, cancel).await
 }
 
-/// Refetch the full authoritative graph before downloading. The resource
-/// publisher receives anonymous verified descriptors, never frontend URLs or
-/// filenames. It must verify the target snapshot once more at its commit gate.
-pub async fn download_request(
+/// Native submission can capture the immutable scheduler before starting its
+/// worker. Every dependency transfer shares this same submission snapshot.
+pub async fn download_request_with_policy(
     root: &Path,
     project: &Path,
     root_id: &str,
     instance_id: &str,
     request: InstallRequest,
     revision: &str,
+    scheduler: std::sync::Arc<pcl_network::DownloadScheduler>,
     cancel: &AtomicBool,
     report: impl Fn(DownloadProgress),
 ) -> Result<VerifiedBatch> {
     request.validate()?;
     let target = target::capture(root, project, root_id, instance_id, cancel)?;
-    let provider = provider::HttpProvider::new(cancel)?;
+    let provider = provider::HttpProvider::new(cancel)?.with_download_policy(scheduler);
     let current = plan::prepare(&provider, target, request, cancel).await;
     // Publish metadata traffic even when the authoritative plan fails. Disk
     // inventory reads and reuse never contribute to this provider counter.
@@ -142,6 +142,9 @@ pub async fn download_request(
 pub fn recheck_target(plan: &InstallPlan, cancel: &AtomicBool) -> Result<()> {
     target::check(&plan.target, cancel)
 }
+#[cfg(test)]
+#[path = "modrinth_install/download_policy_tests.rs"]
+mod download_policy_tests;
 #[cfg(test)]
 #[path = "modrinth_install/tests.rs"]
 mod tests;
