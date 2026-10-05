@@ -12,6 +12,8 @@
 //! the resource transaction service: it must atomically commit the complete
 //! verified batch across all resource kinds before writer admission is released.
 
+#[path = "modrinth_install/confirmation.rs"]
+mod confirmation;
 #[path = "modrinth_install/plan.rs"]
 mod plan;
 #[path = "modrinth_install/provider.rs"]
@@ -26,8 +28,11 @@ mod updates;
 use serde::{Deserialize, Serialize};
 use std::{fs::File, path::Path, sync::atomic::AtomicBool};
 
+pub use confirmation::{ConfirmationCache, ConfirmedInstall};
 pub use plan::InstallPlan;
 pub use target::TargetSnapshot;
+#[cfg(test)]
+pub(crate) use tests::test_install_plan;
 pub use transfer::{DownloadProgress, VerifiedBatch};
 #[cfg(test)]
 pub(crate) use updates::test_update_batch;
@@ -43,7 +48,7 @@ const MAX_FILES: usize = 128;
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_BATCH_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct InstallRequest {
     pub project_id: String,
@@ -99,29 +104,34 @@ pub async fn prepare(
     plan::prepare(&provider, target, request, cancel).await
 }
 
-/// Native submission can capture the immutable scheduler before starting its
-/// worker. Every dependency transfer shares this same submission snapshot.
-pub async fn download_request_with_policy(
-    root: &Path,
-    project: &Path,
-    root_id: &str,
-    instance_id: &str,
-    request: InstallRequest,
-    revision: &str,
+/// A queued request retains its confirmation. Replanning may observe a new
+/// profile, inventory or publisher file, but must never reinterpret that old
+/// confirmation as permission for the newly observed artifact/target.
+#[cfg(test)]
+fn require_confirmed_plan(current: &InstallPlan, revision: &str) -> Result<()> {
+    if current.revision != revision {
+        Err("资源文件或必需依赖已变化，请重新检查后下载".into())
+    } else {
+        Ok(())
+    }
+}
+
+/// A claimed native record remains owned by this submitted worker, even after
+/// cache eviction or a long queue. Fresh provider data and a retained physical
+/// baseline are required before any artifact request or anonymous staging.
+pub async fn download_confirmed_with_policy(
+    confirmed: ConfirmedInstall,
     scheduler: std::sync::Arc<pcl_network::DownloadScheduler>,
     cancel: &AtomicBool,
     on_plan: impl Fn(&InstallPlan),
     report: impl Fn(DownloadProgress),
 ) -> Result<VerifiedBatch> {
-    request.validate()?;
-    let target = target::capture(root, project, root_id, instance_id, cancel)?;
+    let target = confirmed.capture_target(cancel)?;
     let provider = provider::HttpProvider::new(cancel)?.with_download_policy(scheduler);
-    let current = plan::prepare(&provider, target, request, cancel).await;
-    // Publish metadata traffic even when the authoritative plan fails. Disk
-    // inventory reads and reuse never contribute to this provider counter.
+    let current = confirmed.replan(&provider, target, cancel).await;
     report(DownloadProgress {
         phase: "metadata".into(),
-        message: "官方资源与必需依赖检查结束".into(),
+        message: "官方资源与原授权方案检查结束".into(),
         completed: 0,
         total: 0,
         bytes_done: 0,
@@ -131,22 +141,8 @@ pub async fn download_request_with_policy(
             .load(std::sync::atomic::Ordering::Relaxed),
     });
     let current = current?;
-    require_confirmed_plan(&current, revision)?;
-    // Presentation receives only the fresh, confirmed plan. The instance ID
-    // remains the target identity even when its resource title is displayed.
     on_plan(&current);
     transfer::download(&provider, current, cancel, report).await
-}
-
-/// A queued request retains its confirmation. Replanning may observe a new
-/// profile, inventory or publisher file, but must never reinterpret that old
-/// confirmation as permission for the newly observed artifact/target.
-fn require_confirmed_plan(current: &InstallPlan, revision: &str) -> Result<()> {
-    if current.revision != revision {
-        Err("资源文件或必需依赖已变化，请重新检查后下载".into())
-    } else {
-        Ok(())
-    }
 }
 
 /// Network staging is anonymous, so cleanup is descriptor ownership. Named

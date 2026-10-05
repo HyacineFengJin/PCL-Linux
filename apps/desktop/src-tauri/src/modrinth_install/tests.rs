@@ -206,6 +206,38 @@ fn basic() -> FakeProvider {
     provider
 }
 
+/// Command fixtures obtain native provider-prepared authority through this
+/// helper; they never manufacture a public revision or upload a plan DTO.
+pub(crate) fn test_install_plan(
+    root: &Path,
+    project: &Path,
+    root_id: &str,
+    id: &str,
+    request: InstallRequest,
+) -> InstallPlan {
+    let mut provider = FakeProvider::default();
+    provider.add(
+        &request.project_id,
+        &request.version_id,
+        "mod",
+        "queued.jar",
+        b"queued fixture",
+    );
+    provider
+        .projects
+        .get_mut(&request.project_id)
+        .unwrap()
+        .title = "Queued official resource".into();
+    let cancel = AtomicBool::new(false);
+    run(plan::prepare(
+        &provider,
+        target::capture(root, project, root_id, id, &cancel).unwrap(),
+        request,
+        &cancel,
+    ))
+    .unwrap()
+}
+
 #[test]
 fn required_graph_resolves_nullable_version_ids_and_skips_optional_embedded() {
     let f = Fixture::new();

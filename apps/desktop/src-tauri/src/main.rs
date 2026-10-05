@@ -100,6 +100,7 @@ struct Shared {
     close_generation: AtomicU64,
     monitor: launcher_monitor_runtime::MonitorRuntime,
     resource_save: resource_save_commands::SaveSession,
+    resource_confirmations: modrinth_install::ConfirmationCache,
     toolbox_download: toolbox_download::DownloadSession,
     toolbox_images: toolbox_images::ImageSession,
     log: Mutex<Option<PathBuf>>,
@@ -1903,6 +1904,7 @@ fn main() {
         close_generation: AtomicU64::new(0),
         monitor: launcher_monitor_runtime::MonitorRuntime::default(),
         resource_save: resource_save_commands::SaveSession::default(),
+        resource_confirmations: modrinth_install::ConfirmationCache::default(),
         toolbox_download: toolbox_download::DownloadSession::default(),
         toolbox_images: toolbox_images::ImageSession::default(),
         log: Mutex::new(None),
@@ -2169,6 +2171,7 @@ mod integration_tests {
                 close_generation: AtomicU64::new(0),
                 monitor: launcher_monitor_runtime::MonitorRuntime::default(),
                 resource_save: resource_save_commands::SaveSession::default(),
+                resource_confirmations: modrinth_install::ConfirmationCache::default(),
                 toolbox_download: toolbox_download::DownloadSession::default(),
                 toolbox_images: toolbox_images::ImageSession::default(),
                 log: Mutex::new(None),
@@ -3013,7 +3016,7 @@ mod integration_tests {
     }
 
     #[test]
-    fn resource_request_keeps_explicit_root_and_settings_on_pre_network_failure() {
+    fn uncaptured_resource_confirmation_keeps_explicit_root_and_settings_before_admission() {
         let fixture = Fixture::new();
         let state = Arc::new(fixture.shared());
         let (first, id) = rename_fixture(&state);
@@ -3021,28 +3024,23 @@ mod integration_tests {
         state.config.select(&second.id).unwrap();
         let settings = fs::read(fixture.0.join(".pcl-rust/settings.json")).unwrap();
         let request = modrinth_install::InstallRequest {
-            project_id: "invalid-id".into(),
+            project_id: "ABCD1234".into(),
             version_id: "12345678".into(),
             file_name: None,
         };
-        let reply = resource_install_commands::start_request(
+        let rejected = resource_install_commands::start_request(
             state.clone(),
             Some(&first.id),
             id.clone(),
             request,
             "confirmed".into(),
         )
-        .unwrap();
-        let task = state
-            .tasks
-            .wait_terminal(reply["id"].as_str().unwrap())
-            .unwrap();
-        assert_eq!(task.root_id, first.id);
-        assert_eq!(task.root_path, first.path);
-        assert_eq!(task.instance_id.as_deref(), Some(id.as_str()));
-        assert_eq!(task.kind, TaskKind::ResourceDownload);
-        assert_eq!(task.stage, tasks::TaskStage::Error);
-        assert_eq!(task.network_bytes, 0);
+        .unwrap_err();
+        assert!(rejected.contains("重新检查"));
+        // A fabricated UI credential cannot admit a worker, make an HTTP
+        // request or retarget the currently selected root. Genuine queued
+        // confirmations are exercised at the service's production boundary.
+        assert!(state.tasks.list().is_empty());
         assert!(state.tasks.active().is_none());
         assert_eq!(state.config.snapshot().root_id, second.id);
         assert_eq!(

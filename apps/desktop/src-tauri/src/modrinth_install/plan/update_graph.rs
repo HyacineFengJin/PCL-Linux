@@ -20,6 +20,7 @@ pub(in crate::modrinth_install) async fn prepare_updates<P: Provider>(
         projects: BTreeMap::new(),
         versions: BTreeMap::new(),
         selected: BTreeMap::new(),
+        authority_versions: BTreeMap::new(),
         visiting: BTreeSet::new(),
         visited: BTreeSet::new(),
         installed,
@@ -84,6 +85,9 @@ pub(in crate::modrinth_install) async fn prepare_updates<P: Provider>(
         warnings: planner.warnings.into_iter().collect(),
         total_bytes,
         download_bytes,
+        authority_versions: planner.authority_versions,
+        installed: planner.installed,
+        unidentified_warning: None,
         target,
     };
     Ok((result, replacements))

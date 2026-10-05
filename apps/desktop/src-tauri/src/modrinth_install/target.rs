@@ -124,8 +124,18 @@ impl Dir {
         if let Some(dir) = self.optional(name)? {
             return Ok(dir);
         }
+        self.create_shared(name)
+    }
+    fn create_shared(&self, name: &str) -> Result<Self> {
+        // Independent game-root jobs share this anonymous staging parent.
+        // Another worker may create it after our missing-path read. EEXIST
+        // permits only the same strict child open below; links, ordinary files
+        // and mount replacements remain rejected by openat2.
         if unsafe { libc::mkdirat(self.0.as_raw_fd(), c(name)?.as_ptr(), 0o700) } != 0 {
-            return Err(error("无法创建匿名网络暂存目录"));
+            let cause = std::io::Error::last_os_error();
+            if cause.raw_os_error() != Some(libc::EEXIST) {
+                return Err(format!("无法创建匿名网络暂存目录：{cause}"));
+            }
         }
         self.0.sync_all().map_err(|e| e.to_string())?;
         self.child(name)
@@ -287,6 +297,50 @@ pub struct TargetSnapshot {
     profiles: Vec<Profile>,
     isolated: bool,
     views: BTreeMap<String, ResourceView>,
+}
+impl TargetSnapshot {
+    pub(super) fn heap_bytes(&self) -> usize {
+        use super::confirmation::allocation::*;
+        text(&self.root_id)
+            + text(&self.instance_id)
+            + text(&self.minecraft_version)
+            + text(&self.loader)
+            + self.root.capacity()
+            + self.project.capacity()
+            + text(&self.compatibility.minecraft_version)
+            + text(&self.compatibility.loader)
+            + vector(&self.compatibility.shader_engines, text)
+            + vector(&self.local_files, local)
+            + vector(&self.profiles, |profile| {
+                text(&profile.id) + text(&profile.fingerprint)
+            })
+            + map(&self.views, text, |view| map(&view.others, text, |_| 0))
+    }
+    /// Queued confirmation may tolerate inventory additions, never a different
+    /// root/profile, deletion, rename, enable toggle or same-byte replacement
+    /// inode. A previously absent resource directory may be safely created by
+    /// an earlier admitted publisher; an existing one keeps its physical key.
+    pub(super) fn permits_inventory_extension(&self, current: &Self) -> bool {
+        self.root_id == current.root_id
+            && self.instance_id == current.instance_id
+            && self.root == current.root
+            && self.project == current.project
+            && self.root_key == current.root_key
+            && self.project_key == current.project_key
+            && self.compatibility == current.compatibility
+            && self.profiles == current.profiles
+            && self.isolated == current.isolated
+            && self
+                .local_files
+                .iter()
+                .all(|old| current.local_files.contains(old))
+            && self.views.iter().all(|(kind, old)| {
+                current.views.get(kind).is_some_and(|new| {
+                    old.others == new.others
+                        && (old.directory.is_none() || old.directory == new.directory)
+                })
+            })
+    }
 }
 fn profiles(root: &Dir, id: &str, cancel: &AtomicBool) -> Result<Vec<Profile>> {
     let versions = root.child("versions")?;
@@ -488,3 +542,7 @@ pub(super) fn existing_name(target: &TargetSnapshot, kind: &str, name: &str) -> 
             .get(kind)
             .is_some_and(|v| v.others.contains_key(name))
 }
+
+#[cfg(test)]
+#[path = "target/staging_tests.rs"]
+mod staging_tests;

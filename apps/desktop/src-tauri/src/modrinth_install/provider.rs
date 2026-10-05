@@ -86,7 +86,7 @@ pub(crate) struct Dependency {
     pub file_name: Option<String>,
     pub dependency_type: String,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct Version {
     pub id: String,
     pub project_id: String,

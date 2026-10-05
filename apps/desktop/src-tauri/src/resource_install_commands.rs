@@ -97,6 +97,7 @@ pub async fn resource_install_plan(
         // This confirmation read has no file writer. Start repeats the full
         // authoritative plan under its own admitted cancellation lifetime.
         let cancel = std::sync::atomic::AtomicBool::new(false);
+        let prepared_request = request.clone();
         let plan = tauri::async_runtime::block_on(modrinth_install::prepare(
             Path::new(&root.path),
             &shared.project,
@@ -110,7 +111,9 @@ pub async fn resource_install_plan(
         same_root(&shared, &root)?;
         crate::require_network_submission(&shared)?;
         ready(&shared, &root, &id)?;
-        Ok(plan)
+        shared
+            .resource_confirmations
+            .remember(prepared_request, plan)
     })
     .await
     .map_err(|_| "资源安装方案检查意外退出".to_string())?
@@ -147,16 +150,30 @@ pub(super) fn start_request(
     if revision.is_empty() || revision.len() > 256 {
         return Err("缺少有效的资源安装方案，请重新检查".into());
     }
-    let task = shared.tasks.admit_queued(
-        tasks::TaskTarget {
-            root_id: root.id.clone(),
-            root_path: root.path.clone(),
-            instance_id: Some(id.clone()),
-        },
-        tasks::TaskKind::ResourceDownload,
-        tasks::TaskScope::root(Path::new(&root.path))?,
+    let confirmed = shared.resource_confirmations.claim(
+        Path::new(&root.path),
+        &shared.project,
+        &root.id,
+        &id,
+        &request,
+        &revision,
     )?;
+    let task = shared
+        .tasks
+        .admit_queued(
+            tasks::TaskTarget {
+                root_id: root.id.clone(),
+                root_path: root.path.clone(),
+                instance_id: Some(id.clone()),
+            },
+            tasks::TaskKind::ResourceDownload,
+            tasks::TaskScope::root(Path::new(&root.path))?,
+        )
+        .map_err(|error| format!("{error}；此确认已领取，请重新检查资源方案"))?;
     let task_id = task.id().to_owned();
+    if let Some(name) = confirmed.resource_name() {
+        task.set_resource_name(name);
+    }
     shared.downloads.track(&task);
     let download_policy = pcl_network::download_snapshot();
     let worker = shared.clone();
@@ -165,21 +182,13 @@ pub(super) fn start_request(
         .spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 with_worker_turn(&worker, &root, &id, &task, || {
-                    install_with_policy(
-                        &worker,
-                        &root,
-                        &id,
-                        request,
-                        &revision,
-                        &task,
-                        download_policy,
-                    )
+                    install_with_policy(&worker, &root, &id, confirmed, &task, download_policy)
                 })
             }))
             .unwrap_or_else(|_| Err("资源安装意外退出，请检查未完成的资源安装恢复记录".into()));
             finish(task, result);
         })
-        .map_err(|error| format!("无法启动资源安装任务：{error}"))?;
+        .map_err(|error| format!("无法启动资源安装任务：{error}；请重新检查资源方案"))?;
     Ok(json!({"id":task_id}))
 }
 
@@ -187,13 +196,12 @@ fn install_with_policy(
     shared: &Shared,
     root: &GameRoot,
     id: &str,
-    request: modrinth_install::InstallRequest,
-    revision: &str,
+    confirmed: modrinth_install::ConfirmedInstall,
     task: &tasks::TaskHandle,
     download_policy: Arc<pcl_network::DownloadScheduler>,
 ) -> Result<Value> {
     let cancel = task.cancellation_token();
-    let project_id = request.project_id.clone();
+    let project_id = confirmed.request().project_id.clone();
     task.update(tasks::TaskProgress {
         stage: tasks::TaskStage::Preparing,
         phase: "resource-metadata".into(),
@@ -205,13 +213,8 @@ fn install_with_policy(
         network_bytes: 0,
         steps: steps(0, None),
     });
-    let batch = tauri::async_runtime::block_on(modrinth_install::download_request_with_policy(
-        Path::new(&root.path),
-        &shared.project,
-        &root.id,
-        id,
-        request,
-        revision,
+    let batch = tauri::async_runtime::block_on(modrinth_install::download_confirmed_with_policy(
+        confirmed,
         download_policy,
         &cancel,
         |plan| {
@@ -732,5 +735,83 @@ mod tests {
         task.finish(tasks::TaskOutcome::Error(
             "fixture root binding changed".into(),
         ));
+    }
+
+    #[test]
+    fn real_queued_start_retains_official_resource_title_and_cancels_without_metadata() {
+        let fixture = crate::integration_tests::Fixture::new();
+        let shared = Arc::new(fixture.shared());
+        let root = shared.config.resolve(None).unwrap();
+        let instance = Path::new(&root.path).join("versions/Sample");
+        fs::create_dir_all(instance.join("mods")).unwrap();
+        fs::write(instance.join("Sample.json"),br#"{"id":"Sample","clientVersion":"1.20.1","libraries":[{"name":"net.fabricmc:fabric-loader:0.16.0"}]}"#).unwrap();
+        let blocker = shared
+            .tasks
+            .admit_queued(
+                tasks::TaskTarget {
+                    root_id: root.id.clone(),
+                    root_path: root.path.clone(),
+                    instance_id: Some("Sample".into()),
+                },
+                tasks::TaskKind::Install,
+                tasks::TaskScope::root(Path::new(&root.path)).unwrap(),
+            )
+            .unwrap();
+        blocker.wait_turn().unwrap();
+        let request = modrinth_install::InstallRequest {
+            project_id: "Proj0001".into(),
+            version_id: "Vers0001".into(),
+            file_name: None,
+        };
+        let original = modrinth_install::test_install_plan(
+            Path::new(&root.path),
+            &shared.project,
+            &root.id,
+            "Sample",
+            request.clone(),
+        );
+        let view = shared
+            .resource_confirmations
+            .remember(request.clone(), original)
+            .unwrap();
+        let result = start_request(
+            shared.clone(),
+            Some(&root.id),
+            "Sample".into(),
+            request.clone(),
+            view.revision.clone(),
+        )
+        .unwrap();
+        let id = result["id"].as_str().unwrap();
+        let queued = shared.tasks.snapshot(id).unwrap();
+        assert_eq!(queued.stage, tasks::TaskStage::Queued);
+        assert_eq!(
+            queued.display_name.as_deref(),
+            Some("Queued official resource")
+        );
+        assert_eq!(queued.instance_id.as_deref(), Some("Sample"));
+        shared.tasks.cancel(id).unwrap();
+        let terminal = shared.tasks.wait_terminal(id).unwrap();
+        assert_eq!(terminal.stage, tasks::TaskStage::Cancelled);
+        assert_eq!(terminal.network_bytes, 0);
+        assert_eq!(fs::read_dir(instance.join("mods")).unwrap().count(), 0);
+        assert!(!shared.project.join(".pcl-rust/resource-downloads").exists());
+        assert!(shared
+            .resource_confirmations
+            .claim(
+                Path::new(&root.path),
+                &shared.project,
+                &root.id,
+                "Sample",
+                &request,
+                &view.revision
+            )
+            .is_err());
+        blocker.finish(tasks::TaskOutcome::Complete {
+            result: None,
+            message: "fixture finished".into(),
+            error: None,
+        });
+        assert!(shared.tasks.active_all().is_empty());
     }
 }

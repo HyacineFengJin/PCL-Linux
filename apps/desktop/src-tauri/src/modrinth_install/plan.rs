@@ -33,7 +33,7 @@ pub struct InstallFile {
     #[serde(skip)]
     pub(super) url: String,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct PlannedDependency {
     pub from_project_id: String,
     pub from_version_id: String,
@@ -56,8 +56,17 @@ pub struct InstallPlan {
     pub download_bytes: u64,
     #[serde(skip)]
     pub(super) target: TargetSnapshot,
+    // Native confirmation facts are never accepted from frontend JSON. Keep
+    // selected publisher declarations and recognized inventory for a queued
+    // request's restricted inventory-delta/consumer constraint validation.
+    #[serde(skip)]
+    pub(super) authority_versions: BTreeMap<String, Version>,
+    #[serde(skip)]
+    pub(super) installed: Vec<Installed>,
+    #[serde(skip)]
+    pub(super) unidentified_warning: Option<String>,
 }
-#[derive(Clone)]
+#[derive(Clone, Debug, Serialize)]
 pub(super) struct Installed {
     pub file: LocalFile,
     pub version: Version,
@@ -69,6 +78,7 @@ struct Planner<'a, P: Provider> {
     projects: BTreeMap<String, Project>,
     versions: BTreeMap<String, Version>,
     selected: BTreeMap<String, String>,
+    authority_versions: BTreeMap<String, Version>,
     visiting: BTreeSet<String>,
     visited: BTreeSet<String>,
     installed: Vec<Installed>,
@@ -242,12 +252,6 @@ impl<'a, P: Provider> Planner<'a, P> {
         if version.project_id != project_id {
             return Err("依赖候选版本项目ID不符".into());
         }
-        if version.version_type != "release" {
-            self.warnings.insert(format!(
-                "必需依赖 {} 使用{}版本",
-                project.title, version.version_type
-            ));
-        }
         self.versions.insert(version.id.clone(), version.clone());
         Ok(version)
     }
@@ -404,6 +408,16 @@ impl<'a, P: Provider> Planner<'a, P> {
                 );
             }
             let project = self.project(&version.project_id).await?;
+            if required && version.version_type != "release" {
+                // The same warning applies when a previously downloaded beta
+                // dependency becomes exact reuse after an earlier queued job.
+                self.warnings.insert(format!(
+                    "必需依赖 {} 使用{}版本",
+                    project.title, version.version_type
+                ));
+            }
+            self.authority_versions
+                .insert(version.project_id.clone(), version.clone());
             let resource_kind = kind(&project)?;
             if !compatible(&version, resource_kind, &self.target.compatibility) {
                 return Err(format!(
@@ -575,6 +589,7 @@ pub(super) async fn prepare<P: Provider>(
         projects: BTreeMap::new(),
         versions: BTreeMap::new(),
         selected: BTreeMap::new(),
+        authority_versions: BTreeMap::new(),
         visiting: BTreeSet::new(),
         visited: BTreeSet::new(),
         installed,
@@ -584,10 +599,13 @@ pub(super) async fn prepare<P: Provider>(
         incompatible: vec![],
         updating: None,
     };
-    if unidentified > 0 {
-        planner.warnings.insert(format!(
+    let unidentified_warning = (unidentified > 0).then(|| {
+        format!(
             "{unidentified}个本地文件未被Modrinth识别，无法自动核对这些文件的项目版本与不兼容声明"
-        ));
+        )
+    });
+    if let Some(warning) = &unidentified_warning {
+        planner.warnings.insert(warning.clone());
     }
     for mut dependency in installed_incompatibilities {
         if let Some(id) = &dependency.version_id {
@@ -640,7 +658,7 @@ pub(super) async fn prepare<P: Provider>(
         "modrinth:{:x}",
         Sha256::digest(serde_json::to_vec(&dto).map_err(|e| e.to_string())?)
     );
-    Ok(InstallPlan {
+    let result = InstallPlan {
         root_id: target.root_id.clone(),
         instance_id: target.instance_id.clone(),
         minecraft_version: target.minecraft_version.clone(),
@@ -651,6 +669,11 @@ pub(super) async fn prepare<P: Provider>(
         warnings: planner.warnings.into_iter().collect(),
         total_bytes,
         download_bytes,
+        authority_versions: planner.authority_versions,
+        installed: planner.installed,
+        unidentified_warning,
         target,
-    })
+    };
+    super::confirmation::check_required_consumers(provider, &result).await?;
+    Ok(result)
 }
