@@ -1,5 +1,11 @@
 /** Fixed game/download/resource UI text; protocol IDs and user content stay in callers. */
 const messages = {
+  "context.menu": "文本操作",
+  "context.copy": "复制",
+  "context.cut": "剪切",
+  "context.paste": "粘贴",
+  "context.selectAll": "全选",
+  "context.failed": "文本操作未完成，可以使用键盘快捷键重试",
   "download.release": "正式版",
   "download.snapshot": "快照版",
   "download.legacy": "旧版",

@@ -1,6 +1,7 @@
 mod accounts;
 mod config;
 mod downloads;
+mod editing;
 mod export_presets;
 mod instance_commands;
 mod instance_delete;
@@ -2024,6 +2025,7 @@ fn main() {
             launcher_minecraft_update_commands::launcher_minecraft_updates_check,
             launcher_minecraft_update_commands::launcher_minecraft_updates_ack,
             launcher_discovery_commands::launcher_clipboard_link,
+            editing::launcher_edit,
             launcher_favorite_commands::launcher_favorites_read,
             launcher_favorite_commands::launcher_favorites_patch,
             toolbox_image_commands::toolbox_skin_pick,

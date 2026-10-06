@@ -1,0 +1,58 @@
+.ce-context-menu {
+  position: fixed;
+  z-index: 2500;
+  width: 210px;
+  max-width: calc(100vw - 12px);
+  max-height: calc(100vh - 12px);
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--ce-border, #97bef5);
+  border-radius: 6px;
+  background: var(--ce-surface, #f8fafd);
+  color: var(--ce-text, #38424f);
+  font-family: var(--ce-font, inherit);
+  font-size: 14px;
+  box-shadow: 0 4px 14px rgb(38 65 102 / 16%);
+  animation: ce-context-appear 100ms ease-out;
+}
+.ce-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.ce-context-menu button:not(:disabled):is(:hover, :focus-visible) {
+  outline: none;
+  background: var(--ce-tinted-surface, #e7f1ff);
+  border-color: var(--ce-border, #c5dcfa);
+  color: var(--ce-link, #2078da);
+}
+.ce-context-menu button:disabled {
+  color: var(--ce-muted-text, #9299a3);
+}
+.ce-context-menu kbd {
+  margin-left: auto;
+  color: var(--ce-muted-text, #9299a3);
+  font: inherit;
+  font-size: 11px;
+}
+@keyframes ce-context-appear {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ce-context-menu {
+    animation: none;
+  }
+}

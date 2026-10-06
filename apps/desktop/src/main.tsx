@@ -88,6 +88,7 @@ import {
 } from "./taskLifecycle";
 import { InstanceImport } from "./InstanceImport";
 import { InstanceTrash } from "./InstanceTrash";
+import { ContextMenu } from "./ContextMenu";
 import { useDownloadTasks } from "./useDownloadTasks";
 import {
   TaskManager,
@@ -1931,6 +1932,11 @@ function App() {
           }
         >
           {launcherMedia.backgroundUi}
+          <ContextMenu
+            native={native}
+            scopeKey={`${navigationKey}:${settingsPage}:${downloadPage}`}
+            onNotify={notify}
+          />
           {launcherMedia.musicUi}
           <header
             className="titlebar"

@@ -1,0 +1,42 @@
+/* CSS cursors stay inside this WebView; native text, resize and busy states
+   keep their meaning. Fixed hotspots avoid a lagging DOM pointer overlay. */
+:root {
+  --ce-cursor-arrow: url("./assets/cursors/arrow.svg") 4 3;
+  --ce-cursor-hand: url("./assets/cursors/hand.svg") 13 3;
+}
+body {
+  cursor: var(--ce-cursor-arrow), default;
+}
+.app-shell
+  :is(
+    button:not(:disabled),
+    a[href],
+    summary,
+    [role="button"],
+    input[type="range"],
+    label:has(input[type="checkbox"]),
+    label:has(input[type="radio"])
+  ),
+.ce-select-menu [role="option"]:not([aria-disabled="true"]),
+.ce-context-menu button:not(:disabled) {
+  cursor: var(--ce-cursor-hand), pointer;
+}
+.app-shell :is(button:disabled, [aria-disabled="true"]),
+.ce-context-menu button:disabled {
+  cursor: var(--ce-cursor-arrow), default;
+}
+.app-shell
+  :is(
+    textarea,
+    [contenteditable="true"],
+    input:not([type]),
+    input[type="text"],
+    input[type="search"],
+    input[type="password"],
+    input[type="email"],
+    input[type="url"],
+    input[type="tel"],
+    input[type="number"]
+  ) {
+  cursor: text;
+}

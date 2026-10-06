@@ -25,6 +25,7 @@ sha1 = "0.10"
 semver = "1"
 gtk = "0.18"
 gdk = "0.18"
+webkit2gtk = "2"
 pcl-core = { path = "../../../crates/core" }
 pcl-auth = { path = "../../../crates/auth" }
 pcl-install = { path = "../../../crates/install" }

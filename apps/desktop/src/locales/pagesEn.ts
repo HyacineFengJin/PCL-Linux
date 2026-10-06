@@ -1,6 +1,12 @@
 /** Fixed game/download/resource UI text; protocol IDs and user content stay in callers. */
 import type pagesZh from "./pagesZh";
 const messages = {
+  "context.menu": "Text actions",
+  "context.copy": "Copy",
+  "context.cut": "Cut",
+  "context.paste": "Paste",
+  "context.selectAll": "Select all",
+  "context.failed": "The text action did not complete. Try the keyboard shortcut.",
   "download.release": "Release",
   "download.snapshot": "Snapshot",
   "download.legacy": "Legacy",
