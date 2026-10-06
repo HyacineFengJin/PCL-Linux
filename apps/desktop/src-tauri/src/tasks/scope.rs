@@ -90,7 +90,7 @@ impl TaskScope {
         })
     }
 
-    pub(super) fn conflicts(&self, other: &Self) -> bool {
+    pub(crate) fn conflicts(&self, other: &Self) -> bool {
         match (&self.claims, &other.claims) {
             (Claims::Global, _) | (_, Claims::Global) => true,
             (Claims::Paths(left), Claims::Paths(right)) => {

@@ -53,6 +53,22 @@ function isPackPlan(
   ].includes(plan.format || "");
 }
 
+function discardConfirmation(api: Api, plan: InstanceImportPlan | null) {
+  const revision = plan?.revision;
+  if (typeof revision !== "string" || !revision.startsWith("pack-confirm-v1:"))
+    return;
+  // A nested archive can retain a large anonymous input. Retire it using the
+  // API that created it, even when its reply belongs to an old view. Native
+  // release only affects unclaimed confirmations; a submitted worker keeps
+  // its authority. TTL remains the fallback if the transport is unavailable.
+  try {
+    void api("instance_import_discard", { revision }).catch(() => {});
+  } catch {
+    // A failed cleanup transport must not replace the user's close/edit or
+    // the original install error. Native expiry still bounds abandoned input.
+  }
+}
+
 function checkImportPlan(plan: InstanceImportPlan, name: string) {
   if (plan.name !== name || typeof plan.revision !== "string" || !plan.revision)
     throw new Error(t("import.planChanged"));
@@ -164,6 +180,7 @@ export function InstanceImport({
       return;
     operation.current = null;
     closed.current = scope;
+    discardConfirmation(api, draftRef.current?.plan ?? null);
     setActivity(null);
     setDraft(null);
     callbacks.current.onClose();
@@ -212,6 +229,11 @@ export function InstanceImport({
       }
     });
     return () => {
+      const previous = draftRef.current;
+      // Navigation must not revoke an in-flight submission. Failed start
+      // replies release below; a successful claim is owned by its worker.
+      if (previous?.scope === scope && operation.current?.kind !== "start")
+        discardConfirmation(api, previous.plan);
       if (operation.current === token) operation.current = null;
     };
   }, [scope]);
@@ -237,6 +259,7 @@ export function InstanceImport({
       current() &&
       draftRef.current === submitted &&
       operation.current === token;
+    let prepared: InstanceImportPlan | null = null;
     try {
       if (canStart && submitted.plan) {
         const result = await api<{ id: string }>("instance_import_start", {
@@ -258,7 +281,11 @@ export function InstanceImport({
             ? { optionalPaths: [...submitted.optionalPaths] }
             : {}),
         });
-        if (!ownsReply()) return;
+        prepared = plan;
+        if (!ownsReply()) {
+          discardConfirmation(api, plan);
+          return;
+        }
         checkImportPlan(plan, submitted.name);
         setDraft({
           ...submitted,
@@ -273,6 +300,7 @@ export function InstanceImport({
         });
       }
     } catch (error) {
+      discardConfirmation(api, prepared ?? submitted.plan);
       if (ownsReply())
         setDraft({ ...submitted, plan: null, error: String(error) });
     } finally {
@@ -302,6 +330,7 @@ export function InstanceImport({
       (item) => item !== path,
     );
     if (selected) optionalPaths.push(path);
+    discardConfirmation(api, previous.plan);
     setDraft({ ...previous, optionalPaths, plan: null, error: "" });
   }
   return (
@@ -338,8 +367,9 @@ export function InstanceImport({
             previous.scope !== scope ||
             (operation.current?.scope === scope &&
               operation.current.kind === "start")
-          )
+            )
             return;
+          discardConfirmation(api, previous.plan);
           setDraft({
             ...previous,
             name: event.target.value,

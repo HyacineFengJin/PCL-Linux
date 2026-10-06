@@ -17,13 +17,14 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     fs::File,
-    io::Read,
+    io::{Read, Write},
     path::Path,
+    sync::atomic::AtomicBool,
 };
 use zip::CompressionMethod;
 
 const ARCHIVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-const DECODED_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+pub(super) const DECODED_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const JSON_BYTES: u64 = 4 * 1024 * 1024;
 const CAPTURE_BYTES: u64 = 32 * 1024 * 1024;
@@ -39,6 +40,7 @@ pub(super) enum Format {
     Hmcl,
     Multimc,
     ReadyGame,
+    Launcher,
 }
 impl Format {
     pub(super) fn as_str(self) -> &'static str {
@@ -50,6 +52,7 @@ impl Format {
             Self::Hmcl => "hmcl",
             Self::Multimc => "multimc",
             Self::ReadyGame => "ready_game",
+            Self::Launcher => "launcher_archive",
         }
     }
 }
@@ -90,74 +93,25 @@ struct Layout {
 struct Scan {
     nodes: BTreeMap<String, Node>,
     layout: Layout,
+    decoded_bytes: u64,
 }
 
+pub(super) struct NestedEntry {
+    pub archive_path: String,
+    pub size: u64,
+}
+
+#[cfg(test)]
 pub(super) fn classify(source: &Path) -> Result<Format> {
+    classify_cancellable(source, &AtomicBool::new(false))
+}
+pub(super) fn classify_cancellable(source: &Path, cancel: &AtomicBool) -> Result<Format> {
     let file = super::super::open_source(source)?;
     let before = super::Stamp::of(&file.metadata().map_err(super::super::error)?);
     if !before.regular() || before.size > super::super::MAX_BYTES {
         return Err("导入文件类型无效或超过大小限制".into());
     }
-    let mut zip =
-        super::super::archive::checked_zip(file.try_clone().map_err(super::super::error)?)?;
-    let mut nodes = BTreeMap::new();
-    let mut captured = 0u64;
-    let mut paths = 0usize;
-    for i in 0..zip.len() {
-        let mut entry = zip.by_index(i).map_err(|_| "ZIP 格式识别目录无效")?;
-        let path = std::str::from_utf8(entry.name_raw())
-            .map_err(|_| "ZIP 路径必须是 UTF-8")?
-            .trim_end_matches('/')
-            .to_owned();
-        paths = paths
-            .checked_add(path.len())
-            .ok_or("ZIP 路径文本长度溢出")?;
-        let directory = entry.is_dir();
-        let parts = path.split('/').collect::<Vec<_>>();
-        let marker = !directory
-            && parts.len() <= 2
-            && parts.last() == Some(&"manifest.json")
-            && !(parts.len() == 2
-                && matches!(
-                    parts[0],
-                    ".minecraft" | "minecraft" | "versions" | "libraries" | "assets"
-                ));
-        let bytes = if marker {
-            let size = entry.size();
-            if size > JSON_BYTES {
-                return Err("ZIP 格式识别清单超过 4 MiB 限制".into());
-            }
-            captured = captured
-                .checked_add(size)
-                .filter(|bytes| *bytes <= CAPTURE_BYTES)
-                .ok_or("ZIP 格式识别清单总量超过 32 MiB 限制")?;
-            let mut bytes = Vec::with_capacity(size as usize);
-            (&mut entry)
-                .take(size + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|_| "ZIP 格式识别清单解压或 CRC 校验失败")?;
-            if bytes.len() as u64 != size {
-                return Err("ZIP 格式识别清单大小与声明不符".into());
-            }
-            Some(bytes)
-        } else {
-            None
-        };
-        nodes.insert(
-            path,
-            Node {
-                directory,
-                size: entry.size(),
-                hash: String::new(),
-                sha1: String::new(),
-                bytes,
-            },
-        );
-    }
-    let format = layout(&nodes)?.format;
-    if format != Format::Pcl && paths > PATH_BYTES {
-        return Err("ZIP 路径文本超过 8 MiB 限制".into());
-    }
+    let format = classify_held(&file, cancel)?;
     if super::Stamp::of(&file.metadata().map_err(super::super::error)?) != before
         || super::Stamp::of(
             &super::super::open_source(source)?
@@ -169,14 +123,130 @@ pub(super) fn classify(source: &Path) -> Result<Format> {
     }
     Ok(format)
 }
+pub(super) fn classify_held(file: &File, cancel: &AtomicBool) -> Result<Format> {
+    Ok(classification(file, cancel)?.format)
+}
+pub(super) fn nested_entry(file: &File, cancel: &AtomicBool) -> Result<NestedEntry> {
+    let layout = classification(file, cancel)?;
+    if layout.format != Format::Launcher {
+        return Err("ZIP 不包含唯一内嵌整合包".into());
+    }
+    let mut zip =
+        super::super::archive::checked_zip(file.try_clone().map_err(super::super::error)?)?;
+    for name in ["modpack.zip", "modpack.mrpack"] {
+        let path = format!("{}{name}", layout.prefix);
+        if let Ok(entry) = zip.by_name(&path) {
+            if entry.size() > FILE_BYTES {
+                return Err("内嵌整合包压缩文件超过 2 GiB 限制".into());
+            }
+            return Ok(NestedEntry {
+                archive_path: path,
+                size: entry.size(),
+            });
+        }
+    }
+    Err("内嵌整合包条目在识别后发生变化".into())
+}
+fn classification(file: &File, cancel: &AtomicBool) -> Result<Layout> {
+    super::super::check(cancel)?;
+    let before = super::Stamp::of(&file.metadata().map_err(super::super::error)?);
+    let mut zip =
+        super::super::archive::checked_zip(file.try_clone().map_err(super::super::error)?)?;
+    let mut nodes = BTreeMap::new();
+    let mut captured = 0u64;
+    let mut paths = 0usize;
+    for i in 0..zip.len() {
+        super::super::check(cancel)?;
+        let entry = zip.by_index(i).map_err(|_| "ZIP 格式识别目录无效")?;
+        let path = std::str::from_utf8(entry.name_raw())
+            .map_err(|_| "ZIP 路径必须是 UTF-8")?
+            .trim_end_matches('/')
+            .to_owned();
+        paths = paths
+            .checked_add(path.len())
+            .ok_or("ZIP 路径文本长度溢出")?;
+        let directory = entry.is_dir();
+        nodes.insert(
+            path,
+            Node {
+                directory,
+                size: entry.size(),
+                hash: String::new(),
+                sha1: String::new(),
+                bytes: None,
+            },
+        );
+    }
+    // A launcher candidate must be selected/charged before any body is read.
+    // Its competing marker declarations can be rejected from the directory.
+    if nested_candidates(&nodes, cancel)?.is_empty() {
+        for i in 0..zip.len() {
+            super::super::check(cancel)?;
+            let mut entry = zip.by_index(i).map_err(|_| "ZIP 格式识别目录无效")?;
+            let path = std::str::from_utf8(entry.name_raw())
+                .map_err(|_| "ZIP 路径必须是 UTF-8")?
+                .trim_end_matches('/')
+                .to_owned();
+            let parts = path.split('/').collect::<Vec<_>>();
+            let marker = !entry.is_dir()
+                && parts.len() <= 2
+                && parts.last() == Some(&"manifest.json")
+                && !(parts.len() == 2 && game_root(parts[0]));
+            let bytes = if marker {
+                let size = entry.size();
+                if size > JSON_BYTES {
+                    return Err("ZIP 格式识别清单超过 4 MiB 限制".into());
+                }
+                captured = captured
+                    .checked_add(size)
+                    .filter(|bytes| *bytes <= CAPTURE_BYTES)
+                    .ok_or("ZIP 格式识别清单总量超过 32 MiB 限制")?;
+                Some(read_metadata(&mut entry, size, cancel)?)
+            } else {
+                None
+            };
+            nodes
+                .get_mut(&path)
+                .ok_or("ZIP 目录在识别中发生变化")?
+                .bytes = bytes;
+        }
+    }
+    let layout = layout(&nodes, cancel)?;
+    if layout.format != Format::Pcl && paths > PATH_BYTES {
+        return Err("ZIP 路径文本超过 8 MiB 限制".into());
+    }
+    if super::Stamp::of(&file.metadata().map_err(super::super::error)?) != before {
+        return Err(super::super::changed());
+    }
+    super::super::check(cancel)?;
+    Ok(layout)
+}
+#[cfg(test)]
 pub(super) fn prepare(
     file: File,
     name: &str,
     format: Format,
     optional_paths: Option<&[String]>,
 ) -> Result<PreparedArchive> {
+    prepare_with_budget(
+        file,
+        name,
+        format,
+        optional_paths,
+        &AtomicBool::new(false),
+        DECODED_BYTES,
+    )
+}
+pub(super) fn prepare_with_budget(
+    file: File,
+    name: &str,
+    format: Format,
+    optional_paths: Option<&[String]>,
+    cancel: &AtomicBool,
+    decoded_limit: u64,
+) -> Result<PreparedArchive> {
     super::super::name_ok(name)?;
-    let scan = scan(file)?;
+    let scan = scan(file, cancel, decoded_limit, None)?;
     if scan.layout.format != format {
         return Err("整合包格式在识别后发生变化".into());
     }
@@ -191,6 +261,7 @@ pub(super) fn prepare(
         Format::Hmcl => hmcl(&scan)?,
         Format::Multimc => multimc(&scan, name)?,
         Format::ReadyGame => ready(&scan, name)?,
+        Format::Launcher => return Err("仅支持一层内嵌整合包；内层不能再次包含带启动器归档".into()),
     };
     for path in prepared.outputs.keys() {
         if path == &format!("{name}.jar") || path == &format!("{name}.json") {
@@ -266,7 +337,66 @@ fn metadata_path(path: &str) -> bool {
             && parts[parts.len() - 3] == "versions"
             && parts[parts.len() - 1] == format!("{}.json", parts[parts.len() - 2]))
 }
-fn scan(file: File) -> Result<Scan> {
+struct InnerCopy<'a> {
+    entry: &'a NestedEntry,
+    file: &'a mut File,
+}
+pub(super) struct OuterScan {
+    pub entry: OverrideFile,
+    pub decoded_bytes: u64,
+}
+pub(super) fn scan_outer(
+    file: File,
+    entry: &NestedEntry,
+    destination: &mut File,
+    cancel: &AtomicBool,
+) -> Result<OuterScan> {
+    let scan = scan(
+        file,
+        cancel,
+        DECODED_BYTES,
+        Some(InnerCopy {
+            entry,
+            file: destination,
+        }),
+    )?;
+    let node = scan
+        .nodes
+        .get(&entry.archive_path)
+        .ok_or("内嵌条目在扫描后缺失")?;
+    Ok(OuterScan {
+        entry: fact(&entry.archive_path, &entry.archive_path, node, false),
+        decoded_bytes: scan.decoded_bytes,
+    })
+}
+fn read_metadata(reader: &mut impl Read, size: u64, cancel: &AtomicBool) -> Result<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(size as usize);
+    let mut buffer = [0u8; 128 * 1024];
+    loop {
+        super::super::check(cancel)?;
+        let count = reader
+            .read(&mut buffer)
+            .map_err(|_| "整合包清单解压或 CRC 校验失败")?;
+        if count == 0 {
+            break;
+        }
+        if (bytes.len() as u64).saturating_add(count as u64) > size {
+            return Err("整合包清单实际大小超过声明".into());
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+    }
+    if bytes.len() as u64 != size {
+        return Err("整合包清单实际大小与声明不符".into());
+    }
+    Ok(bytes)
+}
+fn scan(
+    file: File,
+    cancel: &AtomicBool,
+    decoded_limit: u64,
+    mut copy: Option<InnerCopy<'_>>,
+) -> Result<Scan> {
+    super::super::check(cancel)?;
     let metadata = file.metadata().map_err(|_| "无法检查整合包文件")?;
     if !metadata.is_file() || metadata.len() > ARCHIVE_BYTES {
         return Err("整合包源必须是普通 ZIP 文件且不超过 8 GiB".into());
@@ -282,6 +412,7 @@ fn scan(file: File) -> Result<Scan> {
     // Capture only bounded descriptor candidates first. This determines the
     // format before a large ignored body can bypass the smaller mrpack budget.
     for i in 0..zip.len() {
+        super::super::check(cancel)?;
         let mut entry = zip
             .by_index(i)
             .map_err(|_| "整合包 ZIP 内容或加密声明无效")?;
@@ -323,7 +454,7 @@ fn scan(file: File) -> Result<Scan> {
         }
         total = total
             .checked_add(size)
-            .filter(|n| *n <= DECODED_BYTES)
+            .filter(|n| *n <= DECODED_BYTES.min(decoded_limit))
             .ok_or("整合包解压内容超过 16 GiB 限制")?;
         let bytes = if !directory && metadata_path(&path) {
             if size > JSON_BYTES {
@@ -333,15 +464,7 @@ fn scan(file: File) -> Result<Scan> {
                 .checked_add(size)
                 .filter(|n| *n <= CAPTURE_BYTES)
                 .ok_or("整合包清单捕获总量超过 32 MiB 限制")?;
-            let mut bytes = Vec::with_capacity(size as usize);
-            (&mut entry)
-                .take(size + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|_| "整合包清单解压或 CRC 校验失败")?;
-            if bytes.len() as u64 != size {
-                return Err("整合包清单实际大小与声明不符".into());
-            }
-            Some(bytes)
+            Some(read_metadata(&mut entry, size, cancel)?)
         } else {
             None
         };
@@ -373,7 +496,17 @@ fn scan(file: File) -> Result<Scan> {
             .map(|(path, _)| path.clone())
             .collect(),
     )?;
-    let layout = layout(&nodes)?;
+    let layout = layout(&nodes, cancel)?;
+    if let Some(copy) = &copy {
+        let node = nodes
+            .get(&copy.entry.archive_path)
+            .ok_or("内嵌条目在扫描前缺失")?;
+        if layout.format != Format::Launcher || node.directory || node.size != copy.entry.size {
+            return Err("内嵌整合包条目在识别后发生变化".into());
+        }
+    } else if layout.format == Format::Launcher {
+        return Err("仅支持一层内嵌整合包；内层不能再次包含带启动器归档".into());
+    }
     if layout.format == Format::Modrinth
         && (metadata.len() > super::MAX_ARCHIVE
             || total > super::MAX_DECODED
@@ -385,6 +518,7 @@ fn scan(file: File) -> Result<Scan> {
     // Stream every body without retaining payloads. zip's reader verifies CRC
     // at EOF; hashes bind the original archive path to later held-FD extraction.
     for i in 0..zip.len() {
+        super::super::check(cancel)?;
         let mut entry = zip.by_index(i).map_err(|_| "整合包 ZIP 内容无效")?;
         let path = std::str::from_utf8(entry.name_raw())
             .map_err(|_| "整合包 ZIP 路径无效")?
@@ -398,6 +532,7 @@ fn scan(file: File) -> Result<Scan> {
         let mut sha1 = Sha1::new();
         let mut buffer = [0u8; 128 * 1024];
         loop {
+            super::super::check(cancel)?;
             let count = entry
                 .read(&mut buffer)
                 .map_err(|_| "整合包 ZIP 解压或 CRC 校验失败")?;
@@ -410,6 +545,13 @@ fn scan(file: File) -> Result<Scan> {
                 .ok_or("整合包实际解压大小超过声明")?;
             sha256.update(&buffer[..count]);
             sha1.update(&buffer[..count]);
+            if let Some(copy) = &mut copy {
+                if copy.entry.archive_path == path {
+                    copy.file
+                        .write_all(&buffer[..count])
+                        .map_err(|_| "无法写入匿名内嵌整合包")?;
+                }
+            }
         }
         if size != node.size {
             return Err("整合包实际文件大小与声明不符".into());
@@ -417,12 +559,72 @@ fn scan(file: File) -> Result<Scan> {
         node.hash = format!("{:x}", sha256.finalize());
         node.sha1 = format!("{:x}", sha1.finalize());
     }
-    Ok(Scan { nodes, layout })
+    super::super::check(cancel)?;
+    Ok(Scan {
+        nodes,
+        layout,
+        decoded_bytes: total,
+    })
 }
 
-fn layout(nodes: &BTreeMap<String, Node>) -> Result<Layout> {
+fn game_root(value: &str) -> bool {
+    matches!(
+        value,
+        ".minecraft" | "minecraft" | "versions" | "libraries" | "assets"
+    )
+}
+fn nested_candidates(nodes: &BTreeMap<String, Node>, cancel: &AtomicBool) -> Result<Vec<String>> {
+    let mut found = Vec::new();
+    for (path, node) in nodes {
+        super::super::check(cancel)?;
+        let parts = path.split('/').collect::<Vec<_>>();
+        if !matches!(parts.last(), Some(&("modpack.zip" | "modpack.mrpack"))) {
+            continue;
+        }
+        let direct =
+            parts.len() == 1 || (parts.len() == 2 && !game_root(parts[0]) && parts[0] != ".hmcl");
+        let hmcl = parts.len() == 3 && parts[0] == ".hmcl" && parts[1] == "modpack"
+            || (parts.len() == 4
+                && !game_root(parts[0])
+                && parts[0] != ".hmcl"
+                && parts[1] == ".hmcl"
+                && parts[2] == "modpack");
+        if direct || hmcl {
+            super::super::relative(path)?;
+            if node.directory {
+                return Err("内嵌整合包条目必须是普通文件".into());
+            }
+            found.push(path.clone());
+        }
+    }
+    Ok(found)
+}
+
+// Each ready-game subtree belongs to at most the root or one wrapper. Range
+// lookup avoids rescanning every unrelated launcher path for every wrapper.
+fn has_ready_nodes(
+    nodes: &BTreeMap<String, Node>,
+    prefix: &str,
+    cancel: &AtomicBool,
+) -> Result<bool> {
+    for root in [".minecraft/versions/", "minecraft/versions/", "versions/"] {
+        let start = format!("{prefix}{root}");
+        for (path, _) in nodes
+            .range(start.clone()..)
+            .take_while(|(path, _)| path.starts_with(&start))
+        {
+            super::super::check(cancel)?;
+            if path.ends_with(".json") {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+fn layout(nodes: &BTreeMap<String, Node>, cancel: &AtomicBool) -> Result<Layout> {
     let mut prefixes = BTreeSet::from([String::new()]);
     for path in nodes.keys() {
+        super::super::check(cancel)?;
         if let Some((first, _)) = path.split_once('/') {
             if !matches!(
                 first,
@@ -432,8 +634,42 @@ fn layout(nodes: &BTreeMap<String, Node>) -> Result<Layout> {
             }
         }
     }
+    let nested = nested_candidates(nodes, cancel)?;
+    if !nested.is_empty() {
+        let markers = [
+            "pcl-export.json",
+            "modrinth.index.json",
+            "manifest.json",
+            "mcbbs.packmeta",
+            "modpack.json",
+            "mmc-pack.json",
+        ];
+        if nested.len() != 1 {
+            return Err("ZIP 内嵌整合包候选或其他格式清单存在歧义".into());
+        }
+        for prefix in &prefixes {
+            super::super::check(cancel)?;
+            if markers.iter().any(|name| {
+                nodes
+                    .get(&format!("{prefix}{name}"))
+                    .is_some_and(|node| !node.directory)
+            }) || has_ready_nodes(nodes, prefix, cancel)?
+            {
+                return Err("ZIP 内嵌整合包候选或其他格式清单存在歧义".into());
+            }
+        }
+        let path = &nested[0];
+        let prefix = path
+            .rsplit_once('/')
+            .map_or(String::new(), |(prefix, _)| format!("{prefix}/"));
+        return Ok(Layout {
+            format: Format::Launcher,
+            prefix,
+        });
+    }
     let mut candidates = Vec::new();
     for prefix in prefixes {
+        super::super::check(cancel)?;
         let has = |name: &str| {
             nodes
                 .get(&format!("{prefix}{name}"))
@@ -474,14 +710,7 @@ fn layout(nodes: &BTreeMap<String, Node>) -> Result<Layout> {
                 format: *format,
                 prefix,
             });
-        } else if [".minecraft/versions/", "minecraft/versions/", "versions/"]
-            .iter()
-            .any(|root| {
-                nodes.keys().any(|path| {
-                    path.starts_with(&format!("{prefix}{root}")) && path.ends_with(".json")
-                })
-            })
-        {
+        } else if has_ready_nodes(nodes, &prefix, cancel)? {
             candidates.push(Layout {
                 format: Format::ReadyGame,
                 prefix,

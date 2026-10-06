@@ -205,7 +205,17 @@ pub async fn instance_import_prepare(
 ) -> Result<LocalPackPlan, String> {
     let shared = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let network_pack = !instance_import::mrpack::is_local_export(Path::new(&source))?;
+        // Admit even the short classifier before opening a source FD. The same
+        // window then bounds inner extraction; shutdown is checked by every
+        // scan/hash chunk through the existing shared closing flag.
+        let preparation = shared.pack_confirmations.preparation()?;
+        if shared.closing.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("启动器正在关闭，不能检查整合包".into());
+        }
+        let network_pack = !instance_import::mrpack::is_local_export_cancellable(
+            Path::new(&source),
+            &shared.closing,
+        )?;
         let root = {
             let _operation = shared.operations.lock().unwrap();
             if network_pack {
@@ -223,12 +233,14 @@ pub async fn instance_import_prepare(
             root
         };
         let plan = if network_pack {
-            LocalPackPlan::Pack(shared.pack_confirmations.prepare(
+            LocalPackPlan::Pack(shared.pack_confirmations.prepare_admitted(
+                preparation,
                 &root,
                 &shared.project,
                 Path::new(&source),
                 &name,
                 optional_paths.as_deref(),
+                &shared.closing,
             )?)
         } else {
             prepare_local_pack(
@@ -238,21 +250,51 @@ pub async fn instance_import_prepare(
                 optional_paths.as_deref(),
             )?
         };
-        let _operation = shared.operations.lock().unwrap();
-        if network_pack {
-            crate::require_network_submission(&shared)?;
-            if shared.config.resolve(Some(&root.id))?.path != root.path {
-                return Err("游戏目录位置已改变，请重新检查".into());
-            }
-            pack_ready(&shared, &root)?;
-        } else {
-            recheck_target(&shared, &root)?;
-        }
-        new_name(&shared, &root, &name)?;
-        Ok(plan)
+        finish_prepare(&shared, &root, &name, network_pack, plan)
     })
     .await
     .map_err(|_| "检查整合包导入方案的任务意外退出".to_string())?
+}
+
+/// Releasing an abandoned preview is allowed during shutdown and root changes.
+/// The opaque token only removes an unclaimed cache record; a submitted worker
+/// has already moved that record out and retains its source/disk lease.
+#[tauri::command]
+pub fn instance_import_discard(revision: String, state: State<'_, Arc<Shared>>) {
+    state.pack_confirmations.discard_unclaimed(&revision);
+}
+
+/// Only a plan that passes the native command's final short gates is exposed.
+/// Any late failure retires its exact still-unclaimed authority before return;
+/// queued/running ownership is outside the cache and is never revoked here.
+pub(crate) fn finish_prepare(
+    shared: &Shared,
+    root: &GameRoot,
+    name: &str,
+    network_pack: bool,
+    plan: LocalPackPlan,
+) -> Result<LocalPackPlan, String> {
+    let projection = match &plan {
+        LocalPackPlan::Pack(plan) if plan.installable => {
+            Some(shared.pack_confirmations.pending_projection(&plan.revision))
+        }
+        _ => None,
+    };
+    let _operation = shared.operations.lock().unwrap();
+    if network_pack {
+        crate::require_network_submission(shared)?;
+        if shared.config.resolve(Some(&root.id))?.path != root.path {
+            return Err("游戏目录位置已改变，请重新检查".into());
+        }
+        pack_ready(shared, root)?;
+    } else {
+        recheck_target(shared, root)?;
+    }
+    new_name(shared, root, name)?;
+    if let Some(projection) = projection {
+        projection.expose();
+    }
+    Ok(plan)
 }
 
 /// A running pack transaction is guarded by its root-scoped worker. Read-only

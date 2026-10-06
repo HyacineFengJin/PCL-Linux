@@ -20,8 +20,14 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::in_work("../../../work/modpack-install-2026-10-06/service/fixtures")
+    }
+    fn nested() -> Self {
+        Self::in_work("../../../work/nested-pack-2026-10-06/service/fixtures")
+    }
+    fn in_work(work: &str) -> Self {
         let base = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../work/modpack-install-2026-10-06/service/fixtures")
+            .join(work)
             .join(format!(
                 "{}-{}",
                 std::process::id(),
@@ -77,6 +83,22 @@ impl Fixture {
             .pack_confirmations
             .prepare(&self.root, &self.project.0, &self.source, name, None)
             .unwrap()
+    }
+    fn launcher_zip(&self, entry: &str) -> Vec<u8> {
+        let inner = fs::read(&self.source).unwrap();
+        let mut zip = ZipWriter::new(File::create(&self.source).unwrap());
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (path, bytes) in [
+            (entry, inner.as_slice()),
+            ("Launcher.exe", b"OUTER_LAUNCHER".as_slice()),
+            ("launcher_accounts.json", b"outer account data".as_slice()),
+        ] {
+            zip.start_file(path, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        inner
     }
     fn submit(&self, root: &GameRoot, plan: &PackPlan) -> String {
         let _operations = self.shared.operations.lock().unwrap();
@@ -146,6 +168,10 @@ fn tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
 fn budget(cache: &ConfirmationCache) -> (usize, usize) {
     let usage = cache.budget.lock().unwrap();
     (usage.fds, usage.bytes)
+}
+fn input_usage(cache: &ConfirmationCache) -> (usize, usize, u64, usize) {
+    let usage = cache.budget.lock().unwrap();
+    (usage.fds, usage.bytes, usage.inner_bytes, usage.preparing)
 }
 
 #[test]
@@ -710,4 +736,330 @@ fn bundled_worker_retargeted_build_preserves_foreign_root_and_conflicting_journa
         .unwrap()
         .is_empty());
     assert_eq!(budget(&f.shared.pack_confirmations), (0, 0));
+}
+
+#[test]
+fn launcher_zip_real_confirmation_installs_only_inner_content_and_releases_input_lease() {
+    for entry in [
+        "modpack.zip",
+        "wrapper/modpack.zip",
+        ".hmcl/modpack/modpack.zip",
+    ] {
+        let f = Fixture::nested();
+        let inner = f.launcher_zip(entry);
+        let outer = fs::read(&f.source).unwrap();
+        let inode = fs::metadata(&f.source).unwrap().ino();
+        let before = tree(Path::new(&f.root.path));
+        let plan = f.prepare("Nested");
+        assert!(plan.installable);
+        assert_eq!(plan.format, "ready_game");
+        assert_eq!(tree(Path::new(&f.root.path)), before);
+        let usage = input_usage(&f.shared.pack_confirmations);
+        assert_eq!((usage.0, usage.2, usage.3), (2, inner.len() as u64, 0));
+        let cache = f.project.0.join(".pcl-linux/pack-inputs");
+        assert_eq!(fs::read_dir(cache).unwrap().count(), 0);
+        let id = f.submit(&f.root, &plan);
+        let terminal = f.shared.tasks.wait_terminal(&id).unwrap();
+        assert_eq!(terminal.stage, TaskStage::Complete, "{:?}", terminal.error);
+        let version = Path::new(&f.root.path).join("versions/Nested");
+        assert_eq!(
+            fs::read(version.join("Nested.jar")).unwrap(),
+            b"bundled core"
+        );
+        assert_eq!(
+            fs::read(version.join("mods/local.jar")).unwrap(),
+            b"MOD_BODY"
+        );
+        assert_eq!(
+            fs::read(version.join("config/local.cfg")).unwrap(),
+            b"pack configuration"
+        );
+        assert!(!version.join("Launcher.exe").exists());
+        assert!(!version.join("launcher_accounts.json").exists());
+        assert_eq!(fs::read(&f.source).unwrap(), outer);
+        assert_eq!(fs::metadata(&f.source).unwrap().ino(), inode);
+        assert_eq!(input_usage(&f.shared.pack_confirmations), (0, 0, 0, 0));
+        super::super::super::ensure_ready(Path::new(&f.root.path)).unwrap();
+    }
+}
+
+#[test]
+fn launcher_zip_queued_outer_replacement_edit_and_inner_fd_edit_fail_without_root_writes() {
+    use std::os::unix::fs::FileExt;
+    for mutation in ["outer-replace", "outer-edit", "inner-edit"] {
+        let f = Fixture::nested();
+        let inner = f.launcher_zip("modpack.zip");
+        let gate = f.gate();
+        let before = tree(Path::new(&f.root.path));
+        let plan = f.prepare("NestedStale");
+        let held_inner = f
+            .shared
+            .pack_confirmations
+            .entries
+            .lock()
+            .unwrap()
+            .back()
+            .unwrap()
+            .authority
+            .checked
+            .content_file()
+            .unwrap();
+        let id = f.submit(&f.root, &plan);
+        assert_eq!(
+            f.shared.tasks.snapshot(&id).unwrap().stage,
+            TaskStage::Queued
+        );
+        assert_eq!(
+            input_usage(&f.shared.pack_confirmations).2,
+            inner.len() as u64
+        );
+        match mutation {
+            "outer-replace" => {
+                let replacement = f.project.0.join("outer-replacement.zip");
+                fs::write(&replacement, fs::read(&f.source).unwrap()).unwrap();
+                fs::rename(replacement, &f.source).unwrap();
+            }
+            "outer-edit" => {
+                let mut raw = fs::read(&f.source).unwrap();
+                let at = raw
+                    .windows(14)
+                    .position(|v| v == b"OUTER_LAUNCHER")
+                    .unwrap();
+                raw[at] ^= 1;
+                fs::write(&f.source, raw).unwrap();
+            }
+            "inner-edit" => {
+                let at = inner.windows(8).position(|v| v == b"MOD_BODY").unwrap();
+                held_inner.write_at(b"x", at as u64).unwrap();
+                held_inner.sync_all().unwrap();
+            }
+            _ => unreachable!(),
+        }
+        drop(held_inner);
+        complete(&gate);
+        let terminal = f.shared.tasks.wait_terminal(&id).unwrap();
+        assert_eq!(
+            terminal.stage,
+            TaskStage::Error,
+            "{mutation}: {:?}",
+            terminal.error
+        );
+        assert_eq!(tree(Path::new(&f.root.path)), before, "{mutation}");
+        assert_eq!(input_usage(&f.shared.pack_confirmations), (0, 0, 0, 0));
+    }
+}
+
+#[test]
+fn launcher_zip_queued_cancel_closes_anonymous_inner_and_releases_disk_budget() {
+    use std::os::fd::AsRawFd;
+    let f = Fixture::nested();
+    let inner = f.launcher_zip("modpack.zip");
+    let gate = f.gate();
+    let before = tree(Path::new(&f.root.path));
+    let outer = fs::read(&f.source).unwrap();
+    let plan = f.prepare("NestedCancel");
+    let (fd, key) = {
+        let entries = f.shared.pack_confirmations.entries.lock().unwrap();
+        let held = &entries
+            .back()
+            .unwrap()
+            .authority
+            .checked
+            .inner
+            .as_ref()
+            .unwrap()
+            .file;
+        (held.as_raw_fd(), Stamp::of(&held.metadata().unwrap()).key)
+    };
+    let id = f.submit(&f.root, &plan);
+    assert_eq!(
+        input_usage(&f.shared.pack_confirmations).2,
+        inner.len() as u64
+    );
+    assert_eq!(
+        f.shared.downloads.cancel_and_wait(Some(&id)).unwrap().stage,
+        "cancelled"
+    );
+    assert_eq!(input_usage(&f.shared.pack_confirmations), (0, 0, 0, 0));
+    // Concurrent tests may recycle the numeric FD; its original inode must
+    // nevertheless be closed before cancellation publishes released budgets.
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } == 0 {
+        assert_ne!(Stamp::stat(&unsafe { stat.assume_init() }).key, key);
+    }
+    assert_eq!(tree(Path::new(&f.root.path)), before);
+    assert_eq!(fs::read(&f.source).unwrap(), outer);
+    complete(&gate);
+}
+
+#[test]
+fn launcher_zip_inner_change_before_commit_rejects_publication_and_cleans_private_tree() {
+    use std::os::unix::fs::FileExt;
+    let f = Fixture::nested();
+    let inner = f.launcher_zip("modpack.zip");
+    let outer = fs::read(&f.source).unwrap();
+    let plan = f.prepare("NestedCommit");
+    let held = f
+        .shared
+        .pack_confirmations
+        .entries
+        .lock()
+        .unwrap()
+        .back()
+        .unwrap()
+        .authority
+        .checked
+        .content_file()
+        .unwrap();
+    let at = inner.windows(8).position(|v| v == b"MOD_BODY").unwrap() as u64;
+    let mutated = Arc::new(AtomicBool::new(false));
+    let did_mutate = mutated.clone();
+    let held = Arc::new(held);
+    f.shared.tasks.set_listener(move |snapshot| {
+        if snapshot.kind == TaskKind::ModpackInstall
+            && snapshot.phase == "import-commit"
+            && !did_mutate.swap(true, Ordering::Relaxed)
+        {
+            held.write_at(b"x", at).unwrap();
+            held.sync_all().unwrap();
+        }
+    });
+    let id = f.submit(&f.root, &plan);
+    let terminal = f.shared.tasks.wait_terminal(&id).unwrap();
+    assert!(mutated.load(Ordering::Relaxed));
+    assert_eq!(terminal.stage, TaskStage::Error, "{:?}", terminal.error);
+    assert!(!Path::new(&f.root.path)
+        .join("versions/NestedCommit")
+        .exists());
+    assert_eq!(fs::read(&f.source).unwrap(), outer);
+    assert_eq!(input_usage(&f.shared.pack_confirmations), (0, 0, 0, 0));
+    super::super::super::ensure_ready(Path::new(&f.root.path)).unwrap();
+}
+
+#[test]
+fn launcher_zip_rejects_staging_root_overlap_before_creating_input_cache() {
+    for selection in ["project", "ancestor", "namespace", "cache"] {
+        let f = Fixture::nested();
+        f.launcher_zip("modpack.zip");
+        let mut root = f.root.clone();
+        let path = match selection {
+            "project" => f.project.0.clone(),
+            "ancestor" => f.project.0.parent().unwrap().to_owned(),
+            "namespace" => f.project.0.join(".pcl-linux"),
+            "cache" => f.project.0.join(".pcl-linux/pack-inputs"),
+            _ => unreachable!(),
+        };
+        fs::create_dir_all(&path).unwrap();
+        root.path = path.to_string_lossy().into_owned();
+        let before = tree(&f.project.0);
+        let error = f
+            .shared
+            .pack_confirmations
+            .prepare(&root, &f.project.0, &f.source, "Overlap", None)
+            .err()
+            .unwrap();
+        assert!(
+            error.contains("暂存目录与游戏目录重叠"),
+            "{selection}: {error}"
+        );
+        assert_eq!(tree(&f.project.0), before, "{selection}");
+        assert_eq!(input_usage(&f.shared.pack_confirmations), (0, 0, 0, 0));
+    }
+}
+
+#[test]
+fn launcher_zip_native_final_gate_failure_discards_only_its_unexposed_confirmation() {
+    use crate::instance_commands::{finish_prepare, LocalPackPlan};
+    for gate in ["closing", "root-removed", "name-reserved", "accepted"] {
+        let f = Fixture::nested();
+        f.launcher_zip("modpack.zip");
+        let source = fs::read(&f.source).unwrap();
+        let plan = f.prepare("Projected");
+        match gate {
+            "closing" => f.shared.closing.store(true, Ordering::SeqCst),
+            "root-removed" => {
+                let other = f.project.0.join("other-root");
+                fs::create_dir(&other).unwrap();
+                f.shared
+                    .config
+                    .register(other.to_string_lossy().into_owned(), None)
+                    .unwrap();
+                f.shared.config.remove(&f.root.id).unwrap();
+            }
+            "name-reserved" => f
+                .shared
+                .config
+                .select_installed(&f.root.id, &plan.name)
+                .unwrap(),
+            "accepted" => {}
+            _ => unreachable!(),
+        }
+        let before = tree(Path::new(&f.root.path));
+        let result = finish_prepare(
+            &f.shared,
+            &f.root,
+            &plan.name,
+            true,
+            LocalPackPlan::Pack(plan.clone()),
+        );
+        if gate == "accepted" {
+            assert!(result.is_ok());
+            assert_eq!(input_usage(&f.shared.pack_confirmations).0, 2);
+            let id = f.submit(&f.root, &plan);
+            assert_eq!(
+                f.shared.tasks.wait_terminal(&id).unwrap().stage,
+                TaskStage::Complete
+            );
+        } else {
+            assert!(result.is_err(), "{gate}");
+            assert!(f
+                .shared
+                .pack_confirmations
+                .entries
+                .lock()
+                .unwrap()
+                .is_empty());
+            assert_eq!(tree(Path::new(&f.root.path)), before, "{gate}");
+        }
+        assert_eq!(fs::read(&f.source).unwrap(), source);
+        assert_eq!(input_usage(&f.shared.pack_confirmations), (0, 0, 0, 0));
+    }
+}
+
+#[test]
+fn projection_drop_cannot_revoke_claimed_inner_or_another_unclaimed_revision() {
+    let f = Fixture::nested();
+    let inner = f.launcher_zip("modpack.zip");
+    let cache = &f.shared.pack_confirmations;
+    let first = f.prepare("FirstProjection");
+    let guard = cache.pending_projection(&first.revision);
+    let claimed = cache
+        .claim(
+            &f.root,
+            &f.project.0,
+            &f.source,
+            &first.name,
+            &first.revision,
+        )
+        .unwrap();
+    let second = f.prepare("SecondProjection");
+    // The UI's lightweight discard command calls this same release API. A
+    // claimed token and unrelated/readonly tokens must remain harmless.
+    cache.discard_unclaimed(&first.revision);
+    cache.discard_unclaimed("mrpack-v1:readonly");
+    cache.discard_unclaimed(&"pack-confirm-v1:".repeat(32));
+    drop(guard);
+    assert_eq!(input_usage(cache).0, 4);
+    assert_eq!(input_usage(cache).2, 2 * inner.len() as u64);
+    assert_eq!(cache.entries.lock().unwrap().len(), 1);
+    assert_eq!(cache.entries.lock().unwrap()[0].token, second.revision);
+    claimed
+        .checked
+        .recheck_source(&AtomicBool::new(false))
+        .unwrap();
+    cache.discard_unclaimed(&second.revision);
+    assert_eq!(input_usage(cache).0, 2);
+    assert_eq!(input_usage(cache).2, inner.len() as u64);
+    drop(claimed);
+    assert_eq!(input_usage(cache), (0, 0, 0, 0));
 }

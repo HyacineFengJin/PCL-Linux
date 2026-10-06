@@ -12,7 +12,10 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
+    io::{Seek, SeekFrom},
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
 };
 #[path = "mrpack/archive.rs"]
 mod archive;
@@ -94,6 +97,13 @@ struct Binding {
     source: PathBuf,
     source_snapshot: Snapshot,
     archive_limit: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inner: Option<InnerBinding>,
+}
+#[derive(Clone, Serialize)]
+struct InnerBinding {
+    snapshot: Snapshot,
+    outer_entry: OverrideFile,
 }
 #[derive(Serialize)]
 #[serde(tag = "origin", rename_all = "snake_case")]
@@ -127,9 +137,6 @@ fn source_file(source: &Path, limit: u64) -> Result<File> {
     }
     Ok(file)
 }
-fn source_snapshot(source: &Path, limit: u64) -> Result<Snapshot> {
-    hash_file(source_file(source, limit)?, limit, None)
-}
 fn root_scope(root: &Path, name: &str) -> Result<(Key, Option<Key>)> {
     name_ok(name)?;
     let root = Dir::open(root)?;
@@ -149,6 +156,10 @@ fn root_scope(root: &Path, name: &str) -> Result<(Key, Option<Key>)> {
 /// Recognition chooses a parser, not authority. It checks the bounded central
 /// directory and stable held/path identities without trusting an extension.
 pub fn recognizes(source: &Path) -> Result<bool> {
+    recognizes_cancellable(source, &AtomicBool::new(false))
+}
+fn recognizes_cancellable(source: &Path, cancel: &AtomicBool) -> Result<bool> {
+    super::check(cancel)?;
     // Dispatch retains the original PCL ZIP source bounds. The smaller mrpack
     // budget applies only after its root marker selects this parser.
     let file = open_source(source)?;
@@ -160,6 +171,7 @@ pub fn recognizes(source: &Path) -> Result<bool> {
     let mut index = false;
     let mut pcl = false;
     for i in 0..zip.len() {
+        super::check(cancel)?;
         let entry = zip.by_index(i).map_err(|_| "ZIP 目录内容无效")?;
         if entry.name() == INDEX {
             if entry.is_dir() {
@@ -179,6 +191,7 @@ pub fn recognizes(source: &Path) -> Result<bool> {
     if index && pcl {
         return Err("ZIP 同时包含 PCL 与 Modrinth 根清单，格式有歧义".into());
     }
+    super::check(cancel)?;
     Ok(index)
 }
 
@@ -200,6 +213,14 @@ struct CheckedPack {
     directories: BTreeSet<String>,
     bundled: Option<formats::BundledCore>,
     rebuild_profile: Option<Vec<u8>>,
+    inner: Option<HeldInnerArchive>,
+}
+/// The original selected source is always `CheckedPack.file`. The inner input
+/// is process-owned anonymous content authority; no pathname can recreate it.
+struct HeldInnerArchive {
+    file: File,
+    snapshot: Snapshot,
+    outer_entry: OverrideFile,
 }
 /// Parsed facts stay named so format adapters cannot confuse bundled cores,
 /// private runtime declarations or the effective client output collections.
@@ -216,7 +237,25 @@ fn prepare_checked(
     name: &str,
     optional_paths: Option<&[String]>,
 ) -> Result<CheckedPack> {
-    let format = formats::classify(source)?;
+    prepare_checked_with_stage(
+        root,
+        source,
+        name,
+        optional_paths,
+        &AtomicBool::new(false),
+        |_| Err("带启动器整合包需要原生确认服务分配匿名内层归档".into()),
+    )
+}
+fn prepare_checked_with_stage(
+    root: &Path,
+    source: &Path,
+    name: &str,
+    optional_paths: Option<&[String]>,
+    cancel: &AtomicBool,
+    allocate_inner: impl FnOnce(u64) -> Result<File>,
+) -> Result<CheckedPack> {
+    super::check(cancel)?;
+    let format = formats::classify_cancellable(source, cancel)?;
     if format == formats::Format::Pcl {
         return Err("PCL 本地导出 ZIP 应使用原生导入流程".into());
     }
@@ -227,23 +266,88 @@ fn prepare_checked(
     };
     let (root_key, versions_key) = root_scope(root, name)?;
     let file = source_file(source, limit)?;
-    let before = hash_file(file.try_clone().map_err(super::error)?, limit, None)?;
-    let binding = Binding {
+    // Admission uses only central-directory facts. Reserve the anonymous
+    // payload before even the first full source hash reads the outer body.
+    let staged_inner = if format == formats::Format::Launcher {
+        let entry = formats::nested_entry(&file, cancel)?;
+        let mut destination = allocate_inner(entry.size)?;
+        let metadata = destination.metadata().map_err(super::error)?;
+        if !metadata.is_file() || metadata.len() != 0 || metadata.nlink() != 0 {
+            return Err("内层整合包目标必须是空的匿名普通文件".into());
+        }
+        destination.seek(SeekFrom::Start(0)).map_err(super::error)?;
+        Some((entry, destination))
+    } else {
+        None
+    };
+    let before = hash_file(file.try_clone().map_err(super::error)?, limit, Some(cancel))?;
+    let mut binding = Binding {
         root: root.to_owned(),
         root_key,
         versions_key,
         source: source.to_owned(),
         source_snapshot: before.clone(),
         archive_limit: limit,
+        inner: None,
     };
+    let (inner, content_format, decoded_limit) =
+        if let Some((entry, mut destination)) = staged_inner {
+            let scan = formats::scan_outer(
+                file.try_clone().map_err(super::error)?,
+                &entry,
+                &mut destination,
+                cancel,
+            )?;
+            destination.sync_all().map_err(super::error)?;
+            destination.seek(SeekFrom::Start(0)).map_err(super::error)?;
+            let snapshot = hash_file(
+                destination.try_clone().map_err(super::error)?,
+                2 * 1024 * 1024 * 1024,
+                Some(cancel),
+            )?;
+            if snapshot.hash != scan.entry.hash || snapshot.stamp.size != scan.entry.size {
+                return Err(super::changed());
+            }
+            let content_format = formats::classify_held(&destination, cancel)?;
+            if content_format == formats::Format::Launcher {
+                return Err("仅支持一层内嵌整合包；内层不能再次包含带启动器归档".into());
+            }
+            if content_format == formats::Format::Pcl {
+                return Err("内嵌 PCL 本地导出包请直接选择内层文件，使用原生导入流程".into());
+            }
+            if content_format == formats::Format::Modrinth && snapshot.stamp.size > MAX_ARCHIVE {
+                return Err("内嵌 mrpack 压缩文件超过 512 MiB 限制".into());
+            }
+            binding.inner = Some(InnerBinding {
+                snapshot: snapshot.clone(),
+                outer_entry: scan.entry.clone(),
+            });
+            (
+                Some(HeldInnerArchive {
+                    file: destination,
+                    snapshot,
+                    outer_entry: scan.entry,
+                }),
+                content_format,
+                formats::DECODED_BYTES
+                    .checked_sub(scan.decoded_bytes)
+                    .ok_or("两层整合包解压内容超过 16 GiB 限制")?,
+            )
+        } else {
+            (None, format, formats::DECODED_BYTES)
+        };
+    let content_file = inner.as_ref().map_or(&file, |inner| &inner.file);
     let PreparedPack {
         mut plan,
         outputs,
         directories,
         bundled,
         rebuild_profile,
-    } = if format == formats::Format::Modrinth && recognizes(source)? {
-        let scan = archive::scan(file.try_clone().map_err(super::error)?)?;
+    } = if inner.is_none()
+        && format == formats::Format::Modrinth
+        && recognizes_cancellable(source, cancel)?
+    {
+        let scan = archive::scan_cancellable(file.try_clone().map_err(super::error)?, cancel)?;
         let manifest = manifest::parse(&scan.index)?;
         let optional = selection(&manifest, optional_paths)?;
         let (plan, outputs, dirs) = build(name, manifest, scan, optional, binding)?;
@@ -257,16 +361,22 @@ fn prepare_checked(
     } else {
         from_archive(
             name,
-            format,
-            formats::prepare(
-                file.try_clone().map_err(super::error)?,
+            content_format,
+            formats::prepare_with_budget(
+                content_file.try_clone().map_err(super::error)?,
                 name,
-                format,
+                content_format,
                 optional_paths,
+                cancel,
+                decoded_limit,
             )?,
             binding,
         )?
     };
+    if inner.is_some() {
+        plan.warnings
+            .push("已解析带启动器归档中的唯一内层整合包；外层启动器和配置不会安装".into());
+    }
     let ignored_mirrors = outputs
         .values()
         .filter_map(|output| match output {
@@ -288,10 +398,22 @@ fn prepare_checked(
     // The held descriptor and the current pathname must both retain the full
     // original stamp/hash. This permits read-only hard links while detecting
     // replacement or edits through any alias during decompression/planning.
-    if hash_file(file.try_clone().map_err(super::error)?, limit, None)? != before {
+    if hash_file(file.try_clone().map_err(super::error)?, limit, Some(cancel))? != before {
         return Err(super::changed());
     }
-    plan.recheck()?;
+    super::check(cancel)?;
+    plan.recheck_cancellable(cancel)?;
+    if let Some(inner) = &inner {
+        if inner.file.metadata().map_err(super::error)?.nlink() != 0
+            || hash_file(
+                inner.file.try_clone().map_err(super::error)?,
+                2 * 1024 * 1024 * 1024,
+                Some(cancel),
+            )? != inner.snapshot
+        {
+            return Err(super::changed());
+        }
+    }
     plan.revision = format!(
         "mrpack-v1:{:x}",
         Sha256::digest(serde_json::to_vec(&plan.revision_facts()?).map_err(super::error)?)
@@ -303,6 +425,7 @@ fn prepare_checked(
         directories,
         bundled,
         rebuild_profile,
+        inner,
     })
 }
 
@@ -471,12 +594,20 @@ fn build(
     Ok((plan, outputs, scan.directories))
 }
 impl PackPlan {
+    #[cfg(test)]
     pub fn recheck(&self) -> Result<()> {
+        self.recheck_cancellable(&AtomicBool::new(false))
+    }
+    pub(crate) fn recheck_cancellable(&self, cancel: &AtomicBool) -> Result<()> {
+        super::check(cancel)?;
         let (root_key, versions_key) = root_scope(&self.binding.root, &self.name)?;
         if root_key != self.binding.root_key
             || versions_key != self.binding.versions_key
-            || source_snapshot(&self.binding.source, self.binding.archive_limit)?
-                != self.binding.source_snapshot
+            || hash_file(
+                source_file(&self.binding.source, self.binding.archive_limit)?,
+                self.binding.archive_limit,
+                Some(cancel),
+            )? != self.binding.source_snapshot
         {
             return Err(super::changed());
         }
@@ -488,11 +619,33 @@ impl PackPlan {
 }
 
 #[cfg(test)]
+#[path = "mrpack/nested_review_tests.rs"]
+mod nested_review_tests;
+#[cfg(test)]
+#[path = "mrpack/nested_tests.rs"]
+mod nested_tests;
+#[cfg(test)]
 #[path = "mrpack/tests.rs"]
 mod tests;
 
 impl CheckedPack {
+    fn content_file(&self) -> Result<File> {
+        self.inner
+            .as_ref()
+            .map_or(&self.file, |inner| &inner.file)
+            .try_clone()
+            .map_err(super::error)
+    }
+    fn retained_source_fds(&self) -> usize {
+        1 + usize::from(self.inner.is_some())
+    }
+    fn retained_inner_bytes(&self) -> u64 {
+        self.inner
+            .as_ref()
+            .map_or(0, |inner| inner.outer_entry.size)
+    }
     fn recheck_source(&self, cancel: &std::sync::atomic::AtomicBool) -> Result<()> {
+        super::check(cancel)?;
         let before = &self.plan.binding.source_snapshot;
         if hash_file(
             self.file.try_clone().map_err(super::error)?,
@@ -507,6 +660,17 @@ impl CheckedPack {
         {
             return Err(super::changed());
         }
+        if let Some(inner) = &self.inner {
+            if inner.file.metadata().map_err(super::error)?.nlink() != 0
+                || hash_file(
+                    inner.file.try_clone().map_err(super::error)?,
+                    2 * 1024 * 1024 * 1024,
+                    Some(cancel),
+                )? != inner.snapshot
+            {
+                return Err(super::changed());
+            }
+        }
         Ok(())
     }
     fn recheck_source_stamp(&self) -> Result<()> {
@@ -519,6 +683,12 @@ impl CheckedPack {
             ) != *expected
         {
             return Err(super::changed());
+        }
+        if let Some(inner) = &self.inner {
+            let metadata = inner.file.metadata().map_err(super::error)?;
+            if Stamp::of(&metadata) != inner.snapshot.stamp || metadata.nlink() != 0 {
+                return Err(super::changed());
+            }
         }
         Ok(())
     }
@@ -550,7 +720,10 @@ impl CheckedPack {
 /// The marker route is separate from execution authority. All non-PCL formats
 /// use a native pack confirmation; the original exported ZIP keeps its DTO.
 pub(crate) fn is_local_export(source: &Path) -> Result<bool> {
-    Ok(formats::classify(source)? == formats::Format::Pcl)
+    is_local_export_cancellable(source, &AtomicBool::new(false))
+}
+pub(crate) fn is_local_export_cancellable(source: &Path, cancel: &AtomicBool) -> Result<bool> {
+    Ok(formats::classify_cancellable(source, cancel)? == formats::Format::Pcl)
 }
 fn from_archive(
     name: &str,

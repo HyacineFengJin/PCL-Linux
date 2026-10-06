@@ -2095,6 +2095,7 @@ fn main() {
             instance_export_config_save,
             instance_commands::instance_import_pick,
             instance_commands::instance_import_prepare,
+            instance_commands::instance_import_discard,
             instance_commands::instance_import_start,
             instance_commands::instance_import_recover,
             instance_commands::instance_delete_prepare,

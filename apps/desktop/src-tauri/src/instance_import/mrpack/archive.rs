@@ -5,7 +5,7 @@ use super::*;
 use std::io::Read;
 use zip::CompressionMethod;
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(super) struct OverrideFile {
     pub path: String,
     pub size: u64,
@@ -46,7 +46,11 @@ pub(super) fn validate_outputs(
     }
     Ok(())
 }
-pub(super) fn scan(file: File) -> Result<ArchiveScan> {
+pub(super) fn scan_cancellable(
+    file: File,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<ArchiveScan> {
+    super::super::check(cancel)?;
     let mut zip = super::super::archive::checked_zip(file)?;
     if zip.len() > MAX_ENTRIES {
         return Err("mrpack ZIP 文件/目录节点超过 10000 项限制".into());
@@ -61,6 +65,7 @@ pub(super) fn scan(file: File) -> Result<ArchiveScan> {
     let mut total = 0u64;
     let mut path_bytes = 0usize;
     for i in 0..zip.len() {
+        super::super::check(cancel)?;
         let mut entry = zip
             .by_index(i)
             .map_err(|_| "mrpack ZIP 文件内容、加密或压缩方式无效")?;
@@ -137,6 +142,7 @@ pub(super) fn scan(file: File) -> Result<ArchiveScan> {
         let mut decoded = 0u64;
         let mut buffer = [0u8; 128 * 1024];
         loop {
+            super::super::check(cancel)?;
             let n = entry
                 .read(&mut buffer)
                 .map_err(|_| "mrpack ZIP 解压或 CRC 校验失败")?;

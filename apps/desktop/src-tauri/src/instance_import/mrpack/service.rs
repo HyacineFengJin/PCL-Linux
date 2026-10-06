@@ -27,7 +27,10 @@ const MAX_ENTRIES: usize = 64;
 const MAX_FDS: usize = 100;
 const MAX_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ONE: usize = 4 * 1024 * 1024;
+const MAX_PREPARING: usize = 4;
+const MAX_INNER_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const INVALID: &str = "整合包确认已过期或已提交，请重新检查";
+const CAPACITY: &str = "已提交的整合包任务占满确认缓存，请等待或取消任务";
 #[derive(Default)]
 pub(crate) struct ConfirmationCache {
     entries: Mutex<VecDeque<Record>>,
@@ -38,6 +41,8 @@ pub(crate) struct ConfirmationCache {
 struct ConfirmationUsage {
     fds: usize,
     bytes: usize,
+    inner_bytes: u64,
+    preparing: usize,
 }
 struct Record {
     token: String,
@@ -48,12 +53,48 @@ struct Lease {
     budget: Arc<Mutex<ConfirmationUsage>>,
     bytes: usize,
     fds: usize,
+    inner_bytes: u64,
 }
 impl Drop for Lease {
     fn drop(&mut self) {
         let mut b = self.budget.lock().unwrap();
         b.fds -= self.fds;
         b.bytes -= self.bytes;
+        b.inner_bytes -= self.inner_bytes;
+    }
+}
+/// Admission starts before opening/classifying the outer source. The bounded
+/// window covers short-lived clones and parsing buffers; the lease reserves
+/// retained FDs/metadata and inner disk before any payload is decoded. On
+/// success only the lease moves to the cache/worker. Claimed leases are never
+/// visible to TTL/LRU eviction, and payload owners drop before their charge.
+pub(crate) struct Preparation {
+    lease: Option<Lease>,
+    budget: Arc<Mutex<ConfirmationUsage>>,
+}
+impl Drop for Preparation {
+    fn drop(&mut self) {
+        self.budget.lock().unwrap().preparing -= 1;
+    }
+}
+/// Native command gates run after the source scan. Until those gates accept
+/// the returned token, a failure must close its unclaimed inputs immediately,
+/// including an anonymous inner payload. A concurrent successful claim owns
+/// its lease independently and cannot be discarded by this projection guard.
+pub(crate) struct PendingProjection<'a> {
+    cache: &'a ConfirmationCache,
+    revision: Option<String>,
+}
+impl PendingProjection<'_> {
+    pub(crate) fn expose(mut self) {
+        self.revision = None;
+    }
+}
+impl Drop for PendingProjection<'_> {
+    fn drop(&mut self) {
+        if let Some(revision) = &self.revision {
+            self.cache.discard_unclaimed(revision);
+        }
     }
 }
 struct ConfirmedPack {
@@ -70,6 +111,79 @@ struct ConfirmedCore {
     installer: Installer,
 }
 impl ConfirmationCache {
+    pub(crate) fn pending_projection(&self, revision: &str) -> PendingProjection<'_> {
+        PendingProjection {
+            cache: self,
+            revision: Some(revision.into()),
+        }
+    }
+    pub(crate) fn discard_unclaimed(&self, revision: &str) {
+        if revision.len() > 256 || !revision.starts_with("pack-confirm-v1:") {
+            return;
+        }
+        let mut entries = self.entries.lock().unwrap();
+        if let Some(at) = entries.iter().position(|record| record.token == revision) {
+            entries.remove(at);
+        }
+    }
+    pub(crate) fn preparation(&self) -> Result<Preparation> {
+        {
+            let mut usage = self.budget.lock().unwrap();
+            if usage.preparing >= MAX_PREPARING {
+                return Err("整合包检查正在忙碌，请等待当前检查完成后重试".into());
+            }
+            usage.preparing += 1;
+        }
+        let mut preparation = Preparation {
+            lease: Some(Lease {
+                budget: self.budget.clone(),
+                bytes: 0,
+                fds: 0,
+                inner_bytes: 0,
+            }),
+            budget: self.budget.clone(),
+        };
+        self.resize_lease(preparation.lease.as_mut().unwrap(), 1, MAX_ONE, 0)?;
+        Ok(preparation)
+    }
+    fn resize_lease(
+        &self,
+        lease: &mut Lease,
+        fds: usize,
+        bytes: usize,
+        inner_bytes: u64,
+    ) -> Result<()> {
+        let mut entries = self.entries.lock().unwrap();
+        entries.retain(|e| e.expires > Instant::now());
+        loop {
+            let mut usage = self.budget.lock().unwrap();
+            let next_fds = usage.fds.saturating_sub(lease.fds).saturating_add(fds);
+            let next_bytes = usage
+                .bytes
+                .saturating_sub(lease.bytes)
+                .saturating_add(bytes);
+            let next_inner = usage
+                .inner_bytes
+                .saturating_sub(lease.inner_bytes)
+                .saturating_add(inner_bytes);
+            if next_fds <= MAX_FDS && next_bytes <= MAX_BYTES && next_inner <= MAX_INNER_BYTES {
+                usage.fds = next_fds;
+                usage.bytes = next_bytes;
+                usage.inner_bytes = next_inner;
+                lease.fds = fds;
+                lease.bytes = bytes;
+                lease.inner_bytes = inner_bytes;
+                return Ok(());
+            }
+            drop(usage);
+            // Only records still owned by this deque can be evicted. Preparing,
+            // claimed, queued and running jobs retain their independent leases.
+            if entries.pop_front().is_none() {
+                return Err(CAPACITY.into());
+            }
+        }
+    }
+    #[cfg(test)]
     pub(crate) fn prepare(
         &self,
         root: &GameRoot,
@@ -78,29 +192,69 @@ impl ConfirmationCache {
         name: &str,
         optional: Option<&[String]>,
     ) -> Result<PackPlan> {
-        let mut checked = prepare_checked(Path::new(&root.path), source, name, optional)?;
+        self.prepare_admitted(
+            self.preparation()?,
+            root,
+            project,
+            source,
+            name,
+            optional,
+            &AtomicBool::new(false),
+        )
+    }
+    pub(crate) fn prepare_admitted(
+        &self,
+        mut preparation: Preparation,
+        root: &GameRoot,
+        project: &Path,
+        source: &Path,
+        name: &str,
+        optional: Option<&[String]>,
+        cancel: &AtomicBool,
+    ) -> Result<PackPlan> {
+        if !Arc::ptr_eq(&preparation.budget, &self.budget) {
+            return Err("整合包检查 admission 与确认缓存不符".into());
+        }
+        super::super::check(cancel)?;
+        let lease = preparation.lease.as_mut().unwrap();
+        let mut checked = prepare_checked_with_stage(
+            Path::new(&root.path),
+            source,
+            name,
+            optional,
+            cancel,
+            |size| {
+                let (fds, bytes) = (lease.fds + 1, lease.bytes);
+                self.resize_lease(lease, fds, bytes, size)?;
+                super::super::check(cancel)?;
+                // Capture ancestors without following links. The file stays
+                // anonymous; no persistent input cache or game-root write exists.
+                input_staging(project, Path::new(&root.path))?.anonymous()
+            },
+        )?;
         if !checked.plan.preview.blockers.is_empty() {
             return Ok(checked.plan);
         }
-        let cancel = AtomicBool::new(false);
         let factory = pcl_network::snapshot();
         let scheduler = pcl_network::download_snapshot();
         let core = if checked.bundled.is_some() {
             None
         } else {
+            let (fds, bytes, inner_bytes) = (lease.fds + 1, lease.bytes, lease.inner_bytes);
+            self.resize_lease(lease, fds, bytes, inner_bytes)?;
             let installer = Installer::from_factory(&factory)?
                 .with_project(project)
                 .with_cache_source(Path::new(&root.path))?
                 .with_download_policy(scheduler.clone());
-            let resolved = installer.resolve_request(&checked.request()?, &cancel)?;
+            let resolved = installer.resolve_request(&checked.request()?, cancel)?;
             Some(ConfirmedCore {
                 installer,
                 resolved,
             })
         };
-        let fds = if core.is_some() { 2 } else { 1 };
-        checked.recheck_source(&cancel)?;
-        checked.plan.recheck()?;
+        let fds = checked.retained_source_fds() + usize::from(core.is_some());
+        checked.recheck_source(cancel)?;
+        plan_target(&checked.plan)?;
         if let (Some(profile), Some(core)) = (&checked.rebuild_profile, &core) {
             // HMCL may describe extra runtime behavior. Compare those facts
             // with this exact captured rebuild, never silently discard them.
@@ -123,6 +277,8 @@ impl ConfirmationCache {
         if bytes > MAX_ONE {
             return Err("整合包确认超过内存限额，请减少包内文件数量".into());
         }
+        self.resize_lease(lease, fds, bytes, checked.retained_inner_bytes())?;
+        super::super::check(cancel)?;
         let token = token()?;
         checked.plan.revision = token.clone();
         checked.plan.installable = true;
@@ -134,23 +290,8 @@ impl ConfirmationCache {
         let now = Instant::now();
         let mut entries = self.entries.lock().unwrap();
         entries.retain(|e| e.expires > now);
-        loop {
-            let b = self.budget.lock().unwrap();
-            let fits = b.fds.saturating_add(fds) <= MAX_FDS
-                && b.bytes.saturating_add(bytes) <= MAX_BYTES
-                && entries.len() < MAX_ENTRIES;
-            drop(b);
-            if fits {
-                break;
-            }
-            if entries.pop_front().is_none() {
-                return Err("已提交的整合包任务占满确认缓存，请等待或取消任务".into());
-            }
-        }
-        {
-            let mut b = self.budget.lock().unwrap();
-            b.fds += fds;
-            b.bytes += bytes;
+        while entries.len() >= MAX_ENTRIES {
+            entries.pop_front();
         }
         entries.push_back(Record {
             token,
@@ -162,11 +303,7 @@ impl ConfirmationCache {
                 core,
                 factory,
                 scheduler,
-                _lease: Lease {
-                    budget: self.budget.clone(),
-                    bytes,
-                    fds,
-                },
+                _lease: preparation.lease.take().unwrap(),
             },
         });
         Ok(view)
@@ -217,6 +354,40 @@ impl ConfirmationCache {
         Ok(entries.remove(at).unwrap().authority)
     }
 }
+fn input_staging(project: &Path, game_root: &Path) -> Result<Dir> {
+    let project_dir = Dir::open(project)?;
+    let namespace = project_dir.optional(".pcl-linux")?;
+    let inputs = namespace
+        .as_ref()
+        .map(|dir| dir.optional("pack-inputs"))
+        .transpose()?
+        .flatten();
+    let stage_path = project.join(".pcl-linux/pack-inputs");
+    // Bind the deepest existing ancestor before mkdir. Missing directory leaves
+    // use the scheduler's final-path footprint so the ordinary game root under
+    // project/Minecraft remains distinct. Physical ancestors also catch bind
+    // aliases, unlike a lexical starts_with check.
+    let stage_scope = if inputs.is_some() {
+        TaskScope::root(&stage_path)?
+    } else if namespace.is_some() {
+        TaskScope::files(&[stage_path])?
+    } else {
+        TaskScope::files(&[project.join(".pcl-linux")])?
+    };
+    if stage_scope.conflicts(&TaskScope::root(game_root)?) {
+        return Err("整合包匿名暂存目录与游戏目录重叠，请选择项目之外的游戏目录".into());
+    }
+    match inputs {
+        Some(inputs) => Ok(inputs),
+        None => {
+            let namespace = match namespace {
+                Some(namespace) => namespace,
+                None => project_dir.ensure(".pcl-linux")?,
+            };
+            namespace.ensure("pack-inputs")
+        }
+    }
+}
 struct ActiveOperation<'a> {
     cache: &'a ConfirmationCache,
     root: PathBuf,
@@ -243,6 +414,14 @@ fn token() -> Result<String> {
 fn footprint(c: &CheckedPack) -> usize {
     let view = &c.plan;
     std::mem::size_of::<Record>()
+        + c.inner.as_ref().map_or(0, |inner| {
+            // The source binding also owns a cloned snapshot/entry for the
+            // native revision. Charge both copies, never the disk payload.
+            2 * (inner.snapshot.hash.capacity()
+                + inner.outer_entry.path.capacity()
+                + inner.outer_entry.archive_path.capacity()
+                + inner.outer_entry.hash.capacity())
+        })
         + c.rebuild_profile.as_ref().map_or(0, Vec::capacity)
         + view.name.capacity()
         + view.pack_name.capacity()
@@ -306,10 +485,12 @@ fn footprint(c: &CheckedPack) -> usize {
 }
 
 fn target(a: &ConfirmedPack) -> Result<()> {
-    let (root, versions) = root_scope(&a.checked.plan.binding.root, &a.checked.plan.name)?;
-    if root != a.checked.plan.binding.root_key
-        || a.checked
-            .plan
+    plan_target(&a.checked.plan)
+}
+fn plan_target(plan: &PackPlan) -> Result<()> {
+    let (root, versions) = root_scope(&plan.binding.root, &plan.name)?;
+    if root != plan.binding.root_key
+        || plan
             .binding
             .versions_key
             .as_ref()
@@ -473,6 +654,9 @@ fn execute(
         } else {
             stage_bundled(&authority.checked, &operation, &cancel)?;
         }
+        // Core resolution/processors may take minutes. Verify both held input
+        // archives before consuming any pack body after this long phase.
+        authority.checked.recheck_source(&cancel)?;
         let metadata = operation.open_file(&format!(
             "versions/{0}/{0}.json",
             authority.checked.plan.name
@@ -648,8 +832,7 @@ fn extract_override(
     mut destination: File,
     cancel: &AtomicBool,
 ) -> Result<File> {
-    let mut zip =
-        super::super::archive::checked_zip(checked.file.try_clone().map_err(super::super::error)?)?;
+    let mut zip = super::super::archive::checked_zip(checked.content_file()?)?;
     let mut input = zip
         .by_name(&f.archive_path)
         .map_err(|_| "整合包覆盖文件已改变")?;
@@ -756,6 +939,9 @@ fn stage_bundled(
     Ok(())
 }
 
+#[cfg(test)]
+#[path = "nested_budget_review_tests.rs"]
+mod nested_budget_review_tests;
 #[cfg(test)]
 #[path = "service_tests.rs"]
 mod tests;
