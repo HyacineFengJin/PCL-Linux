@@ -345,6 +345,63 @@
 .ce-instance-file-dialog > .ce-instance-plan-warning {
   color: #9b8554;
 }
+/* The mrpack list may be long. Keep CE title/name/actions outside its scroll
+ * area so readonly rechecks and Close remain reachable at minimum window size. */
+.ce-instance-file-dialog:has(.ce-mrpack-preview) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ce-instance-file-dialog:has(.ce-mrpack-preview) > h2,
+.ce-instance-file-dialog:has(.ce-mrpack-preview) > input,
+.ce-instance-file-dialog:has(.ce-mrpack-preview) > p,
+.ce-instance-file-dialog:has(.ce-mrpack-preview) > .rd-name-actions {
+  flex-shrink: 0;
+}
+.ce-mrpack-preview {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.ce-mrpack-preview dl {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.ce-mrpack-preview p,
+.ce-import-preview > p {
+  margin: 10px 7px;
+  font-size: 13px;
+  line-height: 21px;
+  overflow-wrap: anywhere;
+}
+.ce-mrpack-preview .ce-instance-plan-warning,
+.ce-import-preview .ce-instance-plan-warning {
+  color: var(--ce-warning-text, #9b8554);
+}
+.ce-mrpack-files {
+  margin: 0 7px 12px;
+}
+.ce-mrpack-file {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--ce-border, #d5e5f5);
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 21px;
+}
+.ce-mrpack-file .ce-check {
+  align-items: flex-start;
+}
+.ce-mrpack-file .ce-check input {
+  flex: none;
+  margin-top: 2px;
+}
+.ce-mrpack-file .ce-check input:focus-visible {
+  outline: 2px solid var(--ce-primary, #0065df);
+  outline-offset: 2px;
+}
+.ce-mrpack-file small {
+  display: block;
+  color: var(--ce-muted-text, #9299a3);
+}
 .ce-instance-trash-entry,
 .ce-instance-trash-error {
   display: flex;

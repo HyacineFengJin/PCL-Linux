@@ -63,7 +63,7 @@ export type InstanceImportChoice = {
   suggested_name?: string | null;
   message?: string | null;
 };
-export type InstanceImportPlan = {
+export type InstanceImportBasePlan = {
   revision: string;
   name: string;
   pack_name: string;
@@ -74,6 +74,39 @@ export type InstanceImportPlan = {
   reused_files: number;
   warnings: string[];
 };
+/** Existing exported ZIP imports omit format and keep their prepare/start DTO. */
+export type InstanceZipImportPlan = InstanceImportBasePlan & {
+  format?: undefined;
+};
+/** Native checked archive metadata only. No URL or install authority is supplied
+ * by this preview; optional paths must be checked again by the native reader. */
+export type InstanceMrpackPreview = {
+  summary?: string;
+  dependencies: { id: string; version: string; supported: boolean }[];
+  files: {
+    path: string;
+    size: number;
+    client: "required" | "optional" | "unsupported";
+    selected: boolean;
+    overridden: boolean;
+  }[];
+  required_files: number;
+  optional_files: number;
+  excluded_files: number;
+  download_bytes: number;
+  override_files: number;
+  override_bytes: number;
+  client_overrides: number;
+  shadowed_files: number;
+  blockers: string[];
+};
+export type InstanceMrpackImportPlan = InstanceImportBasePlan & {
+  format: "modrinth";
+  installable: false;
+  preview: InstanceMrpackPreview;
+};
+export type InstanceImportPlan =
+  InstanceZipImportPlan | InstanceMrpackImportPlan;
 export type InstanceDeletePlan = {
   id: string;
   root_id: string;

@@ -15,7 +15,7 @@ const messages = {
   "main.addImport": "Add or import",
   "main.addFolder": "Add existing folder",
   "main.importDesktop": "Import a local ZIP in the desktop app",
-  "main.importOwnZip": "Import a ZIP exported by this app",
+  "main.importOwnZip": "Import an app ZIP export or inspect a local mrpack",
   "main.importPack": "Import modpack",
   "accounts.offlineAuth": "Offline authentication",
   "accounts.microsoftAuth": "Microsoft authentication",

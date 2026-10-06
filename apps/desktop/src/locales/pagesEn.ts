@@ -295,6 +295,30 @@ const messages = {
   "ui.existingFiles": "Existing files",
   "import.help":
     "A new instance folder will be created. Select it in the instance list after import completes.",
+  "import.invalidPlan":
+    "The import check returned an invalid format; check again",
+  "import.mrpackReadonly":
+    "Mrpack checking is available; installation is not yet available. Checking creates no instance and downloads no files.",
+  "import.previewStale":
+    "The name or optional files changed. The previous result remains below; check again to update it.",
+  "import.format": "File format",
+  "import.dependencies": "Game and loader versions",
+  "import.unsupportedDependency": "This dependency is not supported yet",
+  "import.clientOutput": "Client output",
+  "import.requiredFiles": "Required files",
+  "import.optionalFiles": "Optional files",
+  "import.optionalCount": "{total} ({selected} selected)",
+  "import.excludedFiles": "Unselected or unsupported on client",
+  "import.downloadBytes": "Expected network download",
+  "import.overrideFiles": "Effective override files",
+  "import.clientOverrides": "Client override files",
+  "import.shadowedFiles": "Files replaced by overrides",
+  "import.blockers": "Reasons this pack cannot be installed yet",
+  "import.clientFiles": "Manifest files (optional files start unselected)",
+  "import.requiredFile": "Required",
+  "import.optionalFile": "Optional",
+  "import.unsupportedFile": "Unsupported on client; excluded",
+  "import.overriddenFile": "Uses an override from the pack",
   "trash.planChanged":
     "The deletion plan does not match this instance or game folder; check again",
   "trash.taskMissing": "No deletion task was received; check again and retry",

@@ -1,6 +1,11 @@
 import { t, formatNumber } from "./i18n";
 import { useEffect, useRef, useState } from "react";
-import type { Api, InstanceImportChoice, InstanceImportPlan } from "./types";
+import type {
+  Api,
+  InstanceImportChoice,
+  InstanceImportPlan,
+  InstanceMrpackImportPlan,
+} from "./types";
 import {
   InstanceOperationDialog,
   instanceOperationSize,
@@ -33,11 +38,72 @@ type ImportDraft = {
   source: string;
   name: string;
   plan: InstanceImportPlan | null;
+  // Retain the last readonly preview while editing, but retire its checked
+  // revision. Native prepare must adopt the exact next name/optional paths.
+  mrpack: InstanceMrpackImportPlan | null;
+  optionalPaths: string[];
   error: string;
 };
 
-/** Local ZIP import uses a native source choice and a fresh read plan. Only the
- * checked revision can reach start; edited names invalidate prior confirmation. */
+function isMrpackPlan(
+  plan: InstanceImportPlan | null,
+): plan is InstanceMrpackImportPlan {
+  return plan?.format === "modrinth";
+}
+
+function checkImportPlan(plan: InstanceImportPlan, name: string) {
+  if (plan.name !== name || typeof plan.revision !== "string" || !plan.revision)
+    throw new Error(t("import.planChanged"));
+  if (plan.format === undefined) return;
+  // A future/unknown format must never fall through to the ZIP writer. Even a
+  // malformed mrpack reply claiming installable:true remains a read failure.
+  if (!isMrpackPlan(plan) || plan.installable !== false || !plan.preview)
+    throw new Error(t("import.invalidPlan"));
+  const preview = plan.preview;
+  const count = (value: number) => Number.isSafeInteger(value) && value >= 0;
+  if (
+    !Array.isArray(preview.files) ||
+    !Array.isArray(preview.dependencies) ||
+    !Array.isArray(preview.blockers) ||
+    !Array.isArray(plan.warnings) ||
+    plan.warnings.some((warning) => typeof warning !== "string") ||
+    (preview.summary !== undefined && typeof preview.summary !== "string") ||
+    ![
+      plan.file_count,
+      plan.bytes,
+      plan.reused_files,
+      preview.required_files,
+      preview.optional_files,
+      preview.excluded_files,
+      preview.download_bytes,
+      preview.override_files,
+      preview.override_bytes,
+      preview.client_overrides,
+      preview.shadowed_files,
+    ].every(count) ||
+    preview.files.some(
+      (file) =>
+        typeof file.path !== "string" ||
+        !file.path ||
+        !count(file.size) ||
+        !["required", "optional", "unsupported"].includes(file.client) ||
+        typeof file.selected !== "boolean" ||
+        typeof file.overridden !== "boolean" ||
+        (file.client === "unsupported" && file.selected),
+    ) ||
+    preview.dependencies.some(
+      (dependency) =>
+        typeof dependency.id !== "string" ||
+        typeof dependency.version !== "string" ||
+        typeof dependency.supported !== "boolean",
+    ) ||
+    preview.blockers.some((blocker) => typeof blocker !== "string")
+  )
+    throw new Error(t("import.invalidPlan"));
+}
+
+/** Local ZIP import can transfer its checked revision to a writer. Mrpack uses
+ * the same owned source/name dialog for readonly checks and never starts a job. */
 export function InstanceImport({
   api,
   scopeKey,
@@ -122,6 +188,8 @@ export function InstanceImport({
           source: choice.source,
           name: choice.suggested_name || "",
           plan: null,
+          mrpack: null,
+          optionalPaths: [],
           error: "",
         });
       } catch (error) {
@@ -150,9 +218,11 @@ export function InstanceImport({
       instanceImportNameError(submitted.name, names.current)
     )
       return;
+    const canStartZip =
+      submitted.plan?.format === undefined && !!submitted.plan;
     const token = {
       scope,
-      kind: submitted.plan ? ("start" as const) : ("prepare" as const),
+      kind: canStartZip ? ("start" as const) : ("prepare" as const),
       token: Symbol(),
     };
     operation.current = token;
@@ -162,7 +232,7 @@ export function InstanceImport({
       draftRef.current === submitted &&
       operation.current === token;
     try {
-      if (submitted.plan) {
+      if (canStartZip && submitted.plan) {
         const result = await api<{ id: string }>("instance_import_start", {
           source: submitted.source,
           name: submitted.name,
@@ -178,11 +248,23 @@ export function InstanceImport({
         const plan = await api<InstanceImportPlan>("instance_import_prepare", {
           source: submitted.source,
           name: submitted.name,
+          ...(submitted.mrpack
+            ? { optionalPaths: [...submitted.optionalPaths] }
+            : {}),
         });
         if (!ownsReply()) return;
-        if (plan.name !== submitted.name || !plan.revision)
-          throw new Error(t("import.planChanged"));
-        setDraft({ ...submitted, plan, error: "" });
+        checkImportPlan(plan, submitted.name);
+        setDraft({
+          ...submitted,
+          plan,
+          mrpack: isMrpackPlan(plan) ? plan : null,
+          optionalPaths: isMrpackPlan(plan)
+            ? plan.preview.files
+                .filter((file) => file.client === "optional" && file.selected)
+                .map((file) => file.path)
+            : [],
+          error: "",
+        });
       }
     } catch (error) {
       if (ownsReply())
@@ -196,6 +278,26 @@ export function InstanceImport({
   }
   if (!visible) return null;
   const nameError = instanceImportNameError(visible.name, occupiedNames);
+  const preview = visible.mrpack?.preview;
+  const displayedPlan = visible.plan ?? visible.mrpack;
+  function selectOptional(path: string, selected: boolean) {
+    const previous = draftRef.current;
+    if (
+      !allowed() ||
+      !previous ||
+      previous.scope !== scope ||
+      !previous.mrpack?.preview.files.some(
+        (file) => file.path === path && file.client === "optional",
+      ) ||
+      (operation.current?.scope === scope && operation.current.kind === "start")
+    )
+      return;
+    const optionalPaths = previous.optionalPaths.filter(
+      (item) => item !== path,
+    );
+    if (selected) optionalPaths.push(path);
+    setDraft({ ...previous, optionalPaths, plan: null, error: "" });
+  }
   return (
     <InstanceOperationDialog
       title={t("instance.enterName")}
@@ -207,9 +309,11 @@ export function InstanceImport({
           ? t("ui.submitting")
           : working === "prepare"
             ? t("ui.checking")
-            : visible.plan
-              ? t("import.start")
-              : t("ui.confirm")
+            : preview
+              ? t("ui.recheck")
+              : visible.plan
+                ? t("import.start")
+                : t("ui.confirm")
       }
       confirmDisabled={!native || disabled || !!nameError}
       onConfirm={() => void submit()}
@@ -243,40 +347,146 @@ export function InstanceImport({
           {visible.error || nameError}
         </p>
       )}
-      {visible.plan && (
-        <>
+      {preview && (
+        <p className="ce-instance-plan-warning">{t("import.mrpackReadonly")}</p>
+      )}
+      {preview && !visible.plan && (
+        <p className="ce-instance-plan-warning" role="status">
+          {t("import.previewStale")}
+        </p>
+      )}
+      {displayedPlan && (
+        <div className={preview ? "ce-mrpack-preview" : "ce-import-preview"}>
           <dl>
+            {preview && (
+              <>
+                <dt>{t("import.format")}</dt>
+                <dd>Modrinth (.mrpack)</dd>
+              </>
+            )}
             <dt>{t("resources.modpacks")}</dt>
             <dd>
-              {visible.plan.pack_name} {visible.plan.pack_version}
+              {displayedPlan.pack_name} {displayedPlan.pack_version}
             </dd>
             <dt>Minecraft</dt>
-            <dd>{visible.plan.minecraft}</dd>
-            <dt>{t("import.content")}</dt>
+            <dd>{displayedPlan.minecraft}</dd>
+            <dt>{t(preview ? "import.clientOutput" : "import.content")}</dt>
             <dd>
               {t("ui.fileCountSize", {
-                count: formatNumber(visible.plan.file_count),
-                size: instanceOperationSize(visible.plan.bytes),
+                count: formatNumber(displayedPlan.file_count),
+                size: instanceOperationSize(displayedPlan.bytes),
               })}
             </dd>
-            {visible.plan.reused_files > 0 && (
+            {displayedPlan.reused_files > 0 && (
               <>
                 <dt>{t("ui.existingFiles")}</dt>
                 <dd>
                   {t("import.reuseCount", {
-                    count: formatNumber(visible.plan.reused_files),
+                    count: formatNumber(displayedPlan.reused_files),
                   })}
                 </dd>
               </>
             )}
           </dl>
-          <p>{t("import.help")}</p>
-          {visible.plan.warnings.map((warning, index) => (
+          {preview ? (
+            <>
+              {preview.summary && <p>{preview.summary}</p>}
+              <dl>
+                <dt>{t("import.dependencies")}</dt>
+                <dd>
+                  {preview.dependencies.map((dependency) => (
+                    <div key={dependency.id}>
+                      {dependency.id} {dependency.version}
+                      {!dependency.supported &&
+                        ` — ${t("import.unsupportedDependency")}`}
+                    </div>
+                  ))}
+                </dd>
+                <dt>{t("import.requiredFiles")}</dt>
+                <dd>{formatNumber(preview.required_files)}</dd>
+                <dt>{t("import.optionalFiles")}</dt>
+                <dd>
+                  {t("import.optionalCount", {
+                    total: formatNumber(preview.optional_files),
+                    selected: formatNumber(visible.optionalPaths.length),
+                  })}
+                </dd>
+                <dt>{t("import.excludedFiles")}</dt>
+                <dd>{formatNumber(preview.excluded_files)}</dd>
+                <dt>{t("import.downloadBytes")}</dt>
+                <dd>{instanceOperationSize(preview.download_bytes)}</dd>
+                <dt>{t("import.overrideFiles")}</dt>
+                <dd>
+                  {t("ui.fileCountSize", {
+                    count: formatNumber(preview.override_files),
+                    size: instanceOperationSize(preview.override_bytes),
+                  })}
+                </dd>
+                <dt>{t("import.clientOverrides")}</dt>
+                <dd>{formatNumber(preview.client_overrides)}</dd>
+                <dt>{t("import.shadowedFiles")}</dt>
+                <dd>{formatNumber(preview.shadowed_files)}</dd>
+              </dl>
+              {preview.blockers.length > 0 && (
+                <div className="ce-mrpack-blockers">
+                  <p>{t("import.blockers")}</p>
+                  {preview.blockers.map((blocker, index) => (
+                    <p className="ce-instance-plan-warning" key={index}>
+                      {blocker}
+                    </p>
+                  ))}
+                </div>
+              )}
+              {preview.files.length > 0 && (
+                <>
+                  <p>{t("import.clientFiles")}</p>
+                  <div className="ce-mrpack-files">
+                    {preview.files.map((file) => (
+                      <div className="ce-mrpack-file" key={file.path}>
+                        {file.client === "optional" ? (
+                          <label className="ce-check">
+                            <input
+                              type="checkbox"
+                              checked={visible.optionalPaths.includes(
+                                file.path,
+                              )}
+                              disabled={
+                                !native || disabled || working === "start"
+                              }
+                              onChange={(event) =>
+                                selectOptional(file.path, event.target.checked)
+                              }
+                            />
+                            <span>{file.path}</span>
+                          </label>
+                        ) : (
+                          <span>{file.path}</span>
+                        )}
+                        <small>
+                          {instanceOperationSize(file.size)} ·{" "}
+                          {file.client === "optional"
+                            ? t("import.optionalFile")
+                            : file.client === "unsupported"
+                              ? t("import.unsupportedFile")
+                              : t("import.requiredFile")}
+                          {file.overridden &&
+                            ` · ${t("import.overriddenFile")}`}
+                        </small>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </>
+          ) : (
+            <p>{t("import.help")}</p>
+          )}
+          {displayedPlan.warnings.map((warning, index) => (
             <p key={index} className="ce-instance-plan-warning">
               {warning}
             </p>
           ))}
-        </>
+        </div>
       )}
     </InstanceOperationDialog>
   );

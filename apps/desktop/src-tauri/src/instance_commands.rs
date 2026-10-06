@@ -108,6 +108,41 @@ pub struct ImportChoice {
     message: Option<String>,
 }
 
+/// Preserve the existing local ZIP summary while adding a separately typed,
+/// read-only mrpack view. Neither serialized variant grants write authority;
+/// start reconstructs the legacy ZIP plan and explicitly refuses mrpack.
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum LocalPackPlan {
+    Zip(instance_import::ImportPlan),
+    Modrinth(instance_import::mrpack::MrpackPlan),
+}
+
+fn prepare_local_pack(
+    root: &Path,
+    source: &Path,
+    name: &str,
+    optional_paths: Option<&[String]>,
+) -> Result<LocalPackPlan, String> {
+    if instance_import::mrpack::recognizes(source)? {
+        instance_import::mrpack::inspect(root, source, name, optional_paths)
+            .map(LocalPackPlan::Modrinth)
+    } else {
+        if optional_paths.is_some_and(|paths| !paths.is_empty()) {
+            return Err("本地 ZIP 导入不接受 mrpack 可选文件，请重新检查".into());
+        }
+        instance_import::prepare(root, source, name).map(LocalPackPlan::Zip)
+    }
+}
+
+fn require_local_zip(source: &Path) -> Result<(), String> {
+    if instance_import::mrpack::recognizes(source)? {
+        Err("mrpack 目前可检查客户端安装方案，完整实例安装尚未开放".into())
+    } else {
+        Ok(())
+    }
+}
+
 #[tauri::command]
 pub async fn instance_import_pick(
     root_id: Option<String>,
@@ -137,7 +172,7 @@ pub async fn instance_import_pick(
     if current.path != root.path {
         return Err("导入目标目录已改变，请重新选择".into());
     }
-    let path = choice.paths.into_iter().next().ok_or("未选择 ZIP 文件")?;
+    let path = choice.paths.into_iter().next().ok_or("未选择整合包文件")?;
     let suggested = path
         .file_stem()
         .and_then(|name| name.to_str())
@@ -151,7 +186,7 @@ pub async fn instance_import_pick(
             }
         })
         .collect::<String>();
-    // This suggestion is editable. Authoritative identifier and ZIP checks run
+    // This suggestion is editable. Authoritative identifier and archive checks run
     // in prepare; picker cancellation does not create a plan or file task.
     Ok(ImportChoice {
         status: "selected",
@@ -166,8 +201,9 @@ pub async fn instance_import_prepare(
     root_id: Option<String>,
     source: String,
     name: String,
+    optional_paths: Option<Vec<String>>,
     state: State<'_, Arc<Shared>>,
-) -> Result<instance_import::ImportPlan, String> {
+) -> Result<LocalPackPlan, String> {
     let shared = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _operation = shared.operations.lock().unwrap();
@@ -176,14 +212,19 @@ pub async fn instance_import_prepare(
         ready(&shared, &root)?;
         new_name(&shared, &root, &name)?;
         drop(_operation);
-        let plan = instance_import::prepare(Path::new(&root.path), Path::new(&source), &name)?;
+        let plan = prepare_local_pack(
+            Path::new(&root.path),
+            Path::new(&source),
+            &name,
+            optional_paths.as_deref(),
+        )?;
         let _operation = shared.operations.lock().unwrap();
         recheck_target(&shared, &root)?;
         new_name(&shared, &root, &name)?;
         Ok(plan)
     })
     .await
-    .map_err(|_| "检查 ZIP 导入方案的任务意外退出".to_string())?
+    .map_err(|_| "检查整合包导入方案的任务意外退出".to_string())?
 }
 
 #[tauri::command]
@@ -202,6 +243,9 @@ pub async fn instance_import_start(
         ready(&shared, &root)?;
         new_name(&shared, &root, &name)?;
         drop(_operation);
+        // Preview revisions are not execution permission. Even a caller that
+        // bypasses the disabled UI cannot route mrpack through ZIP publication.
+        require_local_zip(Path::new(&source))?;
         let checked = instance_import::prepare(Path::new(&root.path), Path::new(&source), &name)?;
         let _operation = shared.operations.lock().unwrap();
         recheck_target(&shared, &root)?;
@@ -491,3 +535,7 @@ async fn recover(
     .await
     .map_err(|_| "恢复实例操作的任务意外退出".to_string())?
 }
+
+#[cfg(test)]
+#[path = "instance_commands/import_plan_tests.rs"]
+mod import_plan_tests;

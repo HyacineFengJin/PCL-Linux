@@ -27,6 +27,7 @@ use std::{
 use zip::ZipArchive;
 mod archive;
 mod filesystem;
+pub(crate) mod mrpack;
 use archive::{checked_zip, legacy_resources, resolve_version, scan_archive, ArchiveEntry};
 use filesystem::{hash_file, open_source, source_snapshot, Dir, Key, Snapshot};
 

@@ -191,7 +191,7 @@ impl Desktop {
             .file()
             .set_parent(&window)
             .set_title("导入本地整合包")
-            .add_filter("本地实例 ZIP", &["zip"]);
+            .add_filter("本地整合包 ZIP / Modrinth", &["zip", "mrpack"]);
         let picker = if initial.is_dir() {
             picker.set_directory(initial)
         } else {
@@ -211,7 +211,7 @@ impl Desktop {
                         paths: vec![path],
                         message: None,
                     },
-                    _ => ResourceChoice::unavailable("请选择可访问的本地 ZIP 文件"),
+                    _ => ResourceChoice::unavailable("请选择可访问的本地 ZIP 或 mrpack 文件"),
                 },
             }
         })
