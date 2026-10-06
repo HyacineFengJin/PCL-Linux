@@ -39,6 +39,7 @@ pub struct TaskTarget {
 #[serde(rename_all = "snake_case")]
 pub enum TaskKind {
     Install,
+    ModpackInstall,
     InstanceReset,
     InstanceExport,
     InstanceRename,
@@ -409,6 +410,7 @@ impl Tasks {
         if !matches!(
             kind,
             TaskKind::Install
+                | TaskKind::ModpackInstall
                 | TaskKind::ResourceDownload
                 | TaskKind::ResourceSave
                 | TaskKind::ToolboxDownload
@@ -464,6 +466,7 @@ impl Tasks {
                 stage: TaskStage::Preparing,
                 phase: match kind {
                     TaskKind::Install => "metadata",
+                    TaskKind::ModpackInstall => "pack-prepare",
                     TaskKind::InstanceReset => "reset_prepare",
                     TaskKind::InstanceExport => "export-scan",
                     TaskKind::InstanceRename => "rename_prepare",
@@ -481,6 +484,7 @@ impl Tasks {
                 .into(),
                 message: match kind {
                     TaskKind::Install => "正在获取版本信息…",
+                    TaskKind::ModpackInstall => "正在准备整合包安装…",
                     TaskKind::InstanceReset => "正在检查重置方案…",
                     TaskKind::InstanceExport => "正在检查导出文件…",
                     TaskKind::InstanceRename => "正在检查实例名称与引用…",
@@ -558,6 +562,7 @@ impl Tasks {
                 record.snapshot.can_cancel = false;
                 record.snapshot.message = match record.snapshot.kind {
                     TaskKind::Install => "正在取消安装…",
+                    TaskKind::ModpackInstall => "正在取消整合包安装并清理未完成文件…",
                     TaskKind::InstanceReset => "正在取消重置并恢复原核心文件…",
                     TaskKind::InstanceExport => "正在取消导出并清理临时文件…",
                     TaskKind::InstanceRename => "正在取消改名并清理临时文件…",
@@ -829,6 +834,7 @@ impl Tasks {
                     snapshot.message = if cancelled {
                         match snapshot.kind {
                             TaskKind::Install => "安装已取消，未完成文件已清理",
+                            TaskKind::ModpackInstall => "整合包安装已取消，未完成文件已清理",
                             TaskKind::InstanceReset => "重置已取消，原实例已保留",
                             TaskKind::InstanceExport => "导出已取消，未完成 ZIP 已清理",
                             TaskKind::InstanceRename => "改名已取消，原实例已保留",
@@ -912,8 +918,10 @@ impl TaskHandle {
             else {
                 return;
             };
-            if record.snapshot.kind != TaskKind::ResourceDownload
-                || record.snapshot.display_name.is_some()
+            if !matches!(
+                record.snapshot.kind,
+                TaskKind::ResourceDownload | TaskKind::ModpackInstall
+            ) || record.snapshot.display_name.is_some()
                 || record.snapshot.stage.is_terminal()
             {
                 return;

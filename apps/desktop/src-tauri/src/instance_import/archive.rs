@@ -397,7 +397,7 @@ pub(super) fn legacy_resources(scan: &ArchiveScan) -> Result<BTreeSet<String>> {
 // Match core's inheritance semantics: child libraries replace group/artifact/
 // classifier, while game/JVM argument arrays append. This produces one portable
 // JSON without publishing auxiliary versions into the user's versions list.
-fn merge(mut base: Value, child: Value) -> Value {
+pub(super) fn merge(mut base: Value, child: Value) -> Value {
     fn key(v: &Value) -> String {
         let name = v["name"].as_str().unwrap_or("");
         let p: Vec<_> = name.split(':').collect();
@@ -435,7 +435,7 @@ fn merge(mut base: Value, child: Value) -> Value {
     }
     base
 }
-fn portable(value: &Value, depth: usize) -> Result<()> {
+pub(super) fn portable(value: &Value, depth: usize) -> Result<()> {
     fn account_argument(flag: &str, value: &str) -> bool {
         matches!(
             flag,

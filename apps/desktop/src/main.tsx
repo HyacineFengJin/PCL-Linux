@@ -954,6 +954,8 @@ function App() {
   const archiveRecovery = React.useRef<symbol | null>(null);
   const archiveAdmission = React.useRef({
     blocked: true,
+    packBlocked: true,
+    packAvailable: false,
     rootAvailable: false,
   });
   function acceptJavaRegistration(
@@ -1178,9 +1180,9 @@ function App() {
   function openInstanceImport() {
     if (
       !native ||
-      archiveAdmission.current.blocked ||
+      archiveAdmission.current.packBlocked ||
       rootWorkingRef.current ||
-      !archiveAdmission.current.rootAvailable ||
+      !archiveAdmission.current.packAvailable ||
       importEntry.current ||
       viewContext.current.screen !== "versions" ||
       taskNavigation.current.epoch !== navigationEpoch ||
@@ -1632,6 +1634,8 @@ function App() {
     !!data?.resource_install_recovery_error;
   archiveAdmission.current = {
     blocked: !!busy || downloadBusy || resourceBusy || rootWorking,
+    packBlocked: !!busy || resourceBusy || rootWorking,
+    packAvailable: rootAvailable && !data?.rename_recovery_error && !data?.reset_recovery_error && !data?.delete_recovery_error && !data?.resource_install_recovery_error && (!data?.import_recovery_error || taskView.tasks.some(task => task.kind === "modpack_install" && task.root_id === rootId && taskIsActive(task))),
     rootAvailable: rootAvailable && !instanceRecoveryBlocked,
   };
   async function save(cfg: Settings) {
@@ -2135,8 +2139,8 @@ function App() {
                       className="side-item"
                       disabled={
                         !native ||
-                        archiveAdmission.current.blocked ||
-                        !archiveAdmission.current.rootAvailable ||
+                        archiveAdmission.current.packBlocked ||
+                        !archiveAdmission.current.packAvailable ||
                         !!instanceImport
                       }
                       title={
@@ -2836,8 +2840,8 @@ function App() {
                 scopeKey={rootId || data.settings.root}
                 native={native}
                 disabled={
-                  archiveAdmission.current.blocked ||
-                  !archiveAdmission.current.rootAvailable
+                  archiveAdmission.current.packBlocked ||
+                  !archiveAdmission.current.packAvailable
                 }
                 occupiedNames={data.instances.map((instance) => instance.id)}
                 onTaskStart={showInstanceTask}

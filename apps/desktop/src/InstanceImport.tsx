@@ -4,7 +4,7 @@ import type {
   Api,
   InstanceImportChoice,
   InstanceImportPlan,
-  InstanceMrpackImportPlan,
+  InstancePackImportPlan,
 } from "./types";
 import {
   InstanceOperationDialog,
@@ -40,24 +40,31 @@ type ImportDraft = {
   plan: InstanceImportPlan | null;
   // Retain the last readonly preview while editing, but retire its checked
   // revision. Native prepare must adopt the exact next name/optional paths.
-  mrpack: InstanceMrpackImportPlan | null;
+  pack: InstancePackImportPlan | null;
   optionalPaths: string[];
   error: string;
 };
 
-function isMrpackPlan(
+function isPackPlan(
   plan: InstanceImportPlan | null,
-): plan is InstanceMrpackImportPlan {
-  return plan?.format === "modrinth";
+): plan is InstancePackImportPlan {
+  return !!plan && [
+    "modrinth", "curseforge", "mcbbs", "hmcl", "multimc", "ready_game",
+  ].includes(plan.format || "");
 }
 
 function checkImportPlan(plan: InstanceImportPlan, name: string) {
   if (plan.name !== name || typeof plan.revision !== "string" || !plan.revision)
     throw new Error(t("import.planChanged"));
   if (plan.format === undefined) return;
-  // A future/unknown format must never fall through to the ZIP writer. Even a
-  // malformed mrpack reply claiming installable:true remains a read failure.
-  if (!isMrpackPlan(plan) || plan.installable !== false || !plan.preview)
+  // Unknown formats cannot fall through to the old ZIP writer. A true flag
+  // alone is insufficient: native authority must be a one-use pack token.
+  if (
+    !isPackPlan(plan) || typeof plan.installable !== "boolean" || !plan.preview ||
+    (plan.installable && (
+      !plan.revision.startsWith("pack-confirm-v1:") || plan.preview.blockers?.length !== 0
+    ))
+  )
     throw new Error(t("import.invalidPlan"));
   const preview = plan.preview;
   const count = (value: number) => Number.isSafeInteger(value) && value >= 0;
@@ -102,8 +109,8 @@ function checkImportPlan(plan: InstanceImportPlan, name: string) {
     throw new Error(t("import.invalidPlan"));
 }
 
-/** Local ZIP import can transfer its checked revision to a writer. Mrpack uses
- * the same owned source/name dialog for readonly checks and never starts a job. */
+/** All formats share the CE name/confirmation dialog. Only an unchanged native
+ * checked plan may be submitted; closing/editing retires this view ownership. */
 export function InstanceImport({
   api,
   scopeKey,
@@ -188,7 +195,7 @@ export function InstanceImport({
           source: choice.source,
           name: choice.suggested_name || "",
           plan: null,
-          mrpack: null,
+          pack: null,
           optionalPaths: [],
           error: "",
         });
@@ -218,11 +225,10 @@ export function InstanceImport({
       instanceImportNameError(submitted.name, names.current)
     )
       return;
-    const canStartZip =
-      submitted.plan?.format === undefined && !!submitted.plan;
+    const canStart = !!submitted.plan && (submitted.plan.format === undefined || (isPackPlan(submitted.plan) && submitted.plan.installable));
     const token = {
       scope,
-      kind: canStartZip ? ("start" as const) : ("prepare" as const),
+      kind: canStart ? ("start" as const) : ("prepare" as const),
       token: Symbol(),
     };
     operation.current = token;
@@ -232,7 +238,7 @@ export function InstanceImport({
       draftRef.current === submitted &&
       operation.current === token;
     try {
-      if (canStartZip && submitted.plan) {
+      if (canStart && submitted.plan) {
         const result = await api<{ id: string }>("instance_import_start", {
           source: submitted.source,
           name: submitted.name,
@@ -248,7 +254,7 @@ export function InstanceImport({
         const plan = await api<InstanceImportPlan>("instance_import_prepare", {
           source: submitted.source,
           name: submitted.name,
-          ...(submitted.mrpack
+          ...(submitted.pack
             ? { optionalPaths: [...submitted.optionalPaths] }
             : {}),
         });
@@ -257,8 +263,8 @@ export function InstanceImport({
         setDraft({
           ...submitted,
           plan,
-          mrpack: isMrpackPlan(plan) ? plan : null,
-          optionalPaths: isMrpackPlan(plan)
+          pack: isPackPlan(plan) ? plan : null,
+          optionalPaths: isPackPlan(plan)
             ? plan.preview.files
                 .filter((file) => file.client === "optional" && file.selected)
                 .map((file) => file.path)
@@ -278,15 +284,15 @@ export function InstanceImport({
   }
   if (!visible) return null;
   const nameError = instanceImportNameError(visible.name, occupiedNames);
-  const preview = visible.mrpack?.preview;
-  const displayedPlan = visible.plan ?? visible.mrpack;
+  const preview = visible.pack?.preview;
+  const displayedPlan = visible.plan ?? visible.pack;
   function selectOptional(path: string, selected: boolean) {
     const previous = draftRef.current;
     if (
       !allowed() ||
       !previous ||
       previous.scope !== scope ||
-      !previous.mrpack?.preview.files.some(
+      !previous.pack?.preview.files.some(
         (file) => file.path === path && file.client === "optional",
       ) ||
       (operation.current?.scope === scope && operation.current.kind === "start")
@@ -309,10 +315,10 @@ export function InstanceImport({
           ? t("ui.submitting")
           : working === "prepare"
             ? t("ui.checking")
-            : preview
-              ? t("ui.recheck")
-              : visible.plan
-                ? t("import.start")
+            : visible.plan && (!isPackPlan(visible.plan) || visible.plan.installable)
+              ? t("import.start")
+              : preview
+                ? t("ui.recheck")
                 : t("ui.confirm")
       }
       confirmDisabled={!native || disabled || !!nameError}
@@ -347,7 +353,7 @@ export function InstanceImport({
           {visible.error || nameError}
         </p>
       )}
-      {preview && (
+      {preview && !visible.pack?.installable && (
         <p className="ce-instance-plan-warning">{t("import.mrpackReadonly")}</p>
       )}
       {preview && !visible.plan && (
@@ -361,7 +367,14 @@ export function InstanceImport({
             {preview && (
               <>
                 <dt>{t("import.format")}</dt>
-                <dd>Modrinth (.mrpack)</dd>
+                <dd>{({
+                  modrinth: "Modrinth (.mrpack / .zip)",
+                  curseforge: "CurseForge (.zip)",
+                  mcbbs: "MCBBS (.zip)",
+                  hmcl: "HMCL (.zip)",
+                  multimc: "MultiMC / Prism (.zip)",
+                  ready_game: t("import.readyGame"),
+                })[visible.pack!.format]}</dd>
               </>
             )}
             <dt>{t("resources.modpacks")}</dt>

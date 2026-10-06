@@ -159,6 +159,7 @@ impl Downloads {
         if !matches!(
             snapshot.kind,
             TaskKind::Install
+                | TaskKind::ModpackInstall
                 | TaskKind::InstanceReset
                 | TaskKind::InstanceExport
                 | TaskKind::InstanceRename
@@ -306,6 +307,7 @@ impl Downloads {
     pub fn progress(&self, task: &TaskHandle, progress: Progress) {
         let stage = match progress.stage.as_str() {
             "downloading"
+            | "pack-download"
             | "vanilla_libraries"
             | "vanilla_assets"
             | "vanilla_resources"
@@ -314,9 +316,11 @@ impl Downloads {
             | "component_main"
             | "component_libraries"
             | "game_libraries" => TaskStage::Downloading,
-            "processing" | "installing" | "component_install" | "component_analyze"
-            | "publishing" | "complete" | "game_install" | "game_support" | "reset_commit"
-            | "reset_merge" | "export-archive" | "export-finalize" => TaskStage::Processing,
+            "pack-files" | "processing" | "installing" | "component_install"
+            | "component_analyze" | "publishing" | "complete" | "game_install" | "game_support"
+            | "reset_commit" | "reset_merge" | "export-archive" | "export-finalize" => {
+                TaskStage::Processing
+            }
             _ => TaskStage::Preparing,
         };
         let (phase, message) = if progress.stage == "complete" {

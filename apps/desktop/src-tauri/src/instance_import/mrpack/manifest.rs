@@ -81,41 +81,7 @@ pub(super) fn output_path(path: &str) -> Result<()> {
     Ok(())
 }
 fn url(value: &str) -> Result<bool> {
-    if value.len() > 4096
-        || !value.is_ascii()
-        || value.bytes().any(|b| b.is_ascii_control() || b == b' ')
-    {
-        return Err("mrpack 下载 URI 必须是有界且正确编码的 HTTPS 链接".into());
-    }
-    let raw = value.as_bytes();
-    let mut i = 0;
-    while i < raw.len() {
-        if raw[i] == b'%' {
-            if i + 2 >= raw.len() || !raw[i + 1..i + 3].iter().all(u8::is_ascii_hexdigit) {
-                return Err("mrpack 下载 URI 含无效百分号编码".into());
-            }
-            i += 3;
-        } else {
-            if !raw[i].is_ascii_alphanumeric() && !b"-._~:/?#[]@!$&'()*+,;=".contains(&raw[i]) {
-                return Err("mrpack 下载 URI 含未编码字符".into());
-            }
-            i += 1;
-        }
-    }
-    let url = reqwest::Url::parse(value).map_err(|_| "mrpack 下载 URI 无效")?;
-    if url.scheme() != "https"
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.fragment().is_some()
-    {
-        return Err("mrpack 下载只允许无凭据、无片段的 HTTPS 链接".into());
-    }
-    Ok(url.port_or_known_default() == Some(443)
-        && matches!(
-            url.host_str(),
-            Some("cdn.modrinth.com" | "github.com" | "raw.githubusercontent.com" | "gitlab.com")
-        ))
+    super::mirror::declaration(value).map(|url| url.is_some())
 }
 impl RemoteFile {
     pub(super) fn has_supported_mirror(&self) -> bool {

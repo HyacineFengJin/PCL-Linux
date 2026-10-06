@@ -4,7 +4,7 @@
 use super::*;
 use std::sync::OnceLock;
 
-fn runtime() -> &'static tokio::runtime::Runtime {
+pub(super) fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()

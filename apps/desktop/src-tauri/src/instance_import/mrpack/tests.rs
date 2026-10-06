@@ -48,7 +48,7 @@ impl Fixture {
             extras,
         );
     }
-    fn inspect(&self, optional: Option<&[String]>) -> Result<MrpackPlan> {
+    fn inspect(&self, optional: Option<&[String]>) -> Result<PackPlan> {
         inspect(&self.root, &self.source, "Preview", optional)
     }
 }
@@ -505,4 +505,23 @@ fn decoded_manifest_remote_size_and_real_deflate_ratio_limits_are_enforced() {
     }
     writer.finish().unwrap();
     assert!(f.inspect(None).err().unwrap().contains("压缩比"));
+}
+
+#[test]
+fn mixed_mirrors_keep_supported_install_and_redact_ignored_declarations() {
+    let f = Fixture::new();
+    let mut file = remote("mods/client.jar", None, 5);
+    file["downloads"] = json!([
+        "https://cdn.modrinth.com/fixture/file.jar",
+        "https://unsupported.example/file.jar?private-query=secret",
+    ]);
+    f.manifest(vec![file], &[]);
+    let plan = f.inspect(None).unwrap();
+    assert!(plan.preview.blockers.is_empty());
+    assert!(plan
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("1 个不受支持的下载镜像声明")));
+    assert!(!plan.warnings.join(" ").contains("secret"));
+    assert!(!plan.warnings.join(" ").contains("unsupported.example"));
 }

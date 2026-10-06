@@ -274,8 +274,8 @@ const messages = {
   "ui.existingFiles": "已有文件",
   "import.help": "将创建新的实例文件夹。导入完成后可在实例列表中选择它。",
   "import.invalidPlan": "导入检查结果的格式无效，请重新检查",
-  "import.mrpackReadonly":
-    "当前可检查 mrpack，安装尚未开放。检查不会创建实例或下载文件。",
+  "import.mrpackReadonly": "此整合包目前只能检查，尚不能安装。下方列出了需要解决的项目。",
+  "import.readyGame": "完整游戏目录 (.zip)",
   "import.previewStale":
     "名称或可选文件已改变，以下保留上次检查结果；请重新检查更新结果。",
   "import.format": "文件格式",
@@ -286,7 +286,7 @@ const messages = {
   "import.optionalFiles": "可选文件",
   "import.optionalCount": "{total} 个（已选 {selected} 个）",
   "import.excludedFiles": "未选或客户端不支持",
-  "import.downloadBytes": "预计网络下载",
+  "import.downloadBytes": "整合包文件下载",
   "import.overrideFiles": "有效覆盖文件",
   "import.clientOverrides": "客户端覆盖文件",
   "import.shadowedFiles": "被覆盖层替换的文件",

@@ -297,8 +297,8 @@ const messages = {
     "A new instance folder will be created. Select it in the instance list after import completes.",
   "import.invalidPlan":
     "The import check returned an invalid format; check again",
-  "import.mrpackReadonly":
-    "Mrpack checking is available; installation is not yet available. Checking creates no instance and downloads no files.",
+  "import.mrpackReadonly": "This pack can be inspected but cannot be installed yet. See the requirements below.",
+  "import.readyGame": "Ready Minecraft directory (.zip)",
   "import.previewStale":
     "The name or optional files changed. The previous result remains below; check again to update it.",
   "import.format": "File format",
@@ -309,7 +309,7 @@ const messages = {
   "import.optionalFiles": "Optional files",
   "import.optionalCount": "{total} ({selected} selected)",
   "import.excludedFiles": "Unselected or unsupported on client",
-  "import.downloadBytes": "Expected network download",
+  "import.downloadBytes": "Pack files to download",
   "import.overrideFiles": "Effective override files",
   "import.clientOverrides": "Client override files",
   "import.shadowedFiles": "Files replaced by overrides",

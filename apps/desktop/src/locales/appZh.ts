@@ -15,7 +15,7 @@ const messages = {
   "main.addImport": "添加或导入",
   "main.addFolder": "添加已有文件夹",
   "main.importDesktop": "请在桌面应用中导入本地 ZIP",
-  "main.importOwnZip": "导入本应用 ZIP，或检查本地 mrpack",
+  "main.importOwnZip": "导入 ZIP 或 mrpack 整合包，按包内文件自动识别格式",
   "main.importPack": "导入整合包",
   "accounts.offlineAuth": "离线验证",
   "accounts.microsoftAuth": "正版验证",

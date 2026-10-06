@@ -21,7 +21,8 @@
 | 任务协调 | `tasks.rs`、`tasks/schedule.rs`、`tasks/scope.rs`、`downloads.rs` | 并发/队列、物理路径互斥、取消与结束、带修订号的集合投影 |
 | Minecraft 核心 | `crates/core/src/lib.rs` | 版本识别、继承、依赖和启动参数 |
 | Java 核心 | `crates/core/src/java.rs` | 有限时探测、发现、架构与版本策略、启动选择 |
-| 下载与安装 | `crates/install/src/` | 网络请求、校验缓存、原版与加载器安装 |
+| 下载与安装 | `crates/install/src/`、`resolved.rs` | 网络请求、校验缓存、原版与加载器安装、固定提供者证据 |
+| 本地整合包 | `instance_import/mrpack/`、`instance_import/build.rs`、`publication.rs` | 格式适配、原生一次性确认、私有构建和可恢复提交 |
 | Modrinth 安装 | `modrinth_install/` | 官方元数据、兼容与必需依赖规划、实例快照、匿名网络暂存 |
 | 资源批次提交 | `resource_ops/verified_batch/`、`resource_ops/update_batch/` | 新资源提交、更新备份与撤销、所有权登记、回滚和中断恢复 |
 | 账号 | `crates/auth/src/lib.rs`、桌面的 `accounts.rs` | 认证协议、密钥环、账号状态与刷新 |
@@ -79,11 +80,19 @@ v2 设置在普通启动时备份并迁移。已有改名 journal 的引用载�
 
 `instance_delete/filesystem.rs` 负责目录描述符、内容树快照、锁、移动与空目录清理；主模块负责依赖检查、计划、日志状态和删除/恢复。文件事务回归分别在 `instance_import/tests.rs` 和 `instance_delete/tests.rs`；bootstrap、旧资料及外部重建的组合行为在 `main.rs` 的应用集成用例中。桌面命令在大型归档/内容树的只读校验期间释放 `operations`，返回方案或准入任务前再检查占用、目录绑定和待恢复状态。
 
-## Modrinth 规划、下载与提交
+## 整合包与 Modrinth 资源安装
 
-本地 mrpack 检查位于 `instance_import/mrpack.rs`，通过现有实例导入命令返回独立的只读方案。`instance_commands::LocalPackPlan` 保留原 ZIP DTO，并给 mrpack 添加格式、依赖、客户端选择、有效覆盖和限制说明。普通 ZIP 的执行与恢复仍由原服务负责；`require_local_zip` 在旧写入入口拒绝 mrpack，序列化的预览 revision 不授予执行权限。
+本地整合包入口仍是 `instance_commands.rs` 与 `InstanceImport.tsx`。PCL 导出 ZIP 保留原 DTO 和事务；其他格式由 `instance_import/mrpack.rs` 与 `formats.rs` 归一为客户端有效输出。`archive.rs` 限制 ZIP 索引、路径和解压容量，所有归档条目都校验；适配器只选择游戏内容，不导入启动器资料。完整目录包合并原核心继承，其余格式根据清单重建受支持组件。CurseForge 的远程文件编号当前作为明确阻止项，不能静默遗漏。
 
-mrpack 使用受限 ZIP 预检和固定源文件描述符；原生检查前后核对源内容、身份及路径绑定，并绑定目标目录身份、新名称与精确可选项。检查不下载或提取文件、不登记实例。客户端计划只计算有效输出，通用覆盖与客户端覆盖有明确顺序，服务端覆盖保持独立；可选项改变后重新检查。界面沿用 `InstanceImport` 的作用域与回复所有权，切换目录、API 或关闭不会接纳迟到方案。
+`mrpack/service.rs` 将检查后的源文件描述符、物理目标身份、可选项、网络策略和提供者解析结果放入有界确认缓存。界面得到一次性不透明 token，不得到可写的安装授权结构。缓存同时限制记录数、内存与实际持有描述符；领取后由工作线程持有租约，排队任务不会因未领取记录的 TTL 而失效。修改名称、来源或选择必须重查；旧 ZIP 写入入口拒绝其他格式，不能拿预览 DTO 绕过原生确认。
+
+`crates/install/src/resolved.rs` 在检查阶段固定 Mojang 描述、Fabric 配置或 Forge / NeoForge 安装器与依赖证据。执行复用这些证据，不重新选择目录项或镜像声明。游戏核心和整合包传输使用同一捕获的网络与下载策略。`mrpack/mirror.rs` 校验允许的声明及每次重定向；`transfer.rs` 依序尝试声明中的镜像，校验大小与两种哈希，取消和丢弃异步任务释放请求、连接许可和匿名文件。失败镜像实际收到的字节也计入网络进度。
+
+工作线程获得根目录队列 turn 后，先重查源内容、物理目标与启动器名称引用，再通过 `build.rs::BuildOperation` 创建 schema 2 的 Building 记录。私有根身份持久登记后才交给安装器的 `install_resolved_request_bound`。`crates/install/src/bound_root.rs` 持有根与最终父目录 FD；路径仅作为 `/proc/<工作线程 tid>/fd` 的系统调用适配，不能重新 canonicalize 为可替换的目录名。单独工作线程的 Landlock 限制 Java 自行派生的写入路径，缺少 ABI 3 / openat2 时在写入前失败；全局网络 runtime 在限制前初始化，避免影响其他任务。Java 临时文件也放在私有根，参数引用的 FD 保留到子进程结束。这是路径重定向约束，不提供对同一用户其他进程的完整隔离；并发外部硬链接仍可能共享文件 inode。归档链接被拒绝，执行的处理器来自捕获的官方安装器，整合包覆盖在处理器结束后应用。普通路径安装 API 保持原行为。所有核心和游戏内容先在私有根完成，`seal` 检查完整树与输出身份；`publication.rs` 负责共享文件相同内容复用、逐文件所有权、实例最终移动和恢复。schema 1 的旧 ZIP journal 保持兼容。构建暂存不按文件数量长时间持有大量 FD，封存后的输出按目录 FD 和文件快照重新打开。
+
+提交回调在长哈希后短暂持有 `operations`，重检来源路径、物理目标与启动器引用并关闭取消接纳；已经进入提交的窗口关闭不撤销提交权限。Building / Prepared 恢复清理仍属本操作的输出，Committed 保留实例并清理暂存。活跃构建只豁免其精确 operation ID，其他未恢复或损坏记录继续阻止写入。异常、校验冲突和清理失败不能归类为普通取消。
+
+排查格式误判看 `formats_tests.rs`；解析和覆盖看 `mrpack/tests.rs`；镜像、哈希与请求生命周期看 `mirror/tests.rs`、`transfer/tests.rs`；确认、队列和实际发布看 `service_tests.rs`；构建、提交与故障恢复看 `build_tests.rs`。前端保留目录/API/请求所有权，迟到的检查响应不能覆盖已编辑或关闭的表单。
 
 `ResourceDetails` 只选择项目、版本和精确文件名；`ResourceInstall` 读取并确认绑定实例的方案。客户端提交的 URL、哈希或加载器不能取得写入权限。`resource_install_commands` 将原生准备的方案放入 `modrinth_install/confirmation.rs` 的有界内存缓存，返回一次性不透明 revision。开始安装时领取 `ConfirmedInstall` 并绑定工作线程；未领取的记录会过期，已提交请求不受缓存淘汰或排队时长影响。网络和大型本地哈希检查不持有 `operations`。任务提交即保留目标队列位置；获得目录 turn 后重检绑定与确认方案再开始下载，页面导航与目录浏览不改变捕获目标。
 

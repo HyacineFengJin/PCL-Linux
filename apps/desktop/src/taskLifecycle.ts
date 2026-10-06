@@ -38,6 +38,7 @@ export function taskNeedsBootstrap(
   const globalRecovery = [
     "instance_rename",
     "instance_import",
+    "modpack_install",
     "instance_delete",
     "instance_restore",
     "resource_download",

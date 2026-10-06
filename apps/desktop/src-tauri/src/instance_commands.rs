@@ -108,14 +108,13 @@ pub struct ImportChoice {
     message: Option<String>,
 }
 
-/// Preserve the existing local ZIP summary while adding a separately typed,
-/// read-only mrpack view. Neither serialized variant grants write authority;
-/// start reconstructs the legacy ZIP plan and explicitly refuses mrpack.
+/// Preserve the existing local ZIP DTO. Network packs use native one-use
+/// confirmation authority; serialized views never grant filesystem permission.
 #[derive(Serialize)]
 #[serde(untagged)]
 pub enum LocalPackPlan {
     Zip(instance_import::ImportPlan),
-    Modrinth(instance_import::mrpack::MrpackPlan),
+    Pack(instance_import::mrpack::PackPlan),
 }
 
 fn prepare_local_pack(
@@ -126,7 +125,7 @@ fn prepare_local_pack(
 ) -> Result<LocalPackPlan, String> {
     if instance_import::mrpack::recognizes(source)? {
         instance_import::mrpack::inspect(root, source, name, optional_paths)
-            .map(LocalPackPlan::Modrinth)
+            .map(LocalPackPlan::Pack)
     } else {
         if optional_paths.is_some_and(|paths| !paths.is_empty()) {
             return Err("本地 ZIP 导入不接受 mrpack 可选文件，请重新检查".into());
@@ -136,8 +135,8 @@ fn prepare_local_pack(
 }
 
 fn require_local_zip(source: &Path) -> Result<(), String> {
-    if instance_import::mrpack::recognizes(source)? {
-        Err("mrpack 目前可检查客户端安装方案，完整实例安装尚未开放".into())
+    if !instance_import::mrpack::is_local_export(source)? {
+        Err("此整合包需要原生安装确认；本地 ZIP 写入入口的安装尚未开放".into())
     } else {
         Ok(())
     }
@@ -151,9 +150,9 @@ pub async fn instance_import_pick(
 ) -> Result<ImportChoice, String> {
     let root = {
         let _operation = state.operations.lock().unwrap();
-        crate::require_instance_job(&state)?;
+        crate::require_network_submission(&state)?;
         let root = state.config.resolve(root_id.as_deref())?;
-        ready(&state, &root)?;
+        pack_ready(&state, &root)?;
         root
     };
     let choice = state
@@ -206,25 +205,68 @@ pub async fn instance_import_prepare(
 ) -> Result<LocalPackPlan, String> {
     let shared = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let network_pack = !instance_import::mrpack::is_local_export(Path::new(&source))?;
+        let root = {
+            let _operation = shared.operations.lock().unwrap();
+            if network_pack {
+                crate::require_network_submission(&shared)?;
+            } else {
+                crate::require_instance_job(&shared)?;
+            }
+            let root = shared.config.resolve(root_id.as_deref())?;
+            if network_pack {
+                pack_ready(&shared, &root)?;
+            } else {
+                ready(&shared, &root)?;
+            }
+            new_name(&shared, &root, &name)?;
+            root
+        };
+        let plan = if network_pack {
+            LocalPackPlan::Pack(shared.pack_confirmations.prepare(
+                &root,
+                &shared.project,
+                Path::new(&source),
+                &name,
+                optional_paths.as_deref(),
+            )?)
+        } else {
+            prepare_local_pack(
+                Path::new(&root.path),
+                Path::new(&source),
+                &name,
+                optional_paths.as_deref(),
+            )?
+        };
         let _operation = shared.operations.lock().unwrap();
-        crate::require_instance_job(&shared)?;
-        let root = shared.config.resolve(root_id.as_deref())?;
-        ready(&shared, &root)?;
-        new_name(&shared, &root, &name)?;
-        drop(_operation);
-        let plan = prepare_local_pack(
-            Path::new(&root.path),
-            Path::new(&source),
-            &name,
-            optional_paths.as_deref(),
-        )?;
-        let _operation = shared.operations.lock().unwrap();
-        recheck_target(&shared, &root)?;
+        if network_pack {
+            crate::require_network_submission(&shared)?;
+            if shared.config.resolve(Some(&root.id))?.path != root.path {
+                return Err("游戏目录位置已改变，请重新检查".into());
+            }
+            pack_ready(&shared, &root)?;
+        } else {
+            recheck_target(&shared, &root)?;
+        }
         new_name(&shared, &root, &name)?;
         Ok(plan)
     })
     .await
     .map_err(|_| "检查整合包导入方案的任务意外退出".to_string())?
+}
+
+/// A running pack transaction is guarded by its root-scoped worker. Read-only
+/// planning and queued submissions may coexist with it; abandoned journals still
+/// block unless the exact recorded build operation is owned by this worker.
+fn pack_ready(shared: &Shared, root: &GameRoot) -> Result<(), String> {
+    crate::resource_ops::ensure_ready(Path::new(&root.path))?;
+    crate::instance_reset::ensure_ready(Path::new(&root.path))?;
+    crate::instance_rename::ensure_ready(Path::new(&root.path))?;
+    instance_delete::ensure_ready(Path::new(&root.path))?;
+    shared
+        .pack_confirmations
+        .ensure_ready(Path::new(&root.path))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -237,6 +279,20 @@ pub async fn instance_import_start(
 ) -> Result<Value, String> {
     let shared = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        if revision.starts_with("pack-confirm-v1:") {
+            let _operation = shared.operations.lock().unwrap();
+            crate::require_network_submission(&shared)?;
+            let root = shared.config.resolve(root_id.as_deref())?;
+            pack_ready(&shared, &root)?;
+            new_name(&shared, &root, &name)?;
+            return instance_import::mrpack::service::start(
+                shared.clone(),
+                root,
+                PathBuf::from(source),
+                name,
+                revision,
+            );
+        }
         let _operation = shared.operations.lock().unwrap();
         crate::require_instance_job(&shared)?;
         let root = shared.config.resolve(root_id.as_deref())?;
@@ -244,7 +300,7 @@ pub async fn instance_import_start(
         new_name(&shared, &root, &name)?;
         drop(_operation);
         // Preview revisions are not execution permission. Even a caller that
-        // bypasses the disabled UI cannot route mrpack through ZIP publication.
+        // bypasses the UI cannot route another format through legacy ZIP publication.
         require_local_zip(Path::new(&source))?;
         let checked = instance_import::prepare(Path::new(&root.path), Path::new(&source), &name)?;
         let _operation = shared.operations.lock().unwrap();

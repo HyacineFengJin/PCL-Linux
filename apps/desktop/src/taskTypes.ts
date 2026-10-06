@@ -9,6 +9,7 @@ export type DownloadStep = {
 export type DownloadStatus = {
   kind?:
     | "install"
+    | "modpack_install"
     | "instance_reset"
     | "instance_export"
     | "instance_rename"

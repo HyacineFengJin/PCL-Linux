@@ -1,10 +1,11 @@
-//! Read-only Modrinth pack recognition and client output preview.
+//! Checked client overlays for local pack formats and native installation authority.
 //!
 //! Shared ZIP/FD primitives retain the PCL ZIP boundary. This separate parser
 //! validates all archive bodies and builds a bounded effective client overlay;
-//! it downloads nothing and creates no target directories. The public DTO is
-//! never Deserialize/install authority. A revision binds native source bytes,
-//! physical target, optional selection and final overlay for explicit recheck.
+//! parsing itself downloads nothing and creates no target directories. The
+//! service may resolve official core metadata before issuing a one-use native
+//! confirmation. The public DTO is never Deserialize/install authority; its
+//! token refers to captured source, target, choices and provider evidence.
 use super::{filesystem::Stamp, hash_file, name_ok, open_source, Dir, Key, Result, Snapshot};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -15,10 +16,19 @@ use std::{
 };
 #[path = "mrpack/archive.rs"]
 mod archive;
+#[path = "mrpack/formats.rs"]
+mod formats;
 #[path = "mrpack/manifest.rs"]
 mod manifest;
+#[path = "mrpack/mirror.rs"]
+pub(crate) mod mirror;
+#[path = "mrpack/service.rs"]
+pub(crate) mod service;
+#[path = "mrpack/transfer.rs"]
+mod transfer;
 use archive::{ArchiveScan, OverrideFile};
 use manifest::{Client, Manifest};
+pub(crate) use service::ConfirmationCache;
 
 const MAX_ARCHIVE: u64 = 512 * 1024 * 1024;
 const MAX_DECODED: u64 = 1024 * 1024 * 1024;
@@ -30,7 +40,7 @@ const MAX_OUTPUT: u64 = 8 * 1024 * 1024 * 1024;
 const INDEX: &str = "modrinth.index.json";
 
 #[derive(Clone, Serialize)]
-pub struct MrpackPlan {
+pub struct PackPlan {
     pub revision: String,
     pub name: String,
     pub pack_name: String,
@@ -83,6 +93,7 @@ struct Binding {
     versions_key: Option<Key>,
     source: PathBuf,
     source_snapshot: Snapshot,
+    archive_limit: u64,
 }
 #[derive(Serialize)]
 #[serde(tag = "origin", rename_all = "snake_case")]
@@ -105,16 +116,19 @@ impl Output {
     }
 }
 
-fn source_file(source: &Path) -> Result<File> {
+fn source_file(source: &Path, limit: u64) -> Result<File> {
     let file = open_source(source)?;
     let stamp = Stamp::of(&file.metadata().map_err(super::error)?);
-    if !stamp.regular() || stamp.size > MAX_ARCHIVE {
-        return Err("mrpack 源必须是普通文件且不超过 512 MiB".into());
+    if !stamp.regular() || stamp.size > limit {
+        return Err(format!(
+            "整合包源必须为普通文件且不超过 {} MiB",
+            limit / (1024 * 1024)
+        ));
     }
     Ok(file)
 }
-fn source_snapshot(source: &Path) -> Result<Snapshot> {
-    hash_file(source_file(source)?, MAX_ARCHIVE, None)
+fn source_snapshot(source: &Path, limit: u64) -> Result<Snapshot> {
+    hash_file(source_file(source, limit)?, limit, None)
 }
 fn root_scope(root: &Path, name: &str) -> Result<(Key, Option<Key>)> {
     name_ok(name)?;
@@ -173,25 +187,108 @@ pub fn inspect(
     source: &Path,
     name: &str,
     optional_paths: Option<&[String]>,
-) -> Result<MrpackPlan> {
+) -> Result<PackPlan> {
+    Ok(prepare_checked(root, source, name, optional_paths)?.plan)
+}
+
+/// The held descriptor, parsed outputs and root binding move together into the
+/// one-use confirmation cache. A serialized preview cannot recreate authority.
+struct CheckedPack {
+    plan: PackPlan,
+    file: File,
+    outputs: BTreeMap<String, Output>,
+    directories: BTreeSet<String>,
+    bundled: Option<formats::BundledCore>,
+    rebuild_profile: Option<Vec<u8>>,
+}
+/// Parsed facts stay named so format adapters cannot confuse bundled cores,
+/// private runtime declarations or the effective client output collections.
+struct PreparedPack {
+    plan: PackPlan,
+    outputs: BTreeMap<String, Output>,
+    directories: BTreeSet<String>,
+    bundled: Option<formats::BundledCore>,
+    rebuild_profile: Option<Vec<u8>>,
+}
+fn prepare_checked(
+    root: &Path,
+    source: &Path,
+    name: &str,
+    optional_paths: Option<&[String]>,
+) -> Result<CheckedPack> {
+    let format = formats::classify(source)?;
+    if format == formats::Format::Pcl {
+        return Err("PCL 本地导出 ZIP 应使用原生导入流程".into());
+    }
+    let limit = if format == formats::Format::Modrinth {
+        MAX_ARCHIVE
+    } else {
+        8 * 1024 * 1024 * 1024
+    };
     let (root_key, versions_key) = root_scope(root, name)?;
-    let file = source_file(source)?;
-    let before = hash_file(file.try_clone().map_err(super::error)?, MAX_ARCHIVE, None)?;
-    let scan = archive::scan(file.try_clone().map_err(super::error)?)?;
-    let manifest = manifest::parse(&scan.index)?;
-    let optional = selection(&manifest, optional_paths)?;
+    let file = source_file(source, limit)?;
+    let before = hash_file(file.try_clone().map_err(super::error)?, limit, None)?;
     let binding = Binding {
         root: root.to_owned(),
         root_key,
         versions_key,
         source: source.to_owned(),
         source_snapshot: before.clone(),
+        archive_limit: limit,
     };
-    let mut plan = build(name, manifest, scan, optional, binding)?;
+    let PreparedPack {
+        mut plan,
+        outputs,
+        directories,
+        bundled,
+        rebuild_profile,
+    } = if format == formats::Format::Modrinth && recognizes(source)? {
+        let scan = archive::scan(file.try_clone().map_err(super::error)?)?;
+        let manifest = manifest::parse(&scan.index)?;
+        let optional = selection(&manifest, optional_paths)?;
+        let (plan, outputs, dirs) = build(name, manifest, scan, optional, binding)?;
+        PreparedPack {
+            plan,
+            outputs,
+            directories: dirs,
+            bundled: None,
+            rebuild_profile: None,
+        }
+    } else {
+        from_archive(
+            name,
+            format,
+            formats::prepare(
+                file.try_clone().map_err(super::error)?,
+                name,
+                format,
+                optional_paths,
+            )?,
+            binding,
+        )?
+    };
+    let ignored_mirrors = outputs
+        .values()
+        .filter_map(|output| match output {
+            Output::Remote { downloads, .. } => Some(
+                downloads
+                    .iter()
+                    .filter(|url| matches!(mirror::declaration(url), Ok(None)))
+                    .count(),
+            ),
+            Output::Override(_) => None,
+        })
+        .sum::<usize>();
+    if ignored_mirrors > 0 {
+        // Preserve an excluded declaration as a fact without echoing URLs or
+        // query credentials into a warning, log or task projection.
+        plan.warnings
+            .push(format!("忽略 {ignored_mirrors} 个不受支持的下载镜像声明"));
+    }
     // The held descriptor and the current pathname must both retain the full
     // original stamp/hash. This permits read-only hard links while detecting
     // replacement or edits through any alias during decompression/planning.
-    if hash_file(file, MAX_ARCHIVE, None)? != before {
+    if hash_file(file.try_clone().map_err(super::error)?, limit, None)? != before {
         return Err(super::changed());
     }
     plan.recheck()?;
@@ -199,7 +296,14 @@ pub fn inspect(
         "mrpack-v1:{:x}",
         Sha256::digest(serde_json::to_vec(&plan.revision_facts()?).map_err(super::error)?)
     );
-    Ok(plan)
+    Ok(CheckedPack {
+        plan,
+        file,
+        outputs,
+        directories,
+        bundled,
+        rebuild_profile,
+    })
 }
 
 fn selection(manifest: &Manifest, paths: Option<&[String]>) -> Result<BTreeSet<String>> {
@@ -230,7 +334,7 @@ fn build(
     scan: ArchiveScan,
     optional: BTreeSet<String>,
     binding: Binding,
-) -> Result<MrpackPlan> {
+) -> Result<(PackPlan, BTreeMap<String, Output>, BTreeSet<String>)> {
     let (dependencies, mut blockers) = manifest::dependencies(&manifest.dependencies);
     let mut files = Vec::new();
     let mut outputs = BTreeMap::new();
@@ -329,7 +433,7 @@ fn build(
         ));
     }
     let minecraft = manifest.dependencies["minecraft"].clone();
-    let mut plan = MrpackPlan {
+    let mut plan = PackPlan {
         revision: String::new(),
         name: name.into(),
         pack_name: manifest.name,
@@ -362,16 +466,17 @@ fn build(
     // optional authorization explicit without retaining decompressed bodies.
     plan.revision = format!(
         "overlay:{:x}",
-        Sha256::digest(serde_json::to_vec(&(optional, outputs)).map_err(super::error)?)
+        Sha256::digest(serde_json::to_vec(&(optional, &outputs)).map_err(super::error)?)
     );
-    Ok(plan)
+    Ok((plan, outputs, scan.directories))
 }
-impl MrpackPlan {
+impl PackPlan {
     pub fn recheck(&self) -> Result<()> {
         let (root_key, versions_key) = root_scope(&self.binding.root, &self.name)?;
         if root_key != self.binding.root_key
             || versions_key != self.binding.versions_key
-            || source_snapshot(&self.binding.source)? != self.binding.source_snapshot
+            || source_snapshot(&self.binding.source, self.binding.archive_limit)?
+                != self.binding.source_snapshot
         {
             return Err(super::changed());
         }
@@ -385,3 +490,182 @@ impl MrpackPlan {
 #[cfg(test)]
 #[path = "mrpack/tests.rs"]
 mod tests;
+
+impl CheckedPack {
+    fn recheck_source(&self, cancel: &std::sync::atomic::AtomicBool) -> Result<()> {
+        let before = &self.plan.binding.source_snapshot;
+        if hash_file(
+            self.file.try_clone().map_err(super::error)?,
+            self.plan.binding.archive_limit,
+            Some(cancel),
+        )? != *before
+            || hash_file(
+                source_file(&self.plan.binding.source, self.plan.binding.archive_limit)?,
+                self.plan.binding.archive_limit,
+                Some(cancel),
+            )? != *before
+        {
+            return Err(super::changed());
+        }
+        Ok(())
+    }
+    fn recheck_source_stamp(&self) -> Result<()> {
+        let expected = &self.plan.binding.source_snapshot.stamp;
+        if Stamp::of(&self.file.metadata().map_err(super::error)?) != *expected
+            || Stamp::of(
+                &open_source(&self.plan.binding.source)?
+                    .metadata()
+                    .map_err(super::error)?,
+            ) != *expected
+        {
+            return Err(super::changed());
+        }
+        Ok(())
+    }
+    fn request(&self) -> Result<pcl_install::InstallRequest> {
+        let mut components = Vec::new();
+        for dependency in &self.plan.preview.dependencies {
+            let provider = match dependency.id.as_str() {
+                "minecraft" => continue,
+                "fabric-loader" => "fabric",
+                "forge" => "forge",
+                "neoforge" => "neoforge",
+                _ => return Err("整合包声明了尚不支持的游戏组件".into()),
+            };
+            components.push(pcl_install::ComponentSelection {
+                provider: provider.into(),
+                version: dependency.version.clone(),
+            });
+        }
+        let request = pcl_install::InstallRequest {
+            minecraft: self.plan.minecraft.clone(),
+            name: self.plan.name.clone(),
+            components,
+        };
+        request.validate()?;
+        Ok(request)
+    }
+}
+
+/// The marker route is separate from execution authority. All non-PCL formats
+/// use a native pack confirmation; the original exported ZIP keeps its DTO.
+pub(crate) fn is_local_export(source: &Path) -> Result<bool> {
+    Ok(formats::classify(source)? == formats::Format::Pcl)
+}
+fn from_archive(
+    name: &str,
+    format: formats::Format,
+    prepared: formats::PreparedArchive,
+    binding: Binding,
+) -> Result<PreparedPack> {
+    let formats::PreparedArchive {
+        pack_name,
+        version,
+        minecraft,
+        dependencies,
+        outputs,
+        directories,
+        warnings,
+        blockers,
+        summary,
+        preview_files: files,
+        optional,
+        bundled,
+        shadowed_files,
+        rebuild_profile,
+    } = prepared;
+    let (mut dependencies, _) = manifest::dependencies(&dependencies);
+    if bundled.is_some() {
+        for d in &mut dependencies {
+            d.supported = true;
+        }
+    }
+    let required_files = files
+        .iter()
+        .filter(|f| f.client == Client::Required)
+        .count();
+    let optional_files = files
+        .iter()
+        .filter(|f| f.client == Client::Optional)
+        .count();
+    let excluded_files = files.iter().filter(|f| !f.selected).count();
+    let download_bytes = outputs
+        .values()
+        .filter_map(|o| {
+            if let Output::Remote { size, .. } = o {
+                Some(*size)
+            } else {
+                None
+            }
+        })
+        .sum();
+    let override_bytes = outputs
+        .values()
+        .filter_map(|o| {
+            if let Output::Override(f) = o {
+                Some(f.size)
+            } else {
+                None
+            }
+        })
+        .sum();
+    let override_files = outputs
+        .values()
+        .filter(|o| matches!(o, Output::Override(_)))
+        .count();
+    let client_overrides = outputs
+        .values()
+        .filter(|o| matches!(o,Output::Override(f) if f.client))
+        .count();
+    let mut bytes = outputs.values().map(Output::size).sum::<u64>();
+    let mut file_count = outputs.len();
+    if let Some(core) = &bundled {
+        bytes = bytes
+            .checked_add(core.jar.size)
+            .and_then(|n| n.checked_add(core.metadata.len() as u64))
+            .and_then(|n| n.checked_add(core.shared.values().map(|f| f.size).sum::<u64>()))
+            .ok_or("整合包有效输出大小超过限制")?;
+        file_count += 2 + core.shared.len();
+    }
+    let overlay = format!(
+        "overlay:{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&(&outputs, &directories, optional)).map_err(super::error)?
+        )
+    );
+    let plan = PackPlan {
+        revision: overlay,
+        name: name.into(),
+        pack_name,
+        pack_version: version,
+        minecraft,
+        file_count,
+        bytes,
+        reused_files: 0,
+        warnings,
+        format: format.as_str(),
+        installable: false,
+        preview: Preview {
+            summary,
+            dependencies,
+            files,
+            required_files,
+            optional_files,
+            excluded_files,
+            download_bytes,
+            override_files,
+            override_bytes,
+            client_overrides,
+            shadowed_files,
+            blockers,
+        },
+        binding,
+    };
+    Ok(PreparedPack {
+        plan,
+        outputs,
+        directories,
+        bundled,
+        rebuild_profile,
+    })
+}

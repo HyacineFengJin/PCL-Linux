@@ -78,9 +78,9 @@ export type InstanceImportBasePlan = {
 export type InstanceZipImportPlan = InstanceImportBasePlan & {
   format?: undefined;
 };
-/** Native checked archive metadata only. No URL or install authority is supplied
- * by this preview; optional paths must be checked again by the native reader. */
-export type InstanceMrpackPreview = {
+/** Pack facts contain no writable paths or URLs. An installable plan carries a
+ * native one-use confirmation token; edits require a new native preparation. */
+export type InstancePackPreview = {
   summary?: string;
   dependencies: { id: string; version: string; supported: boolean }[];
   files: {
@@ -100,13 +100,13 @@ export type InstanceMrpackPreview = {
   shadowed_files: number;
   blockers: string[];
 };
-export type InstanceMrpackImportPlan = InstanceImportBasePlan & {
-  format: "modrinth";
-  installable: false;
-  preview: InstanceMrpackPreview;
+export type InstancePackImportPlan = InstanceImportBasePlan & {
+  format: "modrinth" | "curseforge" | "mcbbs" | "hmcl" | "multimc" | "ready_game";
+  installable: boolean;
+  preview: InstancePackPreview;
 };
 export type InstanceImportPlan =
-  InstanceZipImportPlan | InstanceMrpackImportPlan;
+  InstanceZipImportPlan | InstancePackImportPlan;
 export type InstanceDeletePlan = {
   id: string;
   root_id: string;

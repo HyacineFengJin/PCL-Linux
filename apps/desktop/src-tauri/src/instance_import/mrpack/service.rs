@@ -1,0 +1,761 @@
+//! One-use pack confirmation and scoped installation orchestration.
+//!
+//! Confirmation owns the source FD and provider-resolved core. Claim transfers
+//! it to one queued worker; the cache TTL does not expire submitted intent.
+//! No destination write or pack download happens before the worker's turn.
+//! The transaction owns cleanup. Launcher references are checked at admission
+//! and commit; long hashing/network work never holds the operations mutex.
+use super::*;
+use crate::{
+    config::GameRoot,
+    tasks::{TaskHandle, TaskKind, TaskOutcome, TaskScope, TaskTarget},
+    Shared,
+};
+use pcl_install::{Installer, Progress, ResolvedInstallRequest};
+use std::{
+    collections::VecDeque,
+    io::{Read, Seek, SeekFrom, Write},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
+};
+
+const TTL: Duration = Duration::from_secs(600);
+const MAX_ENTRIES: usize = 64;
+const MAX_FDS: usize = 100;
+const MAX_BYTES: usize = 32 * 1024 * 1024;
+const MAX_ONE: usize = 4 * 1024 * 1024;
+const INVALID: &str = "整合包确认已过期或已提交，请重新检查";
+#[derive(Default)]
+pub(crate) struct ConfirmationCache {
+    entries: Mutex<VecDeque<Record>>,
+    budget: Arc<Mutex<ConfirmationUsage>>,
+    active: Mutex<BTreeMap<PathBuf, String>>,
+}
+#[derive(Default)]
+struct ConfirmationUsage {
+    fds: usize,
+    bytes: usize,
+}
+struct Record {
+    token: String,
+    expires: Instant,
+    authority: ConfirmedPack,
+}
+struct Lease {
+    budget: Arc<Mutex<ConfirmationUsage>>,
+    bytes: usize,
+    fds: usize,
+}
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let mut b = self.budget.lock().unwrap();
+        b.fds -= self.fds;
+        b.bytes -= self.bytes;
+    }
+}
+struct ConfirmedPack {
+    checked: CheckedPack,
+    root_id: String,
+    project: PathBuf,
+    core: Option<ConfirmedCore>,
+    factory: Arc<pcl_network::ClientFactory>,
+    scheduler: Arc<pcl_network::DownloadScheduler>,
+    _lease: Lease,
+}
+struct ConfirmedCore {
+    resolved: ResolvedInstallRequest,
+    installer: Installer,
+}
+impl ConfirmationCache {
+    pub(crate) fn prepare(
+        &self,
+        root: &GameRoot,
+        project: &Path,
+        source: &Path,
+        name: &str,
+        optional: Option<&[String]>,
+    ) -> Result<PackPlan> {
+        let mut checked = prepare_checked(Path::new(&root.path), source, name, optional)?;
+        if !checked.plan.preview.blockers.is_empty() {
+            return Ok(checked.plan);
+        }
+        let cancel = AtomicBool::new(false);
+        let factory = pcl_network::snapshot();
+        let scheduler = pcl_network::download_snapshot();
+        let core = if checked.bundled.is_some() {
+            None
+        } else {
+            let installer = Installer::from_factory(&factory)?
+                .with_project(project)
+                .with_cache_source(Path::new(&root.path))?
+                .with_download_policy(scheduler.clone());
+            let resolved = installer.resolve_request(&checked.request()?, &cancel)?;
+            Some(ConfirmedCore {
+                installer,
+                resolved,
+            })
+        };
+        let fds = if core.is_some() { 2 } else { 1 };
+        checked.recheck_source(&cancel)?;
+        checked.plan.recheck()?;
+        if let (Some(profile), Some(core)) = (&checked.rebuild_profile, &core) {
+            // HMCL may describe extra runtime behavior. Compare those facts
+            // with this exact captured rebuild, never silently discard them.
+            checked
+                .plan
+                .preview
+                .blockers
+                .extend(formats::rebuild_blockers(
+                    profile,
+                    &core.resolved.launch_profile()?,
+                )?);
+            if !checked.plan.preview.blockers.is_empty() {
+                return Ok(checked.plan);
+            }
+        }
+        // Include native tree nodes, payload capacities and captured provider
+        // metadata, rather than treating JSON size as the allocation budget.
+        let bytes =
+            footprint(&checked) + core.as_ref().map_or(0, |c| c.resolved.heap_bytes()) + 4096;
+        if bytes > MAX_ONE {
+            return Err("整合包确认超过内存限额，请减少包内文件数量".into());
+        }
+        let token = token()?;
+        checked.plan.revision = token.clone();
+        checked.plan.installable = true;
+        checked
+            .plan
+            .warnings
+            .retain(|s| !s.starts_with("此计划仅用于本地预览"));
+        let view = checked.plan.clone();
+        let now = Instant::now();
+        let mut entries = self.entries.lock().unwrap();
+        entries.retain(|e| e.expires > now);
+        loop {
+            let b = self.budget.lock().unwrap();
+            let fits = b.fds.saturating_add(fds) <= MAX_FDS
+                && b.bytes.saturating_add(bytes) <= MAX_BYTES
+                && entries.len() < MAX_ENTRIES;
+            drop(b);
+            if fits {
+                break;
+            }
+            if entries.pop_front().is_none() {
+                return Err("已提交的整合包任务占满确认缓存，请等待或取消任务".into());
+            }
+        }
+        {
+            let mut b = self.budget.lock().unwrap();
+            b.fds += fds;
+            b.bytes += bytes;
+        }
+        entries.push_back(Record {
+            token,
+            expires: now + TTL,
+            authority: ConfirmedPack {
+                checked,
+                root_id: root.id.clone(),
+                project: project.to_owned(),
+                core,
+                factory,
+                scheduler,
+                _lease: Lease {
+                    budget: self.budget.clone(),
+                    bytes,
+                    fds,
+                },
+            },
+        });
+        Ok(view)
+    }
+    pub(crate) fn ensure_ready(&self, root: &Path) -> Result<()> {
+        let active = self.active.lock().unwrap().get(root).cloned();
+        super::super::ensure_ready_except_build(root, active.as_deref())
+    }
+    fn own_operation<'a>(&'a self, root: &Path, id: &str) -> Result<ActiveOperation<'a>> {
+        let mut active = self.active.lock().unwrap();
+        if active.contains_key(root) {
+            return Err("此游戏目录已有私有实例构建任务".into());
+        }
+        active.insert(root.to_owned(), id.into());
+        Ok(ActiveOperation {
+            cache: self,
+            root: root.to_owned(),
+            id: id.into(),
+        })
+    }
+    fn claim(
+        &self,
+        root: &GameRoot,
+        project: &Path,
+        source: &Path,
+        name: &str,
+        token: &str,
+    ) -> Result<ConfirmedPack> {
+        if token.len() > 256 || !token.starts_with("pack-confirm-v1:") {
+            return Err(INVALID.into());
+        }
+        let mut entries = self.entries.lock().unwrap();
+        let now = Instant::now();
+        entries.retain(|e| e.expires > now);
+        let at = entries
+            .iter()
+            .position(|e| e.token == token)
+            .ok_or(INVALID)?;
+        let a = &entries[at].authority;
+        if a.root_id != root.id
+            || a.project != project
+            || a.checked.plan.binding.root != Path::new(&root.path)
+            || a.checked.plan.binding.source != source
+            || a.checked.plan.name != name
+        {
+            return Err("整合包确认与所选目录、文件或实例名称不符".into());
+        }
+        Ok(entries.remove(at).unwrap().authority)
+    }
+}
+struct ActiveOperation<'a> {
+    cache: &'a ConfirmationCache,
+    root: PathBuf,
+    id: String,
+}
+impl Drop for ActiveOperation<'_> {
+    fn drop(&mut self) {
+        let mut active = self.cache.active.lock().unwrap();
+        if active.get(&self.root) == Some(&self.id) {
+            active.remove(&self.root);
+        }
+    }
+}
+fn token() -> Result<String> {
+    let mut bytes = [0u8; 24];
+    File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .map_err(|_| "无法生成整合包确认标识")?;
+    Ok(format!(
+        "pack-confirm-v1:{}",
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    ))
+}
+fn footprint(c: &CheckedPack) -> usize {
+    let view = &c.plan;
+    std::mem::size_of::<Record>()
+        + c.rebuild_profile.as_ref().map_or(0, Vec::capacity)
+        + view.name.capacity()
+        + view.pack_name.capacity()
+        + view.pack_version.capacity()
+        + view.minecraft.capacity()
+        + view.revision.capacity()
+        + view
+            .warnings
+            .iter()
+            .map(|s| s.capacity() + std::mem::size_of::<String>())
+            .sum::<usize>()
+        + serde_json::to_vec(&view.preview).map_or(MAX_ONE, |v| v.len().saturating_mul(3))
+        + c.outputs
+            .iter()
+            .map(|(p, o)| {
+                p.capacity()
+                    + 256
+                    + match o {
+                        Output::Remote {
+                            path,
+                            sha1,
+                            sha512,
+                            downloads,
+                            ..
+                        } => {
+                            path.capacity()
+                                + sha1.capacity()
+                                + sha512.capacity()
+                                + downloads
+                                    .iter()
+                                    .map(|s| s.capacity() + std::mem::size_of::<String>())
+                                    .sum::<usize>()
+                        }
+                        Output::Override(f) => {
+                            f.path.capacity() + f.hash.capacity() + f.archive_path.capacity()
+                        }
+                    }
+            })
+            .sum::<usize>()
+        + c.directories
+            .iter()
+            .map(|s| s.capacity() + 128)
+            .sum::<usize>()
+        + c.plan.binding.root.as_os_str().len()
+        + c.plan.binding.source.as_os_str().len()
+        + 2048
+        + c.bundled.as_ref().map_or(0, |b| {
+            b.metadata.capacity()
+                + b.jar.path.capacity()
+                + b.jar.archive_path.capacity()
+                + b.shared
+                    .iter()
+                    .map(|(p, f)| {
+                        256 + p.capacity()
+                            + f.path.capacity()
+                            + f.archive_path.capacity()
+                            + f.hash.capacity()
+                    })
+                    .sum::<usize>()
+        })
+}
+
+fn target(a: &ConfirmedPack) -> Result<()> {
+    let (root, versions) = root_scope(&a.checked.plan.binding.root, &a.checked.plan.name)?;
+    if root != a.checked.plan.binding.root_key
+        || a.checked
+            .plan
+            .binding
+            .versions_key
+            .as_ref()
+            .is_some_and(|old| Some(old) != versions.as_ref())
+    {
+        return Err(super::super::changed());
+    }
+    Ok(())
+}
+fn app_gate(shared: &Shared, root: &GameRoot, name: &str) -> Result<()> {
+    let _operation = shared.operations.lock().unwrap();
+    crate::require_network_submission(shared)?;
+    if shared.config.resolve(Some(&root.id))?.path != root.path {
+        return Err("整合包安装目录登记已变化，请重新检查".into());
+    }
+    crate::instance_commands::new_name(shared, root, name)
+}
+/// A commit already owns its root scope. Recheck external references and the
+/// physical root after long hashes; closing the window must not revoke a commit
+/// that already closed cancellation admission.
+fn commit_binding(shared: &Shared, root: &GameRoot, checked: &CheckedPack) -> Result<()> {
+    let _operation = shared.operations.lock().unwrap();
+    checked.recheck_source_stamp()?;
+    if shared.config.resolve(Some(&root.id))?.path != root.path
+        || Dir::open(Path::new(&root.path))?.key()? != checked.plan.binding.root_key
+    {
+        return Err("整合包目标目录已变化，请重新检查".into());
+    }
+    crate::instance_commands::new_name(shared, root, &checked.plan.name)
+}
+/// Submission claims native authority before queue admission; an error never
+/// restores a replayable confirmation. The writer holds its scope through cleanup.
+pub(crate) fn start(
+    shared: Arc<Shared>,
+    root: GameRoot,
+    source: PathBuf,
+    name: String,
+    revision: String,
+) -> Result<serde_json::Value> {
+    let authority =
+        shared
+            .pack_confirmations
+            .claim(&root, &shared.project, &source, &name, &revision)?;
+    let scope = TaskScope::root(Path::new(&root.path))?;
+    if shared.tasks.list().iter().any(|t| {
+        !t.stage.is_terminal() && t.root_id == root.id && t.instance_id.as_deref() == Some(&name)
+    }) {
+        return Err("此实例名称已有安装任务，请使用其他名称或等待完成".into());
+    }
+    let task = shared.tasks.admit_queued(
+        TaskTarget {
+            root_id: root.id.clone(),
+            root_path: root.path.clone(),
+            instance_id: Some(name.clone()),
+        },
+        TaskKind::ModpackInstall,
+        scope,
+    )?;
+    task.set_resource_name(&authority.checked.plan.pack_name);
+    let id = task.id().to_owned();
+    shared.downloads.track(&task);
+    let auto_select = shared
+        .launcher_preferences
+        .snapshot()
+        .preferences
+        .auto_select_installed;
+    std::thread::Builder::new()
+        .name(format!("pcl-pack-{id}"))
+        .spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                execute(&shared, &root, &task, authority)
+            }))
+            .unwrap_or_else(|_| Err("整合包安装任务意外退出，请先恢复未完成操作".into()));
+            match result {
+                Ok(mut value) => {
+                    task.begin_finishing();
+                    if auto_select {
+                        let _operation = shared.operations.lock().unwrap();
+                        if let Err(e) = shared.config.select_installed(&root.id, &name) {
+                            value["warning"] = format!("实例已安装，但选择状态未保存：{e}").into();
+                        }
+                    }
+                    crate::finish_instance_task(task, Ok(value), "整合包安装完成");
+                }
+                Err(e)
+                    if e == crate::tasks::CANCELLED
+                        || e == "实例导入已取消"
+                        || e == "导入已取消"
+                        || e == "安装已取消" =>
+                {
+                    task.finish(TaskOutcome::Failed(e));
+                }
+                Err(e) => {
+                    task.finish(TaskOutcome::Error(e));
+                }
+            }
+        })
+        .map_err(|e| format!("无法启动整合包任务：{e}"))?;
+    Ok(serde_json::json!({"id":id}))
+}
+
+fn execute(
+    shared: &Shared,
+    root: &GameRoot,
+    task: &TaskHandle,
+    authority: ConfirmedPack,
+) -> Result<serde_json::Value> {
+    task.wait_turn()?;
+    let cancel = task.cancellation_token();
+    app_gate(shared, root, &authority.checked.plan.name)?;
+    crate::ensure_instance_files_ready(shared, root)?;
+    crate::instance_reset::ensure_ready(Path::new(&root.path))?;
+    crate::resource_ops::ensure_verified_batches_ready(Path::new(&root.path))?;
+    target(&authority)?;
+    // Hashing can outlive an external versions-directory replacement.
+    // Revalidate the captured directory identity immediately before beginning
+    // the durable private build; root identity alone is insufficient.
+    authority.checked.recheck_source(&cancel)?;
+    target(&authority)?;
+    let mut operation = super::super::build::BuildOperation::begin_bound(
+        Path::new(&root.path),
+        &authority.checked.plan.name,
+        &authority.checked.plan.binding.root_key,
+        authority.checked.plan.binding.versions_key.as_ref(),
+    )?;
+    let _active = match shared
+        .pack_confirmations
+        .own_operation(Path::new(&root.path), operation.operation_id())
+    {
+        Ok(active) => active,
+        Err(error) => {
+            return match operation.abort() {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(format!("整合包任务登记失败：{error}；清理失败：{cleanup}")),
+            }
+        }
+    };
+    let core_bytes = AtomicU64::new(0);
+    let pack_bytes = AtomicU64::new(0);
+    let core_files = AtomicU64::new(0);
+    let core_steps = Mutex::new(Vec::<pcl_install::InstallStep>::new());
+    let pack_files = authority.checked.outputs.len() as u64;
+    let outcome = (|| {
+        if let Some(core) = &authority.core {
+            let result = core.installer.install_resolved_request_bound(
+                operation.root_fd()?,
+                &core.resolved,
+                &cancel,
+                |mut p| {
+                    core_bytes.fetch_max(p.network_bytes, Ordering::Relaxed);
+                    core_files.fetch_max(p.completed, Ordering::Relaxed);
+                    *core_steps.lock().unwrap() = p.steps.clone();
+                    p.total = p.total.saturating_add(pack_files);
+                    p.steps.extend(pack_steps("pending", "pending"));
+                    shared.downloads.progress(task, p);
+                },
+            )?;
+            if result.id != authority.checked.plan.name {
+                return Err("构建结果与确认的实例名称不符".into());
+            }
+        } else {
+            stage_bundled(&authority.checked, &operation, &cancel)?;
+        }
+        let metadata = operation.open_file(&format!(
+            "versions/{0}/{0}.json",
+            authority.checked.plan.name
+        ))?;
+        let value: serde_json::Value =
+            serde_json::from_reader(metadata.take(super::super::MAX_JSON + 1))
+                .map_err(|_| "构建后的版本JSON无效")?;
+        if value["id"] != authority.checked.plan.name
+            || value["clientVersion"] != authority.checked.plan.minecraft
+            || value.get("inheritsFrom").is_some()
+        {
+            return Err("构建后的游戏版本身份不符".into());
+        }
+        let client = transfer::Client::new(&authority.factory, authority.scheduler.clone())?;
+        let store = Dir(operation.root_fd()?);
+        let mut completed = 0u64;
+        let total = authority.checked.outputs.len() as u64;
+        for (path, output) in &authority.checked.outputs {
+            super::super::check(&cancel)?;
+            let fd = store.anonymous()?;
+            let file = match output {
+                Output::Remote {
+                    size,
+                    sha1,
+                    sha512,
+                    downloads,
+                    ..
+                } => {
+                    let verified = tauri::async_runtime::block_on(client.download(
+                        transfer::Remote {
+                            downloads,
+                            size: *size,
+                            sha1,
+                            sha512,
+                        },
+                        fd,
+                        &cancel,
+                        |p| {
+                            shared.downloads.progress(
+                                task,
+                                pack_progress(
+                                    &core_steps,
+                                    "pack-download",
+                                    path,
+                                    core_files.load(Ordering::Relaxed) + completed,
+                                    core_files.load(Ordering::Relaxed) + total,
+                                    core_bytes
+                                        .load(Ordering::Relaxed)
+                                        .saturating_add(p.network_bytes),
+                                ),
+                            )
+                        },
+                    ))?;
+                    if verified.size != *size
+                        || !verified.sha1.eq_ignore_ascii_case(sha1)
+                        || !verified.sha512.eq_ignore_ascii_case(sha512)
+                    {
+                        return Err("整合包下载结果与确认信息不符".into());
+                    }
+                    verified.file
+                }
+                Output::Override(f) => extract_override(&authority.checked, f, fd, &cancel)?,
+            };
+            stage_file(
+                &store,
+                &format!("versions/{}/{path}", authority.checked.plan.name),
+                file,
+                &cancel,
+            )?;
+            pack_bytes.store(client.network_bytes(), Ordering::Relaxed);
+            completed += 1;
+            shared.downloads.progress(
+                task,
+                pack_progress(
+                    &core_steps,
+                    "pack-files",
+                    path,
+                    core_files.load(Ordering::Relaxed) + completed,
+                    core_files.load(Ordering::Relaxed) + total,
+                    core_bytes
+                        .load(Ordering::Relaxed)
+                        .saturating_add(client.network_bytes()),
+                ),
+            );
+        }
+        authority.checked.recheck_source(&cancel)?;
+        for path in &authority.checked.directories {
+            ensure_directory(
+                &store,
+                &format!("versions/{}/{path}", authority.checked.plan.name),
+            )?;
+        }
+        operation.seal(&cancel)
+    })();
+    let sealed = match outcome {
+        Ok(value) => value,
+        Err(error) => {
+            return match operation.abort() {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(format!(
+                    "整合包安装失败：{error}；清理失败，请先恢复未完成操作：{cleanup}"
+                )),
+            }
+        }
+    };
+    let result = operation.publish_checked(
+        sealed,
+        &cancel,
+        |mut p| {
+            p.network_bytes = core_bytes
+                .load(Ordering::Relaxed)
+                .saturating_add(pack_bytes.load(Ordering::Relaxed));
+            p.steps = combined_steps(&core_steps, "complete", "running");
+            shared.downloads.progress(task, p);
+        },
+        || {
+            authority.checked.recheck_source(&AtomicBool::new(false))?;
+            commit_binding(shared, root, &authority.checked)
+        },
+        || {
+            app_gate(shared, root, &authority.checked.plan.name)?;
+            task.begin_finishing();
+            Ok(())
+        },
+    )?;
+    shared.downloads.progress(
+        task,
+        Progress {
+            steps: combined_steps(&core_steps, "complete", "complete"),
+            stage: "pack-files".into(),
+            message: "整合包安装完成".into(),
+            completed: 1,
+            total: 1,
+            bytes_done: 0,
+            bytes_total: 0,
+            network_bytes: core_bytes
+                .load(Ordering::Relaxed)
+                .saturating_add(pack_bytes.load(Ordering::Relaxed)),
+        },
+    );
+    Ok(result)
+}
+fn pack_progress(
+    core_steps: &Mutex<Vec<pcl_install::InstallStep>>,
+    stage: &str,
+    path: &str,
+    completed: u64,
+    total: u64,
+    network: u64,
+) -> Progress {
+    Progress {
+        stage: stage.into(),
+        message: format!("整合包文件：{path}"),
+        completed,
+        total,
+        bytes_done: 0,
+        bytes_total: 0,
+        network_bytes: network,
+        steps: combined_steps(
+            core_steps,
+            if completed >= total {
+                "complete"
+            } else {
+                "running"
+            },
+            "pending",
+        ),
+    }
+}
+fn extract_override(
+    checked: &CheckedPack,
+    f: &OverrideFile,
+    mut destination: File,
+    cancel: &AtomicBool,
+) -> Result<File> {
+    let mut zip =
+        super::super::archive::checked_zip(checked.file.try_clone().map_err(super::super::error)?)?;
+    let mut input = zip
+        .by_name(&f.archive_path)
+        .map_err(|_| "整合包覆盖文件已改变")?;
+    let mut total = 0u64;
+    let mut hash = Sha256::new();
+    let mut bytes = [0u8; 128 * 1024];
+    loop {
+        super::super::check(cancel)?;
+        let n = input
+            .read(&mut bytes)
+            .map_err(|_| "整合包覆盖文件解压或CRC校验失败")?;
+        if n == 0 {
+            break;
+        }
+        total = total
+            .checked_add(n as u64)
+            .filter(|v| *v <= f.size)
+            .ok_or("整合包覆盖文件超过声明大小")?;
+        hash.update(&bytes[..n]);
+        destination
+            .write_all(&bytes[..n])
+            .map_err(super::super::error)?;
+    }
+    if total != f.size || format!("{:x}", hash.finalize()) != f.hash {
+        return Err("整合包覆盖文件校验失败".into());
+    }
+    destination.sync_all().map_err(super::super::error)?;
+    destination
+        .seek(SeekFrom::Start(0))
+        .map_err(super::super::error)?;
+    Ok(destination)
+}
+
+/// Verified pack bodies become named files only inside the durably owned build
+/// root. Closing each FD bounds descriptors independently of the pack size;
+/// seal later pins the complete tree before any real-root publication.
+fn ensure_directory(root: &Dir, path: &str) -> Result<Dir> {
+    let mut parent = root.duplicate()?;
+    for part in super::super::relative(path)? {
+        parent = parent.ensure(&part)?;
+    }
+    Ok(parent)
+}
+fn stage_file(root: &Dir, path: &str, file: File, cancel: &AtomicBool) -> Result<()> {
+    super::super::check(cancel)?;
+    let parts = super::super::relative(path)?;
+    let (leaf, parents) = parts.split_last().ok_or("构建输出路径无效")?;
+    let parent = if parents.is_empty() {
+        root.duplicate()?
+    } else {
+        ensure_directory(root, &parents.join("/"))?
+    };
+    file.sync_all().map_err(super::super::error)?;
+    super::super::link_anonymous(&file, &parent, leaf)?;
+    parent.sync()
+}
+
+/// Keep completed core/loader steps visible while the pack body downloads;
+/// replacing that list would make the installation history disappear mid-task.
+fn combined_steps(
+    core: &Mutex<Vec<pcl_install::InstallStep>>,
+    files: &str,
+    content: &str,
+) -> Vec<pcl_install::InstallStep> {
+    let mut steps = core.lock().unwrap().clone();
+    steps.extend(pack_steps(files, content));
+    steps
+}
+fn pack_steps(files: &str, content: &str) -> Vec<pcl_install::InstallStep> {
+    [
+        ("pack-files", "下载并校验整合包文件", files),
+        ("pack-content", "安装整合包内容", content),
+    ]
+    .into_iter()
+    .map(|(id, label, state)| pcl_install::InstallStep {
+        id: id.into(),
+        label: label.into(),
+        state: state.into(),
+        progress: None,
+    })
+    .collect()
+}
+
+fn stage_bundled(
+    checked: &CheckedPack,
+    operation: &super::super::build::BuildOperation,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    let bundled = checked.bundled.as_ref().ok_or("整合包缺少游戏构建来源")?;
+    let root = Dir(operation.root_fd()?);
+    let prefix = format!("versions/{0}/{0}", checked.plan.name);
+    let mut metadata = root.anonymous()?;
+    metadata
+        .write_all(&bundled.metadata)
+        .map_err(super::super::error)?;
+    stage_file(&root, &format!("{prefix}.json"), metadata, cancel)?;
+    let jar = extract_override(checked, &bundled.jar, root.anonymous()?, cancel)?;
+    stage_file(&root, &format!("{prefix}.jar"), jar, cancel)?;
+    for (path, fact) in &bundled.shared {
+        let file = extract_override(checked, fact, root.anonymous()?, cancel)?;
+        stage_file(&root, path, file, cancel)?;
+    }
+    ensure_directory(&root, &format!("versions/{}/config", checked.plan.name))?;
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "service_tests.rs"]
+mod tests;

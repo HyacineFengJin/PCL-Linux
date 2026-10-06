@@ -101,6 +101,7 @@ struct Shared {
     monitor: launcher_monitor_runtime::MonitorRuntime,
     resource_save: resource_save_commands::SaveSession,
     resource_confirmations: modrinth_install::ConfirmationCache,
+    pack_confirmations: instance_import::mrpack::ConfirmationCache,
     toolbox_download: toolbox_download::DownloadSession,
     toolbox_images: toolbox_images::ImageSession,
     log: Mutex<Option<PathBuf>>,
@@ -302,7 +303,7 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
     } else {
         canonical
             .as_ref()
-            .and_then(|path| instance_import::ensure_ready(path).err())
+            .and_then(|path| s.pack_confirmations.ensure_ready(path).err())
     };
     let (delete_recovery_error, delete_recovery_root_id) = if running.iter().any(|task| {
         matches!(
@@ -1905,6 +1906,7 @@ fn main() {
         monitor: launcher_monitor_runtime::MonitorRuntime::default(),
         resource_save: resource_save_commands::SaveSession::default(),
         resource_confirmations: modrinth_install::ConfirmationCache::default(),
+        pack_confirmations: instance_import::mrpack::ConfirmationCache::default(),
         toolbox_download: toolbox_download::DownloadSession::default(),
         toolbox_images: toolbox_images::ImageSession::default(),
         log: Mutex::new(None),
@@ -2172,6 +2174,7 @@ mod integration_tests {
                 monitor: launcher_monitor_runtime::MonitorRuntime::default(),
                 resource_save: resource_save_commands::SaveSession::default(),
                 resource_confirmations: modrinth_install::ConfirmationCache::default(),
+                pack_confirmations: instance_import::mrpack::ConfirmationCache::default(),
                 toolbox_download: toolbox_download::DownloadSession::default(),
                 toolbox_images: toolbox_images::ImageSession::default(),
                 log: Mutex::new(None),

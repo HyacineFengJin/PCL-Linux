@@ -11,7 +11,7 @@ pub(super) struct OverrideFile {
     pub size: u64,
     pub hash: String,
     pub client: bool,
-    archive_path: String,
+    pub(super) archive_path: String,
 }
 pub(super) struct ArchiveScan {
     pub index: Vec<u8>,

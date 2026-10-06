@@ -1,8 +1,12 @@
 //! Verified installation of versions from Mojang's official catalog.
 use reqwest::{Client, Url};
+mod bound_root;
+use bound_root::{InstallDir, InstallTemporary};
 mod cache;
 mod components;
 mod network;
+mod resolved;
+pub use resolved::ResolvedInstallRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha1::{Digest, Sha1};
@@ -150,11 +154,16 @@ fn check(cancel: &AtomicBool) -> Result<()> {
 fn hash_valid(hash: &str) -> bool {
     hash.len() == 40 && hash.bytes().all(|c| c.is_ascii_hexdigit())
 }
-fn verify(path: &Path, hash: &str, size: u64, cancel: &AtomicBool) -> Result<bool> {
+fn verify(
+    path: &bound_root::InstallPath,
+    hash: &str,
+    size: u64,
+    cancel: &AtomicBool,
+) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
     }
-    let mut f = fs::File::open(path).map_err(error)?;
+    let mut f = path.open()?;
     if f.metadata().map_err(error)?.len() != size {
         return Ok(false);
     }
@@ -172,8 +181,15 @@ fn verify(path: &Path, hash: &str, size: u64, cancel: &AtomicBool) -> Result<boo
 }
 impl Installer {
     pub fn new() -> Result<Self> {
+        Self::from_factory(&pcl_network::snapshot())
+    }
+    /// Build from the caller's captured factory so preparation and execution
+    /// share its proxy and resolver policy. Download admission is captured
+    /// separately with `with_download_policy`.
+    pub fn from_factory(factory: &pcl_network::ClientFactory) -> Result<Self> {
         Ok(Self {
-            client: pcl_network::async_client()
+            client: factory
+                .async_client()
                 .user_agent("PCL-Linux/0.1")
                 .connect_timeout(Duration::from_secs(15))
                 .timeout(Duration::from_secs(120))
@@ -286,6 +302,7 @@ impl Installer {
         let data = self.manifest(&AtomicBool::new(false))?;
         serde_json::from_value(data["versions"].clone()).map_err(error)
     }
+    #[cfg(test)]
     fn download(
         &self,
         root: &Path,
@@ -301,12 +318,42 @@ impl Installer {
         group_total: u64,
         cb: &(impl Fn(Progress) + Send + Sync),
     ) -> Result<bool> {
+        self.download_to(
+            &InstallDir::legacy(root.into()),
+            d,
+            cancel,
+            abort,
+            done,
+            total,
+            bytes,
+            network_bytes,
+            byte_total,
+            group_done,
+            group_total,
+            cb,
+        )
+    }
+    fn download_to(
+        &self,
+        root: &InstallDir,
+        d: &Download,
+        cancel: &AtomicBool,
+        abort: &AtomicBool,
+        done: &AtomicU64,
+        total: u64,
+        bytes: &AtomicU64,
+        network_bytes: &AtomicU64,
+        byte_total: u64,
+        group_done: &AtomicU64,
+        group_total: u64,
+        cb: &(impl Fn(Progress) + Send + Sync),
+    ) -> Result<bool> {
         check(cancel)?;
-        let path = pcl_core::safe_join(root, &d.relative)?;
+        let path = root.file(&d.relative)?;
         if verify(&path, &d.hash, d.size, cancel)?
             || match &self.cache_source {
                 Some(cache) if !self.downloads.policy().forbid_cross_root_cache_copy => {
-                    cache.copy(root, d, cancel)?
+                    cache.copy_to(root, d, cancel)?
                 }
                 _ => false,
             }
@@ -332,7 +379,7 @@ impl Installer {
         }
         let url = self.url(&d.url)?;
         fs::create_dir_all(path.parent().ok_or("下载文件路径无效")?).map_err(error)?;
-        let path = pcl_core::safe_join(root, &d.relative)?;
+        let path = root.file(&d.relative)?;
         let mut last = String::new();
         for _ in 0..3 {
             check(cancel)?;
@@ -372,7 +419,7 @@ impl Installer {
                     return Err(format!("文件 SHA1 或大小校验失败：{}", d.relative));
                 }
                 file.as_file().sync_all().map_err(error)?;
-                pcl_core::safe_join(root, &d.relative)?;
+                root.file(&d.relative)?;
                 Ok(())
             })();
             let result = match result {
@@ -436,9 +483,20 @@ impl Installer {
         cancel: &AtomicBool,
         on_progress: impl Fn(Progress) + Send + Sync,
     ) -> Result<InstallResult> {
+        self.install_request_with_resolution(root, request, None, None, cancel, on_progress)
+    }
+    fn install_request_with_resolution(
+        &self,
+        root: &Path,
+        request: &InstallRequest,
+        resolved: Option<&ResolvedInstallRequest>,
+        prepared_root: Option<InstallDir>,
+        cancel: &AtomicBool,
+        on_progress: impl Fn(Progress) + Send + Sync,
+    ) -> Result<InstallResult> {
         request.validate()?;
         check(cancel)?;
-        if root.exists() {
+        if prepared_root.is_none() && root.exists() {
             let existing = root.join("versions").join(&request.name);
             match fs::symlink_metadata(existing) {
                 Ok(_) => return Err("该版本目录已存在，请修改版本名称".into()),
@@ -469,12 +527,14 @@ impl Installer {
             *previous.lock().unwrap() = Some(p.clone());
             on_progress(p);
         };
-        self.install_inner(root, request, cancel, &emit)
+        self.install_inner(root, request, resolved, prepared_root, cancel, &emit)
     }
     fn install_inner(
         &self,
         root: &Path,
         request: &InstallRequest,
+        resolved: Option<&ResolvedInstallRequest>,
+        prepared_root: Option<InstallDir>,
         cancel: &AtomicBool,
         on_progress: &(impl Fn(Progress) + Send + Sync),
     ) -> Result<InstallResult> {
@@ -492,45 +552,27 @@ impl Installer {
             bytes_total: 0,
             network_bytes: 0,
         });
-        let manifest = self.manifest(cancel)?;
-        let entry = manifest["versions"]
-            .as_array()
-            .ok_or("Invalid catalog")?
-            .iter()
-            .find(|v| v["id"].as_str() == Some(id))
-            .ok_or("所选版本不在 Mojang 官方版本目录中")?;
-        let hash = entry["sha1"]
-            .as_str()
-            .filter(|h| hash_valid(h))
-            .ok_or("Catalog lacks version SHA1")?;
-        let raw = self.bytes(
-            entry["url"].as_str().ok_or("Catalog lacks URL")?,
-            MAX_METADATA,
-            cancel,
-        )?;
-        if !format!("{:x}", Sha1::digest(&raw)).eq_ignore_ascii_case(hash) {
-            return Err("版本信息 SHA1 校验失败".into());
-        }
-        let mut metadata: Value = serde_json::from_slice(&raw).map_err(error)?;
-        if metadata["id"].as_str() != Some(id) || metadata.get("inheritsFrom").is_some() {
-            return Err("原版版本信息中的版本标识无效".into());
-        }
-        fs::create_dir_all(root).map_err(error)?;
-        let root = fs::canonicalize(root).map_err(error)?;
-        let version = pcl_core::safe_join(&root, format!("versions/{name}"))?;
-        if fs::symlink_metadata(&version).is_ok() {
+        // The ordinary API resolves at its historical metadata stage. A native
+        // prepared request owns these exact bytes' parsed metadata and never
+        // silently selects a replacement catalog entry during execution.
+        let mut metadata = match resolved {
+            Some(resolved) => resolved.vanilla.metadata.clone(),
+            None => self.resolve_vanilla(request, cancel)?.metadata,
+        };
+        let root = match prepared_root {
+            Some(root) => root,
+            None => {
+                fs::create_dir_all(root).map_err(error)?;
+                InstallDir::legacy(fs::canonicalize(root).map_err(error)?)
+            }
+        };
+        let versions = root.directory("versions", true)?;
+        if fs::symlink_metadata(versions.path().join(name)).is_ok() {
             return Err("该版本目录已存在，请选择其他版本或安装目录".into());
         }
-        let versions = pcl_core::safe_join(&root, "versions")?;
-        fs::create_dir_all(&versions).map_err(error)?;
-        let temporary = tempfile::Builder::new()
-            .prefix(".install-")
-            .tempdir_in(&versions)
-            .map_err(error)?;
-        let temp_relative = temporary
-            .path()
-            .strip_prefix(&root)
-            .map_err(error)?
+        let mut temporary = InstallTemporary::new(&versions)?;
+        let temp_relative = Path::new("versions")
+            .join(temporary.name())
             .to_string_lossy()
             .into_owned();
         let installation = (|| {
@@ -665,7 +707,7 @@ impl Installer {
             });
             for d in &downloads {
                 self.url(&d.url)?;
-                pcl_core::safe_join(&root, &d.relative)?;
+                root.file(&d.relative)?;
             }
             let total = downloads.len() as u64;
             let byte_total = downloads
@@ -702,7 +744,7 @@ impl Installer {
                         let Some(d) = downloads.get(i) else {
                             break;
                         };
-                        match self.download(
+                        match self.download_to(
                             &root,
                             d,
                             cancel,
@@ -735,7 +777,7 @@ impl Installer {
                 return Err(e);
             }
             check(cancel)?;
-            let native_dir = temporary.path().join("natives");
+            let native_dir = temporary.dir().directory("natives", true)?;
             on_progress(Progress {
                 steps: vec![],
                 stage: "installing".into(),
@@ -746,12 +788,12 @@ impl Installer {
                 bytes_total: byte_total,
                 network_bytes: network_bytes.load(Ordering::Relaxed),
             });
-            fs::create_dir(&native_dir).map_err(error)?;
             for (path, excludes) in natives {
                 check(cancel)?;
+                let source = root.file(path)?.open()?;
                 pcl_core::extract_natives(
-                    &pcl_core::safe_join(&root, path)?,
-                    &native_dir,
+                    &bound_root::anchor(&source),
+                    native_dir.path(),
                     &excludes,
                 )?;
             }
@@ -766,16 +808,17 @@ impl Installer {
             if let Some(component) = request.components.first() {
                 metadata = self.install_component(
                     &root,
-                    temporary.path(),
+                    temporary.dir(),
                     name,
                     id,
                     metadata,
                     component,
+                    resolved.and_then(|r| r.component.as_ref()),
                     cancel,
                     &mut component_stats,
                     on_progress,
                 )?;
-                fs::create_dir(temporary.path().join("mods")).map_err(error)?;
+                temporary.dir().directory("mods", true)?;
             }
             if request.components.is_empty() {
                 on_progress(component_stats.event("game_install", "正在安装游戏", 0.0));
@@ -787,31 +830,31 @@ impl Installer {
                 .as_object_mut()
                 .ok_or("版本信息无效")?
                 .remove("inheritsFrom");
-            fs::write(
-                temporary.path().join(format!("{name}.json")),
-                serde_json::to_vec_pretty(&metadata).map_err(error)?,
-            )
-            .map_err(error)?;
+            temporary
+                .dir()
+                .file(format!("{name}.json"))?
+                .write(&serde_json::to_vec_pretty(&metadata).map_err(error)?)?;
             check(cancel)?;
             if !request.components.is_empty() {
                 self.publish_component_libraries(
                     &root,
-                    &temporary.path().join("component-work"),
+                    &temporary.dir().directory("component-work", false)?,
                     cancel,
                     &component_stats,
                     on_progress,
                 )?;
             }
             on_progress(component_stats.event("publishing", "正在完成安装", 1.0));
-            if temporary.path().join("component-work").exists() {
-                fs::remove_dir_all(temporary.path().join("component-work"))
+            if temporary.dir().path().join("component-work").exists() {
+                temporary
+                    .dir()
+                    .remove_directory(Path::new("component-work"))
                     .map_err(|e| format!("取消清理失败：{e}"))?;
             }
             check(cancel)?;
-            pcl_core::safe_join(&root, format!("versions/{name}"))?;
             // Commit the whole directory in one operation. Once committed, a late
             // cancellation is a successful installation, never a partial rollback.
-            publish_directory(temporary.path(), &version)?;
+            temporary.publish(name)?;
             Ok(InstallResult {
                 id: name.into(),
                 java_major: metadata["javaVersion"]["majorVersion"]
@@ -821,14 +864,13 @@ impl Installer {
                 files_reused: component_stats.reused,
             })
         })();
-        if installation.is_ok() {
-            // Atomic publication moved this directory; disarm its old path.
-            let _ = temporary.keep();
-        } else if let Err(cleanup) = temporary.close() {
-            return Err(format!(
-                "取消清理失败：{cleanup}；原错误：{}",
-                installation.as_ref().unwrap_err()
-            ));
+        if installation.is_err() {
+            if let Err(cleanup) = temporary.close() {
+                return Err(format!(
+                    "取消清理失败：{cleanup}；原错误：{}",
+                    installation.as_ref().unwrap_err()
+                ));
+            }
         }
         if installation.is_ok() {
             on_progress(Progress {
@@ -845,6 +887,9 @@ impl Installer {
         installation
     }
 }
+#[cfg(test)]
+#[path = "bound_root_tests.rs"]
+mod bound_root_tests;
 #[cfg(test)]
 #[path = "download_policy_tests.rs"]
 mod download_policy_tests;

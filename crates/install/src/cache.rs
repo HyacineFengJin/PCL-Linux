@@ -92,7 +92,11 @@ impl CacheSource {
         }
         Ok(None)
     }
+    #[cfg(test)]
     pub fn copy(&self, root: &Path, d: &Download, cancel: &AtomicBool) -> Result<bool> {
+        self.copy_to(&InstallDir::legacy(root.into()), d, cancel)
+    }
+    pub fn copy_to(&self, root: &InstallDir, d: &Download, cancel: &AtomicBool) -> Result<bool> {
         check(cancel)?;
         let Some(mut source) = self.file(&d.relative)? else {
             return Ok(false);
@@ -100,9 +104,9 @@ impl CacheSource {
         if source.metadata().map_err(error)?.len() != d.size {
             return Ok(false);
         }
-        let path = pcl_core::safe_join(root, &d.relative)?;
+        let path = root.file(&d.relative)?;
         fs::create_dir_all(path.parent().ok_or("缓存目标路径无效")?).map_err(error)?;
-        let path = pcl_core::safe_join(root, &d.relative)?;
+        let path = root.file(&d.relative)?;
         let mut temp = tempfile::NamedTempFile::new_in(path.parent().unwrap()).map_err(error)?;
         let result = (|| {
             let mut digest = Sha1::new();
@@ -127,7 +131,7 @@ impl CacheSource {
             }
             check(cancel)?;
             temp.as_file().sync_all().map_err(error)?;
-            pcl_core::safe_join(root, &d.relative)?;
+            root.file(&d.relative)?;
             Ok(true)
         })();
         match result {

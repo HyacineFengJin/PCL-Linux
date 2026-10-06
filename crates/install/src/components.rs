@@ -2,12 +2,12 @@
 use super::*;
 use serde_json::json;
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     io::Seek,
     process::{Command, Stdio},
     time::Instant,
 };
-const MAX_COMPONENT: u64 = 512 * 1024 * 1024;
+pub(super) const MAX_COMPONENT: u64 = 512 * 1024 * 1024;
 
 pub(crate) fn initial_steps(request: &InstallRequest) -> Vec<InstallStep> {
     let mut steps = vec![
@@ -167,7 +167,7 @@ impl ComponentStats {
         }
     }
 }
-fn maven_path(coordinate: &str) -> Result<String> {
+pub(super) fn maven_path(coordinate: &str) -> Result<String> {
     let (coordinate, extension) = coordinate.split_once('@').unwrap_or((coordinate, "jar"));
     let parts: Vec<_> = coordinate.split(':').collect();
     if !(3..=4).contains(&parts.len()) || parts.iter().any(|s| s.is_empty()) || extension.is_empty()
@@ -205,7 +205,7 @@ fn library_key(library: &Value) -> String {
         p.get(3).unwrap_or(&"")
     )
 }
-fn merge_profile(mut base: Value, profile: Value, minecraft: &str) -> Result<Value> {
+pub(super) fn merge_profile(mut base: Value, profile: Value, minecraft: &str) -> Result<Value> {
     if !profile.is_object()
         || profile["inheritsFrom"]
             .as_str()
@@ -253,7 +253,7 @@ fn merge_profile(mut base: Value, profile: Value, minecraft: &str) -> Result<Val
     }
     Ok(base)
 }
-fn archive_bytes<R: Read + Seek>(
+pub(super) fn archive_bytes<R: Read + Seek>(
     zip: &mut zip::ZipArchive<R>,
     name: &str,
     limit: u64,
@@ -279,7 +279,7 @@ fn archive_bytes<R: Read + Seek>(
     Ok(bytes)
 }
 impl Installer {
-    fn component_url(&self, raw: &str) -> Result<String> {
+    pub(super) fn component_url(&self, raw: &str) -> Result<String> {
         let url = self.url(raw)?;
         #[cfg(test)]
         if let Some(endpoint) = &self.endpoint {
@@ -290,7 +290,7 @@ impl Installer {
         }
         Ok(url.to_string())
     }
-    fn component_bytes(
+    pub(super) fn component_bytes(
         &self,
         url: &str,
         limit: u64,
@@ -316,15 +316,15 @@ impl Installer {
     }
     fn component_file(
         &self,
-        workspace: &Path,
-        cache: &Path,
+        workspace: &InstallDir,
+        cache: &InstallDir,
         d: &Download,
         cancel: &AtomicBool,
         stats: &mut ComponentStats,
         cb: &(impl Fn(Progress) + Send + Sync),
     ) -> Result<()> {
-        let path = pcl_core::safe_join(workspace, &d.relative)?;
-        let cached = pcl_core::safe_join(cache, &d.relative)?;
+        let path = workspace.file(&d.relative)?;
+        let cached = cache.file(&d.relative)?;
         fs::create_dir_all(path.parent().ok_or("组件文件路径无效")?).map_err(error)?;
         if verify(&path, &d.hash, d.size, cancel)? {
             return Ok(());
@@ -396,7 +396,7 @@ impl Installer {
         }
         Err(last)
     }
-    fn loader_library(
+    pub(super) fn loader_library(
         &self,
         library: &Value,
         provider: &str,
@@ -461,44 +461,27 @@ impl Installer {
     }
     pub(crate) fn install_component(
         &self,
-        root: &Path,
-        temporary: &Path,
+        root: &InstallDir,
+        temporary: &InstallDir,
         name: &str,
         minecraft: &str,
         vanilla: Value,
         component: &ComponentSelection,
+        expected: Option<&resolved::ResolvedComponent>,
         cancel: &AtomicBool,
         stats: &mut ComponentStats,
         cb: &(impl Fn(Progress) + Send + Sync),
     ) -> Result<Value> {
-        let provider = component.provider.to_ascii_lowercase();
         cb(stats.event("component_metadata", "正在获取组件安装信息", 0.0));
-        let workspace = temporary.join("component-work");
-        fs::create_dir(&workspace).map_err(error)?;
-        let mut profile;
-        let mut descriptors = BTreeMap::new();
+        let workspace = temporary.directory("component-work", true)?;
+        // Both public installation APIs use this parser. Only prepared native
+        // evidence skips provider sidecars/HEAD; source bytes are still checked
+        // before any dependency write or Java processor can execute.
+        let loaded = self.load_component(minecraft, component, expected, cancel, stats, cb)?;
+        let provider = loaded.evidence.selection.provider;
+        let mut profile = loaded.evidence.profile;
+        let descriptors = loaded.evidence.libraries;
         if provider == "fabric" {
-            let mut url =
-                Url::parse("https://meta.fabricmc.net/v2/versions/loader/").map_err(error)?;
-            url.path_segments_mut()
-                .map_err(|_| "组件地址无效")?
-                .pop_if_empty()
-                .push(minecraft)
-                .push(&component.version)
-                .push("profile")
-                .push("json");
-            let url = self.component_url(url.as_str())?;
-            profile = serde_json::from_slice::<Value>(&self.component_bytes(
-                &url,
-                MAX_METADATA,
-                cancel,
-                stats,
-                cb,
-            )?)
-            .map_err(error)?;
-            if profile["inheritsFrom"].as_str() != Some(minecraft) {
-                return Err("Fabric 不支持所选 Minecraft 版本".into());
-            }
             cb(stats.event("component_analyze", "正在分析 Fabric 支持库文件", 0.0));
             let libs = profile["libraries"]
                 .as_array_mut()
@@ -507,9 +490,19 @@ impl Installer {
             stats.component_total = count as u64;
             for (index, library) in libs.iter_mut().enumerate() {
                 check(cancel)?;
-                let d = self.loader_library(library, &provider, cancel)?;
-                self.component_file(&workspace, root, &d, cancel, stats, cb)?;
-                descriptors.insert(d.relative.clone(), d.clone());
+                if !pcl_core::library_allowed(library)? {
+                    continue;
+                }
+                let path = library["downloads"]["artifact"]["path"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or(maven_path(
+                        library["name"].as_str().ok_or("组件库缺少名称")?,
+                    )?);
+                let d = descriptors
+                    .get(&format!("libraries/{path}"))
+                    .ok_or("已解析的 Fabric 依赖缺失")?;
+                self.component_file(&workspace, root, d, cancel, stats, cb)?;
                 library["downloads"] = json!({"artifact":{"url":d.url,"sha1":d.hash,"size":d.size,"path":d.relative.strip_prefix("libraries/").unwrap()}});
                 cb(stats.event(
                     "component_download",
@@ -519,97 +512,18 @@ impl Installer {
             }
             cb(stats.event("component_install", "正在组装 Fabric 启动信息", 1.0));
         } else {
-            let coordinate = if provider == "forge" {
-                let version = if component.version.starts_with(&format!("{minecraft}-")) {
-                    component.version.clone()
-                } else {
-                    format!("{minecraft}-{}", component.version)
-                };
-                format!("net.minecraftforge:forge:{version}:installer")
-            } else if component.version.starts_with("1.20.1-") {
-                format!("net.neoforged:forge:{}:installer", component.version)
-            } else {
-                format!("net.neoforged:neoforge:{}:installer", component.version)
-            };
-            let repository = if provider == "forge" {
-                "https://maven.minecraftforge.net/"
-            } else {
-                "https://maven.neoforged.net/releases/"
-            };
-            let installer_url =
-                self.component_url(&format!("{repository}{}", maven_path(&coordinate)?))?;
-            let expected = String::from_utf8(self.component_bytes(
-                &format!("{installer_url}.sha1"),
-                1024,
-                cancel,
-                stats,
-                cb,
-            )?)
-            .map_err(error)?;
-            let hash = expected
-                .split_whitespace()
-                .next()
-                .filter(|s| hash_valid(s))
-                .ok_or("官方安装器缺少有效 SHA1")?;
-            let bytes = self.component_bytes(&installer_url, MAX_COMPONENT, cancel, stats, cb)?;
-            if !format!("{:x}", Sha1::digest(&bytes)).eq_ignore_ascii_case(hash) {
-                return Err("官方组件安装器 SHA1 校验失败".into());
-            }
-            let installer_path = workspace.join("installer.jar");
-            fs::write(&installer_path, &bytes).map_err(error)?;
+            let bytes = loaded.archive.ok_or("已解析的官方安装器缺失")?;
+            let install = loaded.evidence.install.ok_or("已解析的官方安装信息缺失")?;
+            let installer_path = workspace.file("installer.jar")?;
+            installer_path.write(&bytes)?;
             stats.downloaded += 1;
             stats.total += 1;
             stats.completed += 1;
             stats.bytes += bytes.len() as u64;
             stats.byte_total += bytes.len() as u64;
             let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(error)?;
-            let install: Value = serde_json::from_slice(&archive_bytes(
-                &mut archive,
-                "install_profile.json",
-                MAX_METADATA,
-            )?)
-            .map_err(error)?;
-            let modern = install["spec"].as_u64().is_some();
-            if !modern {
-                return Err(
-                    "暂不支持 1.7.10 等旧版 Forge 安装器，请选择 1.12.2 或更新的安装器".into(),
-                );
-            }
-            profile = if modern {
-                let json_path = install["json"]
-                    .as_str()
-                    .unwrap_or("/version.json")
-                    .trim_start_matches('/');
-                serde_json::from_slice(&archive_bytes(&mut archive, json_path, MAX_METADATA)?)
-                    .map_err(error)?
-            } else {
-                install["versionInfo"].clone()
-            };
-            let declared_mc = install["minecraft"]
-                .as_str()
-                .or_else(|| install["install"]["minecraft"].as_str())
-                .or_else(|| profile["inheritsFrom"].as_str());
-            if declared_mc != Some(minecraft) {
-                return Err("组件安装器与所选 Minecraft 版本不匹配".into());
-            }
             cb(stats.event("component_analyze", "正在分析组件支持库文件", 0.0));
             let mut generated = vec![];
-            for library in install["libraries"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .chain(profile["libraries"].as_array().into_iter().flatten())
-            {
-                if !pcl_core::library_allowed(library)? {
-                    continue;
-                }
-                let d = self.loader_library(library, &provider, cancel)?;
-                if let Some(previous) = descriptors.insert(d.relative.clone(), d.clone()) {
-                    if previous.hash != d.hash || previous.size != d.size {
-                        return Err("组件库包含冲突的文件路径".into());
-                    }
-                }
-            }
             stats.component_total = descriptors.len() as u64;
             for d in descriptors.values() {
                 check(cancel)?;
@@ -622,9 +536,9 @@ impl Installer {
                     {
                         return Err("官方安装器内嵌组件校验失败".into());
                     }
-                    let target = pcl_core::safe_join(&workspace, &d.relative)?;
+                    let target = workspace.file(&d.relative)?;
                     fs::create_dir_all(target.parent().unwrap()).map_err(error)?;
-                    fs::write(target, bytes).map_err(error)?;
+                    target.write(&bytes)?;
                     stats.component_completed += 1;
                 } else if d.url.is_empty() {
                     generated.push(d.clone());
@@ -632,22 +546,6 @@ impl Installer {
                 } else {
                     self.component_file(&workspace, root, d, cancel, stats, cb)?;
                 }
-            }
-            if !modern {
-                let embedded = install["install"]["filePath"]
-                    .as_str()
-                    .ok_or("旧版 Forge 安装器缺少通用组件文件")?;
-                let target = install["install"]["path"]
-                    .as_str()
-                    .ok_or("旧版 Forge 安装器缺少组件坐标")?;
-                let relative = format!("libraries/{}", maven_path(target)?);
-                let target = pcl_core::safe_join(&workspace, relative)?;
-                fs::create_dir_all(target.parent().unwrap()).map_err(error)?;
-                fs::write(
-                    target,
-                    archive_bytes(&mut archive, embedded, MAX_COMPONENT)?,
-                )
-                .map_err(error)?;
             }
             let processors: Vec<_> = install["processors"]
                 .as_array()
@@ -662,8 +560,13 @@ impl Installer {
             if !processors.is_empty() {
                 let java_major =
                     vanilla["javaVersion"]["majorVersion"].as_u64().unwrap_or(8) as u32;
-                let java = self.installer_java(java_major, &workspace, cancel)?;
-                let minecraft_jar = temporary.join(format!("{name}.jar"));
+                let java = self.installer_java_in(
+                    java_major,
+                    workspace.path(),
+                    workspace.is_bound(),
+                    cancel,
+                )?;
+                let minecraft_jar = temporary.file(format!("{name}.jar"))?;
                 let mut data = processor_data(
                     &install,
                     &workspace,
@@ -676,9 +579,8 @@ impl Installer {
                 if let Some(target) = data.get("MOJMAPS") {
                     if let Some(mapping) = vanilla["downloads"].get("client_mappings") {
                         let path = Path::new(target);
-                        let relative = path
-                            .strip_prefix(&workspace)
-                            .map_err(error)?
+                        let relative = data
+                            .relative_output(&workspace, path)?
                             .to_string_lossy()
                             .into_owned();
                         let d = artifact(mapping, relative)?;
@@ -711,6 +613,12 @@ impl Installer {
                         ));
                         continue;
                     }
+                    if root.is_bound() {
+                        // Existing hard links can alias outside bytes despite
+                        // an inode-based directory rule. Reject them before
+                        // granting a processor writable file access.
+                        root.files()?;
+                    }
                     run_processor(&java, processor, &data, &workspace, cancel)?;
                     cb(stats.event(
                         "component_install",
@@ -720,8 +628,10 @@ impl Installer {
                 }
                 for key in ["MC_SRG", "MC_EXTRA", "PATCHED", "MC_OFF"] {
                     if let Some(path) = data.get(key) {
-                        let path = Path::new(path);
-                        let file = fs::File::open(path)
+                        let path =
+                            workspace.file(data.relative_output(&workspace, Path::new(path))?)?;
+                        let file = path
+                            .open()
                             .map_err(|e| format!("组件运行文件 {key} 尚未正确生成：{e}"))?;
                         let archive = zip::ZipArchive::new(file)
                             .map_err(|e| format!("组件运行文件 {key} 不是有效的 JAR：{e}"))?;
@@ -729,8 +639,8 @@ impl Installer {
                             return Err(format!("组件运行文件 {key} 为空"));
                         }
                         if let Some(hash) = data.get(&format!("{key}_SHA")) {
-                            let size = fs::metadata(path).map_err(error)?.len();
-                            if !hash_valid(hash) || !verify(path, hash, size, cancel)? {
+                            let size = fs::metadata(&path).map_err(error)?.len();
+                            if !hash_valid(hash) || !verify(&path, hash, size, cancel)? {
                                 return Err(format!("组件运行文件 {key} SHA1 校验失败"));
                             }
                         }
@@ -740,7 +650,7 @@ impl Installer {
             // New NeoForge installers omit processor outputs. All launch-time
             // generated artifacts still carry hashes in version.json.
             for d in &generated {
-                let target = pcl_core::safe_join(&workspace, &d.relative)?;
+                let target = workspace.file(&d.relative)?;
                 if !verify(&target, &d.hash, d.size, cancel)? {
                     return Err(format!("组件处理结果校验失败：{}", d.relative));
                 }
@@ -752,14 +662,10 @@ impl Installer {
         // The loader's launch JSON omits some runtime jars (patched Minecraft,
         // split extras, universal). Preserve the complete successful library
         // workspace after verifying declared and generated runtime artifacts.
-        let library_root = workspace.join("libraries");
-        for source in collect_files(&library_root)? {
+        for relative in collect_libraries(&workspace)? {
             check(cancel)?;
-            let relative = source
-                .strip_prefix(&workspace)
-                .map_err(error)?
-                .to_string_lossy()
-                .into_owned();
+            let source = workspace.file(&relative)?;
+            let relative = relative.to_string_lossy().into_owned();
             if let Some(d) = descriptors.get(&relative) {
                 if !verify(&source, &d.hash, d.size, cancel)? {
                     return Err("组件运行库校验失败".into());
@@ -770,26 +676,26 @@ impl Installer {
     }
     pub(crate) fn publish_component_libraries(
         &self,
-        root: &Path,
-        workspace: &Path,
+        root: &InstallDir,
+        workspace: &InstallDir,
         cancel: &AtomicBool,
         stats: &ComponentStats,
         cb: &(impl Fn(Progress) + Send + Sync),
     ) -> Result<()> {
-        let files = collect_files(&workspace.join("libraries"))?;
+        let files = collect_libraries(workspace)?;
         cb(stats.event("game_support", "正在安装游戏支持库文件", 0.0));
-        for (index, source) in files.iter().enumerate() {
+        for (index, relative) in files.iter().enumerate() {
             check(cancel)?;
-            let relative = source.strip_prefix(workspace).map_err(error)?;
-            let destination = pcl_core::safe_join(root, relative)?;
-            let hash = file_hash(source, cancel)?;
-            let size = fs::metadata(source).map_err(error)?.len();
+            let source = workspace.file(relative)?;
+            let destination = root.file(relative)?;
+            let hash = file_hash(&source, cancel)?;
+            let size = fs::metadata(&source).map_err(error)?.len();
             if !verify(&destination, &hash, size, cancel)? {
                 fs::create_dir_all(destination.parent().unwrap()).map_err(error)?;
                 let mut output = tempfile::NamedTempFile::new_in(destination.parent().unwrap())
                     .map_err(error)?;
                 let result = (|| {
-                    let mut input = fs::File::open(source).map_err(error)?;
+                    let mut input = source.open()?;
                     copy_stream(&mut input, &mut output, cancel)?;
                     output.as_file().sync_all().map_err(error)
                 })();
@@ -819,23 +725,80 @@ fn copy_stream(input: &mut impl Read, output: &mut impl Write, cancel: &AtomicBo
     }
     Ok(())
 }
-fn copy_cancel(source: &Path, target: &Path, cancel: &AtomicBool) -> Result<()> {
-    copy_stream(
-        &mut fs::File::open(source).map_err(error)?,
-        &mut fs::File::create(target).map_err(error)?,
-        cancel,
-    )
+fn copy_cancel(
+    source: &bound_root::InstallPath,
+    target: &bound_root::InstallPath,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    let mut output = tempfile::NamedTempFile::new_in(target.parent().ok_or("组件复制目标无效")?)
+        .map_err(error)?;
+    let copied = copy_stream(&mut source.open()?, &mut output, cancel);
+    match copied {
+        Ok(()) => persist_download(output, target),
+        Err(e) => Err(close_download(output, e)),
+    }
+}
+/// Strings passed to Java carry retained directory capabilities. Keep every
+/// expansion alive through processor kill/wait; data paths are also used by
+/// later processors and cannot be reopened through a mutable workspace name.
+#[derive(Default)]
+struct ProcessorData {
+    values: HashMap<String, String>,
+    paths: Mutex<Vec<bound_root::InstallPath>>,
+    directories: Vec<(PathBuf, InstallDir)>,
+}
+impl std::ops::Deref for ProcessorData {
+    type Target = HashMap<String, String>;
+    fn deref(&self) -> &Self::Target {
+        &self.values
+    }
+}
+impl std::ops::DerefMut for ProcessorData {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.values
+    }
+}
+impl ProcessorData {
+    fn remember(&self, path: bound_root::InstallPath) -> String {
+        let mut paths = self.paths.lock().unwrap();
+        if let Some(existing) = paths
+            .iter()
+            .find(|existing| existing.relative() == path.relative())
+        {
+            return existing.to_string_lossy().into_owned();
+        }
+        let value = path.to_string_lossy().into_owned();
+        paths.push(path);
+        value
+    }
+    fn relative_output(&self, workspace: &InstallDir, path: &Path) -> Result<PathBuf> {
+        if let Ok(relative) = path.strip_prefix(workspace.path()) {
+            return Ok(relative.into());
+        }
+        for source in self.paths.lock().unwrap().iter() {
+            if path == source.as_ref() {
+                return Ok(source.relative().into());
+            }
+        }
+        for (relative, directory) in &self.directories {
+            if let Ok(suffix) = path.strip_prefix(directory.path()) {
+                return Ok(relative.join(suffix));
+            }
+        }
+        Err("组件处理器输出超出临时目录".into())
+    }
 }
 fn processor_data<R: Read + Seek>(
     profile: &Value,
-    workspace: &Path,
+    workspace: &InstallDir,
     minecraft_jar: &Path,
     installer: &Path,
     archive: &mut zip::ZipArchive<R>,
-) -> Result<HashMap<String, String>> {
-    let libraries = workspace.join("libraries");
-    fs::create_dir_all(&libraries).map_err(error)?;
-    let mut data = HashMap::new();
+) -> Result<ProcessorData> {
+    let libraries = workspace.directory("libraries", true)?;
+    let mut data = ProcessorData::default();
+    data.directories
+        .push((PathBuf::from("libraries"), libraries.clone()));
     for (key, entry) in profile["data"].as_object().into_iter().flatten() {
         let Some(raw) = entry["client"].as_str() else {
             continue;
@@ -843,19 +806,17 @@ fn processor_data<R: Read + Seek>(
         let value = if let Some(coordinate) =
             raw.strip_prefix('[').and_then(|s| s.strip_suffix(']'))
         {
-            let path =
-                pcl_core::safe_join(workspace, format!("libraries/{}", maven_path(coordinate)?))?;
+            let path = workspace.file(format!("libraries/{}", maven_path(coordinate)?))?;
             fs::create_dir_all(path.parent().unwrap()).map_err(error)?;
-            path.to_string_lossy().into_owned()
+            data.remember(path)
         } else if let Some(literal) = raw.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
             literal.to_string()
         } else {
             let archive_path = raw.trim_start_matches('/');
-            let path = pcl_core::safe_join(workspace, format!("extracted/{archive_path}"))?;
+            let path = workspace.file(format!("extracted/{archive_path}"))?;
             fs::create_dir_all(path.parent().unwrap()).map_err(error)?;
-            fs::write(&path, archive_bytes(archive, archive_path, MAX_COMPONENT)?)
-                .map_err(error)?;
-            path.to_string_lossy().into_owned()
+            path.write(&archive_bytes(archive, archive_path, MAX_COMPONENT)?)?;
+            data.remember(path)
         };
         data.insert(key.clone(), value);
     }
@@ -872,22 +833,20 @@ fn processor_data<R: Read + Seek>(
             "MINECRAFT_JAR",
             minecraft_jar.to_string_lossy().into_owned(),
         ),
-        ("ROOT", workspace.to_string_lossy().into_owned()),
-        ("LIBRARY_DIR", libraries.to_string_lossy().into_owned()),
+        ("ROOT", workspace.path().to_string_lossy().into_owned()),
+        (
+            "LIBRARY_DIR",
+            libraries.path().to_string_lossy().into_owned(),
+        ),
         ("INSTALLER", installer.to_string_lossy().into_owned()),
     ] {
         data.insert(key.into(), value);
     }
     Ok(data)
 }
-fn expand(raw: &str, data: &HashMap<String, String>, workspace: &Path) -> Result<String> {
+fn expand(raw: &str, data: &ProcessorData, workspace: &InstallDir) -> Result<String> {
     if let Some(coordinate) = raw.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-        return Ok(pcl_core::safe_join(
-            workspace,
-            format!("libraries/{}", maven_path(coordinate)?),
-        )?
-        .to_string_lossy()
-        .into_owned());
+        return Ok(data.remember(workspace.file(format!("libraries/{}", maven_path(coordinate)?))?));
     }
     let raw = raw
         .strip_prefix('\'')
@@ -938,21 +897,18 @@ fn main_class(path: &Path) -> Result<String> {
 fn run_processor(
     java: &Path,
     processor: &Value,
-    data: &HashMap<String, String>,
-    workspace: &Path,
+    data: &ProcessorData,
+    workspace: &InstallDir,
     cancel: &AtomicBool,
 ) -> Result<()> {
     let jar = processor["jar"].as_str().ok_or("组件处理器缺少可执行库")?;
-    let jar = pcl_core::safe_join(workspace, format!("libraries/{}", maven_path(jar)?))?;
+    let jar = workspace.file(format!("libraries/{}", maven_path(jar)?))?;
     let mut classpath = vec![jar.clone()];
     for coordinate in processor["classpath"].as_array().into_iter().flatten() {
-        classpath.push(pcl_core::safe_join(
-            workspace,
-            format!(
-                "libraries/{}",
-                maven_path(coordinate.as_str().ok_or("组件处理器依赖无效")?)?
-            ),
-        )?);
+        classpath.push(workspace.file(format!(
+            "libraries/{}",
+            maven_path(coordinate.as_str().ok_or("组件处理器依赖无效")?)?
+        ))?);
     }
     if classpath.iter().any(|path| !path.is_file()) {
         return Err("组件处理器依赖下载不完整".into());
@@ -963,22 +919,44 @@ fn run_processor(
         .iter()
         .map(|v| expand(v.as_str().ok_or("组件处理器参数无效")?, data, workspace))
         .collect::<Result<Vec<_>>>()?;
-    let classpath = std::env::join_paths(classpath).map_err(error)?;
+    let classpath_files = classpath
+        .iter()
+        .map(bound_root::InstallPath::open)
+        .collect::<Result<Vec<_>>>()?;
+    let classpath_argument = if workspace.is_bound() {
+        std::env::join_paths(classpath_files.iter().map(bound_root::anchor)).map_err(error)?
+    } else {
+        std::env::join_paths(classpath.iter().map(AsRef::<Path>::as_ref)).map_err(error)?
+    };
     let mut command = Command::new(java);
+    if workspace.is_bound() {
+        command
+            .arg(format!("-Djava.io.tmpdir={}", workspace.path().display()))
+            .env("TMPDIR", workspace.path());
+    }
     command
         .args(["-Djava.awt.headless=true", "-cp"])
-        .arg(classpath)
+        .arg(classpath_argument)
         .arg(main_class(&jar)?)
         .args(args)
-        .current_dir(workspace);
-    let log = fs::File::create(workspace.join("processor.log")).map_err(error)?;
+        .current_dir(workspace.path());
+    // Each processor owns a fresh log. Reopening/truncating one shared name
+    // could follow an externally planted hard-link alias on the next processor.
+    let log = tempfile::Builder::new()
+        .prefix(".processor-")
+        .tempfile_in(workspace.path())
+        .map_err(error)?;
     command
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log.try_clone().map_err(error)?))
-        .stderr(Stdio::from(log));
+        .stdin(if workspace.is_bound() {
+            Stdio::from(fs::File::open("/dev/null").map_err(error)?)
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::from(log.as_file().try_clone().map_err(error)?))
+        .stderr(Stdio::from(log.as_file().try_clone().map_err(error)?));
     let status = run_child(&mut command, cancel, Duration::from_secs(15 * 60))?;
     if !status.success() {
-        let bytes = fs::read(workspace.join("processor.log")).unwrap_or_default();
+        let bytes = fs::read(log.path()).unwrap_or_default();
         let tail = &bytes[bytes.len().saturating_sub(4096)..];
         return Err(format!(
             "组件安装处理器失败（{status}）：{}",
@@ -989,16 +967,14 @@ fn run_processor(
 }
 fn verify_processor_outputs(
     processor: &Value,
-    data: &HashMap<String, String>,
-    workspace: &Path,
+    data: &ProcessorData,
+    workspace: &InstallDir,
     cancel: &AtomicBool,
 ) -> Result<()> {
     for (raw_path, expected) in processor["outputs"].as_object().into_iter().flatten() {
         let path = PathBuf::from(expand(raw_path, data, workspace)?);
-        let relative = path
-            .strip_prefix(workspace)
-            .map_err(|_| "组件处理器输出超出临时目录")?;
-        let path = pcl_core::safe_join(workspace, relative)?;
+        let relative = data.relative_output(workspace, &path)?;
+        let path = workspace.file(relative)?;
         let hash = expand(
             expected.as_str().ok_or("组件处理器输出校验信息无效")?,
             data,
@@ -1014,9 +990,9 @@ fn verify_processor_outputs(
     }
     Ok(())
 }
-fn file_hash(path: &Path, cancel: &AtomicBool) -> Result<String> {
+fn file_hash(path: &bound_root::InstallPath, cancel: &AtomicBool) -> Result<String> {
     let mut digest = Sha1::new();
-    let mut input = fs::File::open(path).map_err(error)?;
+    let mut input = path.open()?;
     let mut buf = [0; 65536];
     loop {
         check(cancel)?;
@@ -1028,26 +1004,16 @@ fn file_hash(path: &Path, cancel: &AtomicBool) -> Result<String> {
     }
     Ok(format!("{:x}", digest.finalize()))
 }
-fn collect_files(directory: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = vec![];
-    if !directory.exists() {
-        return Ok(files);
+fn collect_libraries(workspace: &InstallDir) -> Result<Vec<PathBuf>> {
+    if !workspace.path().join("libraries").exists() {
+        return Ok(vec![]);
     }
-    for entry in fs::read_dir(directory).map_err(error)? {
-        let entry = entry.map_err(error)?;
-        let kind = entry.file_type().map_err(error)?;
-        if kind.is_symlink() {
-            return Err("组件处理器生成了不允许的符号链接".into());
-        }
-        if kind.is_dir() {
-            files.extend(collect_files(&entry.path())?);
-        } else if kind.is_file() {
-            files.push(entry.path());
-        } else {
-            return Err("组件处理器生成了不允许的文件类型".into());
-        }
-    }
-    Ok(files)
+    let libraries = workspace.directory("libraries", false)?;
+    Ok(libraries
+        .files()?
+        .into_iter()
+        .map(|p| Path::new("libraries").join(p))
+        .collect())
 }
 
 fn run_child(
@@ -1098,12 +1064,26 @@ enum JavaProbe {
 /// Probe failures may be skipped during automatic discovery. Cancellation and
 /// workspace failures remain errors; both selection modes retain the child
 /// owner until kill/wait finishes before their caller can clean its workspace.
-fn probe_installer_java(path: &Path, workspace: &Path, cancel: &AtomicBool) -> Result<JavaProbe> {
+fn probe_installer_java(
+    path: &Path,
+    workspace: &Path,
+    private: bool,
+    cancel: &AtomicBool,
+) -> Result<JavaProbe> {
     let log = tempfile::NamedTempFile::new_in(workspace).map_err(error)?;
     let mut command = Command::new(path);
+    if private {
+        command
+            .arg(format!("-Djava.io.tmpdir={}", workspace.display()))
+            .env("TMPDIR", workspace);
+    }
     command
         .arg("-version")
-        .stdin(Stdio::null())
+        .stdin(if private {
+            Stdio::from(fs::File::open("/dev/null").map_err(error)?)
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::from(log.reopen().map_err(error)?))
         .stderr(Stdio::from(log.reopen().map_err(error)?));
     let status = match run_child(&mut command, cancel, Duration::from_secs(5)) {
@@ -1132,10 +1112,20 @@ fn probe_installer_java(path: &Path, workspace: &Path, cancel: &AtomicBool) -> R
 }
 
 impl Installer {
+    #[cfg(test)]
     fn installer_java(
         &self,
         required: u32,
         workspace: &Path,
+        cancel: &AtomicBool,
+    ) -> Result<PathBuf> {
+        self.installer_java_in(required, workspace, false, cancel)
+    }
+    fn installer_java_in(
+        &self,
+        required: u32,
+        workspace: &Path,
+        private: bool,
         cancel: &AtomicBool,
     ) -> Result<PathBuf> {
         check(cancel)?;
@@ -1145,7 +1135,7 @@ impl Installer {
             // selection with an otherwise compatible project or system Java.
             let path = fs::canonicalize(path)
                 .map_err(|e| format!("指定的 Java 不可用（{}）：{e}", path.display()))?;
-            return match probe_installer_java(&path, workspace, cancel)? {
+            return match probe_installer_java(&path, workspace, private, cancel)? {
                 JavaProbe::Major(major) if major == required => Ok(path),
                 JavaProbe::Major(major) => Err(format!(
                     "指定的 Java 主版本不兼容（{}）：此组件需要 Java {required}，指定的是 Java {major}",
@@ -1191,7 +1181,7 @@ impl Installer {
             if !seen.insert(path.clone()) {
                 continue;
             }
-            match probe_installer_java(&path, workspace, cancel)? {
+            match probe_installer_java(&path, workspace, private, cancel)? {
                 JavaProbe::Major(major) if major == required => return Ok(path),
                 _ => {}
             }
@@ -1262,10 +1252,16 @@ mod tests {
         let data = HashMap::from([("MOJMAPS".into(), path.to_string_lossy().into_owned())]);
         let processor =
             json!({"outputs":{"{MOJMAPS}":"'0000000000000000000000000000000000000000'"}});
-        assert!(
-            verify_processor_outputs(&processor, &data, root.path(), &AtomicBool::new(false))
-                .unwrap_err()
-                .contains("SHA1")
-        );
+        assert!(verify_processor_outputs(
+            &processor,
+            &ProcessorData {
+                values: data,
+                ..Default::default()
+            },
+            &InstallDir::legacy(root.path().into()),
+            &AtomicBool::new(false)
+        )
+        .unwrap_err()
+        .contains("SHA1"));
     }
 }

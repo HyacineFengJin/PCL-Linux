@@ -1,11 +1,13 @@
-//! Import of this launcher's `pcl-local-instance` v1 ZIP format.
+//! Instance publication for legacy `pcl-local-instance` ZIP and native packs.
 //!
 //! `prepare` owns a read-only source/target snapshot. Callers keep that typed
 //! plan server-side and hold the common game-root writer admission for execute
 //! and recovery. Archive paths never become OS paths: validated components are
 //! opened relative to pinned no-follow directory FDs, with NO_XDEV inside root.
 //!
-//! Durable states: Staging owns anonymous, registered extraction files;
+//! Schema 1 preserves the legacy ZIP transaction; schema 2 first registers a
+//! Building private root before the installer generates any output. Both share
+//! Staging, which owns anonymous, registered extraction files;
 //! Prepared authorizes no-overwrite publication; Committed retains the imported
 //! instance and only finishes staging cleanup. Earlier states roll back only
 //! outputs whose inode and bytes still match the journal. Cleanup conflicts
@@ -26,10 +28,14 @@ use std::{
 };
 use zip::ZipArchive;
 mod archive;
+pub(crate) mod build;
 mod filesystem;
+mod journal;
 pub(crate) mod mrpack;
+pub(crate) mod publication;
 use archive::{checked_zip, legacy_resources, resolve_version, scan_archive, ArchiveEntry};
 use filesystem::{hash_file, open_source, source_snapshot, Dir, Key, Snapshot};
+use journal::{BuildRegistration, Journal, State};
 
 type Result<T> = std::result::Result<T, String>;
 const STORE: &str = "instance-imports";
@@ -509,15 +515,6 @@ fn validate_targets(root: &Dir, targets: &BTreeMap<String, Target>) -> Result<()
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum State {
-    Staging,
-    Prepared,
-    Committed,
-    Finished,
-    RolledBack,
-}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct JournalFile {
@@ -532,23 +529,6 @@ struct JournalFile {
 struct DestinationDirectory {
     before: Option<Key>,
     created: Option<Key>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Journal {
-    schema: u32,
-    operation_id: String,
-    root: PathBuf,
-    root_key: Key,
-    operation_key: Key,
-    name: String,
-    state: State,
-    files_key: Option<Key>,
-    instance_key: Option<Key>,
-    files: Vec<JournalFile>,
-    targets: BTreeMap<String, Target>,
-    destination_dirs: BTreeMap<String, DestinationDirectory>,
-    instance_dirs: BTreeMap<String, Option<Key>>,
 }
 /// The full plan changes only at durable state boundaries. Ownership is
 /// registered in one small immutable sidecar per extracted file/directory;
@@ -567,6 +547,8 @@ enum OwnershipRecord {
     InstanceDirectory { path: String, key: Key },
     DestinationDirectory { path: String, key: Key },
 }
+#[cfg(test)]
+thread_local! { static FAIL_COMMITTED_JOURNAL_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 #[cfg(test)]
 thread_local! { static FULL_JOURNAL_WRITES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 fn record_name(record: &OwnershipRecord, j: &Journal) -> Result<String> {
@@ -725,7 +707,7 @@ fn shared(path: &str) -> bool {
 }
 fn validate_journal(j: &Journal, name: &str) -> Result<()> {
     let invalid = || "导入恢复记录无效，已保留文件供检查".to_owned();
-    if j.schema != 1
+    if !journal::valid_format(j)
         || j.operation_id != name
         || !operation_ok(name)
         || !j.root.is_absolute()
@@ -736,6 +718,11 @@ fn validate_journal(j: &Journal, name: &str) -> Result<()> {
         || j.destination_dirs.len() > MAX_FILES
     {
         return Err(invalid());
+    }
+    if j.state == State::Building
+        || (j.schema == 2 && j.state == State::RolledBack && j.files.is_empty())
+    {
+        return journal::validate_building(j);
     }
     let prefix = format!("versions/{}/", j.name);
     let mut names = BTreeSet::new();
@@ -827,8 +814,7 @@ fn read_journal(operation: &Dir, name: &str, filename: &str) -> Result<Journal> 
     if bytes.len() as u64 > MAX_JOURNAL {
         return Err("导入恢复记录过大".into());
     }
-    let mut j: Journal = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("导入恢复记录损坏，已保留暂存文件：{e}"))?;
+    let mut j = journal::decode(&bytes)?;
     validate_journal(&j, name)?;
     if operation.key() != Ok(j.operation_key.clone()) {
         return Err("导入记录目录已经变化".into());
@@ -855,24 +841,41 @@ fn link_anonymous(file: &File, dir: &Dir, name: &str) -> Result<()> {
     }
     dir.sync()
 }
-fn cleanup_next(operation: &Dir, j: &Journal) -> Result<()> {
+fn validate_next(operation: &Dir, j: &Journal) -> Result<bool> {
     if operation.stat("journal.next")?.is_some() {
         let next = read_journal(operation, &j.operation_id, "journal.next")?;
-        if next.root != j.root
+        if next.schema != j.schema
+            || next
+                .build
+                .as_ref()
+                .zip(j.build.as_ref())
+                .is_some_and(|(a, b)| a.key.is_some() && b.key.is_some() && a.key != b.key)
+            || next.root != j.root
             || next.root_key != j.root_key
             || next.operation_key != j.operation_key
             || next.name != j.name
         {
             return Err("未完成的导入记录与当前操作不一致".into());
         }
+        return Ok(true);
+    }
+    Ok(false)
+}
+fn cleanup_next(operation: &Dir, j: &Journal) -> Result<()> {
+    if validate_next(operation, j)? {
         operation.unlink("journal.next", false)?;
     }
     Ok(())
 }
 fn write_journal(operation: &Dir, j: &Journal) -> Result<()> {
+    #[cfg(test)]
+    if j.state == State::Committed && FAIL_COMMITTED_JOURNAL_WRITE.with(|fail| fail.replace(false))
+    {
+        return Err("fixture durable commit failure".into());
+    }
     validate_journal(j, &j.operation_id)?;
     validate_binding(operation, j)?;
-    let bytes = serde_json::to_vec(j).map_err(error)?;
+    let bytes = journal::encode(j)?;
     if bytes.len() as u64 > MAX_JOURNAL {
         return Err("导入恢复记录超过大小限制".into());
     }
@@ -964,6 +967,7 @@ fn setup(root: &Dir, store: &Dir, plan: &ImportPlan) -> Result<(Dir, Journal)> {
         .collect::<Result<BTreeMap<_, _>>>()?;
     let mut j = Journal {
         schema: 1,
+        build: None,
         operation_id,
         root: plan.root.clone(),
         root_key: root.key()?,
@@ -1375,60 +1379,15 @@ fn publish(
     source: &Path,
     source_expected: &Snapshot,
 ) -> Result<()> {
-    validate_binding(operation, j)?;
-    validate_targets(root, &j.targets)?;
-    crate::instance_delete::ensure_name_available(&j.root, &j.name)?;
-    ensure_destination_dirs(root, operation, j)?;
-    let files = owned_dir(operation, "files", &j.files_key)?.ok_or("导入暂存文件目录缺失")?;
-    let instance =
-        owned_dir(operation, "instance", &j.instance_key)?.ok_or("导入暂存实例目录缺失")?;
-    complete_instance(&instance, j)?;
-    for (i, f) in j.files.iter().enumerate() {
-        if f.reuse || f.target.starts_with(&format!("versions/{}/", j.name)) {
-            continue;
-        }
-        let expected = f.staged.as_ref().ok_or("导入共享文件未登记")?;
-        if !expected.owned_matches(&hash_file(files.regular(&slot(i))?, MAX_FILE, None)?) {
+    publication::publish_prepared(root, operation, j, || {
+        if source_snapshot(source, None)? != *source_expected {
             return Err(changed());
         }
-        validate_binding(operation, j)?;
-        let (parent, name) = destination_parent(root, &f.target, j)?;
-        if parent.stat(&name)?.is_some() {
-            return Err(changed());
-        }
-        link_file(&files, &slot(i), &parent, &name)?;
-    }
-    verify_shared(root, j, true)?;
-    verify_destination_dirs(root, j, true)?;
-    if source_snapshot(source, None)? != *source_expected {
-        return Err(changed());
-    }
-    let versions = root.child("versions")?;
-    if versions.stat(&j.name)?.is_some() {
-        return Err(changed());
-    }
-    if versions.key()?
-        != j.destination_dirs["versions"]
-            .before
-            .clone()
-            .or_else(|| j.destination_dirs["versions"].created.clone())
-            .ok_or("versions 身份缺失")?
-    {
-        return Err(changed());
-    }
-    crate::instance_delete::ensure_name_available(&j.root, &j.name)?;
-    validate_binding(operation, j)?;
-    move_new(operation, "instance", &versions, &j.name)?;
-    // The directory move is the final publication. This durable state decides
-    // whether recovery retains the completed instance or removes owned output.
-    j.state = State::Committed;
-    if let Err(e) = write_journal(operation, j) {
-        j.state = State::Prepared;
-        return Err(e);
-    }
-    Ok(())
+        Ok(())
+    })
 }
 fn cleanup_stage(operation: &Dir, j: &Journal) -> Result<()> {
+    build::cleanup_build(operation, j)?;
     if let Some(instance) = owned_dir(operation, "instance", &j.instance_key)? {
         if j.instance_key.is_some() {
             remove_instance_tree(&instance, j)?;
@@ -1548,12 +1507,19 @@ fn recover_one(operation: &Dir, j: &mut Journal) -> Result<()> {
             cleanup_stage(operation, j)?;
             j.state = State::Finished;
         }
+        State::Building => {
+            cleanup_stage(operation, j)?;
+            j.state = State::RolledBack;
+        }
         State::Staging | State::Prepared => {
             rollback(&root, operation, j)?;
             j.state = State::RolledBack;
         }
         State::Finished | State::RolledBack => {
             cleanup_next(operation, j)?;
+            if j.schema == 2 {
+                build::verify_terminal_operation(operation, j)?;
+            }
             return Ok(());
         }
     }
@@ -1563,6 +1529,12 @@ fn recover_one(operation: &Dir, j: &mut Journal) -> Result<()> {
 /// Read-only guard. The common root admission must guard every writer and
 /// launch; pending imports remain recoverable even without selected metadata.
 pub fn ensure_ready(root: &Path) -> Result<()> {
+    ensure_ready_except_build(root, None)
+}
+
+/// Bootstrap may suppress only its captured running pack operation. All other
+/// pending operations, roots and malformed records keep the recovery guard.
+pub(crate) fn ensure_ready_except_build(root: &Path, active_operation: Option<&str>) -> Result<()> {
     let path = root.canonicalize().map_err(error)?;
     let dir = Dir::open(&path)?;
     let Some(store) = storage(&dir, false)? else {
@@ -1584,7 +1556,22 @@ pub fn ensure_ready(root: &Path) -> Result<()> {
         if j.root != path || j.root_key != dir.key()? {
             return Err("导入记录与当前游戏目录不匹配".into());
         }
+        if j.schema == 2 && matches!(j.state, State::Finished | State::RolledBack) {
+            build::verify_terminal_operation(&operation, &j)?;
+        }
         if !matches!(j.state, State::Finished | State::RolledBack) {
+            if j.schema == 2 && active_operation == Some(name.as_str()) {
+                validate_binding(&operation, &j)?;
+                if let Some(build) = &j.build {
+                    let private = owned_dir(&operation, "build", &build.key)?;
+                    if matches!(j.state, State::Building | State::Staging | State::Prepared)
+                        && private.is_none()
+                    {
+                        return Err("运行中的私有构建目录缺失，已保留恢复记录".into());
+                    }
+                }
+                continue;
+            }
             return Err("存在未完成的实例导入，请先恢复再操作或启动".into());
         }
     }
