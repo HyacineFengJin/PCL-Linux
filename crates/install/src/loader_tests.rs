@@ -13,6 +13,13 @@ impl Drop for FixtureServer {
     }
 }
 fn fixture_server(provider: Option<&str>, stall: Option<&str>) -> FixtureServer {
+    fixture_server_with_forge_processor(provider, stall, false)
+}
+fn fixture_server_with_forge_processor(
+    provider: Option<&str>,
+    stall: Option<&str>,
+    forge_processor: bool,
+) -> FixtureServer {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -64,7 +71,7 @@ fn fixture_server(provider: Option<&str>, stall: Option<&str>) -> FixtureServer 
         let processor_library = json!({"name":"fixture:processor:1","downloads":{"artifact":embedded_art("fixture/processor/1/processor-1.jar",&processor)}});
         let profile = json!({"id":"loader-fixture","inheritsFrom":"fixture","mainClass":"cpw.mods.bootstraplauncher.BootstrapLauncher","arguments":{"game":["--fml.mcVersion","fixture"],"jvm":[]},"libraries":if provider == "forge" { vec![runtime_library.clone()] } else { vec![] }});
         let profile_raw = serde_json::to_vec(&profile).unwrap();
-        let install = json!({"spec":1,"minecraft":"fixture","json":"/version.json","data":if provider == "neoforge" { json!({"MC_SRG":{"client":"[net.minecraft:client:fixture:srg]"},"MC_EXTRA":{"client":"[net.minecraft:client:fixture:extra]"},"PATCHED":{"client":"[net.neoforged:neoforge:1:client]"}}) } else { json!({}) },"libraries":[runtime_library,processor_library],"processors":if provider == "neoforge" { vec![json!({"jar":"fixture:processor:1","classpath":[],"args":["--output","{MC_SRG}","--output","{MC_EXTRA}","--output","{PATCHED}"],"sides":["client"]})] } else { vec![] }});
+        let install = json!({"spec":1,"minecraft":"fixture","json":"/version.json","data":if provider == "neoforge" { json!({"MC_SRG":{"client":"[net.minecraft:client:fixture:srg]"},"MC_EXTRA":{"client":"[net.minecraft:client:fixture:extra]"},"PATCHED":{"client":"[net.neoforged:neoforge:1:client]"}}) } else { json!({}) },"libraries":[runtime_library,processor_library],"processors":if provider == "neoforge" { vec![json!({"jar":"fixture:processor:1","classpath":[],"args":["--output","{MC_SRG}","--output","{MC_EXTRA}","--output","{PATCHED}"],"sides":["client"]})] } else if forge_processor { vec![json!({"jar":"fixture:processor:1","classpath":[],"args":[],"sides":["client"]})] } else { vec![] }});
         let install_raw = serde_json::to_vec(&install).unwrap();
         let archive = jar(&[
             ("install_profile.json", &install_raw),
@@ -383,6 +390,73 @@ fn neoforge_retains_generated_runtime_libraries_missing_from_launch_json() {
             .unwrap();
     assert_eq!(data["libraries"].as_array().unwrap().len(), 1);
     assert!(root.path().join("versions/neo/neo.jar").is_file());
+}
+#[test]
+fn fixed_java_failure_prevents_forge_and_neoforge_processors_and_publication() {
+    use std::os::unix::fs::PermissionsExt;
+    for provider in ["forge", "neoforge"] {
+        for missing in [false, true] {
+            let server = fixture_server_with_forge_processor(Some(provider), None, true);
+            let root = tempfile::tempdir().unwrap();
+            let project = tempfile::tempdir().unwrap();
+            let fallback = project.path().join("runtime-compatible/bin/java");
+            let fallback_marker = project.path().join("fallback-ran");
+            fs::create_dir_all(fallback.parent().unwrap()).unwrap();
+            // A valid automatic alternative makes the former fallback bug
+            // observable through the real metadata/loader installation path.
+            fs::write(
+                &fallback,
+                format!(
+                    "#!/bin/sh\nprintf 'ran\\n' >> '{}'\nprintf 'openjdk version \"21.0.1\"\\n' >&2\n",
+                    fallback_marker.display()
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&fallback, fs::Permissions::from_mode(0o700)).unwrap();
+            let selected = project.path().join("selected-java");
+            if !missing {
+                fs::write(
+                    &selected,
+                    "#!/bin/sh\nprintf 'openjdk version \"17.0.1\"\\n' >&2\n",
+                )
+                .unwrap();
+                fs::set_permissions(&selected, fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            let reached_processor = AtomicBool::new(false);
+            let error = installer(&server)
+                .with_project(project.path())
+                .with_java(&selected)
+                .install_request(
+                    root.path(),
+                    &request("fixed-loader", Some(provider)),
+                    &AtomicBool::new(false),
+                    |p| {
+                        if p.stage == "component_install" {
+                            reached_processor.store(true, Ordering::Relaxed);
+                        }
+                    },
+                )
+                .unwrap_err();
+            assert!(error.contains("指定的 Java"), "{provider}: {error}");
+            assert!(!fallback_marker.exists(), "{provider} fell back");
+            assert!(!reached_processor.load(Ordering::Relaxed));
+            assert!(fs::read_dir(root.path().join("versions"))
+                .unwrap()
+                .next()
+                .is_none());
+            // A failed processor selection removes its owned workspace while
+            // retaining already verified ordinary installer cache bytes.
+            assert_eq!(
+                fs::read(root.path().join("libraries/example/base/1/base-1.jar")).unwrap(),
+                b"library"
+            );
+            assert!(!walk_files(root.path()).iter().any(|p| p
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".tmp")));
+        }
+    }
 }
 #[test]
 fn cancellation_at_publication_does_not_replace_external_collision() {

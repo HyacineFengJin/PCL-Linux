@@ -99,6 +99,8 @@ pub struct InstallResult {
 }
 pub struct Installer {
     client: Client,
+    // None discovers a processor runtime; Some is a strict caller selection.
+    // This choice is independent of the Java used later to launch the game.
     java: Option<PathBuf>,
     project: Option<PathBuf>,
     cache_source: Option<cache::CacheSource>,
@@ -186,6 +188,9 @@ impl Installer {
             endpoint: None,
         })
     }
+    /// Select only this executable for Forge/NeoForge installation processors.
+    /// An unavailable executable or a different required Java major is an error;
+    /// omitting this call retains automatic processor-runtime discovery.
     pub fn with_java(mut self, path: impl AsRef<Path>) -> Self {
         self.java = Some(path.as_ref().to_path_buf());
         self

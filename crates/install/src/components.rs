@@ -1090,6 +1090,47 @@ fn run_child(
         std::thread::sleep(Duration::from_millis(40));
     }
 }
+enum JavaProbe {
+    Major(u32),
+    Unavailable(String),
+}
+
+/// Probe failures may be skipped during automatic discovery. Cancellation and
+/// workspace failures remain errors; both selection modes retain the child
+/// owner until kill/wait finishes before their caller can clean its workspace.
+fn probe_installer_java(path: &Path, workspace: &Path, cancel: &AtomicBool) -> Result<JavaProbe> {
+    let log = tempfile::NamedTempFile::new_in(workspace).map_err(error)?;
+    let mut command = Command::new(path);
+    command
+        .arg("-version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.reopen().map_err(error)?))
+        .stderr(Stdio::from(log.reopen().map_err(error)?));
+    let status = match run_child(&mut command, cancel, Duration::from_secs(5)) {
+        Ok(status) => status,
+        Err(e) if cancel.load(Ordering::Relaxed) || e.starts_with("取消清理失败：") => {
+            return Err(e)
+        }
+        Err(e) => return Ok(JavaProbe::Unavailable(e)),
+    };
+    if !status.success() {
+        return Ok(JavaProbe::Unavailable(format!(
+            "Java 版本探测退出状态：{status}"
+        )));
+    }
+    let text = fs::read_to_string(log.path()).unwrap_or_default();
+    let major = text
+        .split("version \"")
+        .nth(1)
+        .and_then(|s| s.strip_prefix("1.").or(Some(s)))
+        .and_then(|s| s.split(['.', '"', '-']).next())
+        .and_then(|s| s.parse::<u32>().ok());
+    Ok(match major {
+        Some(major) => JavaProbe::Major(major),
+        None => JavaProbe::Unavailable("Java 版本探测结果缺少有效的主版本".into()),
+    })
+}
+
 impl Installer {
     fn installer_java(
         &self,
@@ -1097,10 +1138,26 @@ impl Installer {
         workspace: &Path,
         cancel: &AtomicBool,
     ) -> Result<PathBuf> {
-        let mut paths = vec![];
+        check(cancel)?;
         if let Some(path) = &self.java {
-            paths.push(path.clone());
+            // A caller-selected executable is authority, not a discovery hint.
+            // Resolve/probe it for this processor batch; never replace a failed
+            // selection with an otherwise compatible project or system Java.
+            let path = fs::canonicalize(path)
+                .map_err(|e| format!("指定的 Java 不可用（{}）：{e}", path.display()))?;
+            return match probe_installer_java(&path, workspace, cancel)? {
+                JavaProbe::Major(major) if major == required => Ok(path),
+                JavaProbe::Major(major) => Err(format!(
+                    "指定的 Java 主版本不兼容（{}）：此组件需要 Java {required}，指定的是 Java {major}",
+                    path.display()
+                )),
+                JavaProbe::Unavailable(reason) => Err(format!(
+                    "指定的 Java 不可用（{}）：{reason}",
+                    path.display()
+                )),
+            };
         }
+        let mut paths = vec![];
         let project = self
             .project
             .clone()
@@ -1134,29 +1191,8 @@ impl Installer {
             if !seen.insert(path.clone()) {
                 continue;
             }
-            let log = tempfile::NamedTempFile::new_in(workspace).map_err(error)?;
-            let mut command = Command::new(&path);
-            command
-                .arg("-version")
-                .stdin(Stdio::null())
-                .stdout(Stdio::from(log.reopen().map_err(error)?))
-                .stderr(Stdio::from(log.reopen().map_err(error)?));
-            match run_child(&mut command, cancel, Duration::from_secs(5)) {
-                Ok(status) if status.success() => {
-                    let text = fs::read_to_string(log.path()).unwrap_or_default();
-                    let major = text
-                        .split("version \"")
-                        .nth(1)
-                        .and_then(|s| s.strip_prefix("1.").or(Some(s)))
-                        .and_then(|s| s.split(['.', '"', '-']).next())
-                        .and_then(|s| s.parse::<u32>().ok());
-                    if major == Some(required) {
-                        return Ok(path);
-                    }
-                }
-                Err(e) if cancel.load(Ordering::Relaxed) || e.starts_with("取消清理失败：") => {
-                    return Err(e)
-                }
+            match probe_installer_java(&path, workspace, cancel)? {
+                JavaProbe::Major(major) if major == required => return Ok(path),
                 _ => {}
             }
         }
@@ -1165,6 +1201,10 @@ impl Installer {
         ))
     }
 }
+
+#[cfg(test)]
+#[path = "components/java_tests.rs"]
+mod java_tests;
 
 #[cfg(test)]
 mod tests {
