@@ -1,8 +1,10 @@
+import experimental from "./experimentalEn";
 import app from "./appEn";
 import pages from "./pagesEn";
 /** Fixed launcher UI messages. Keep names, paths, and remote descriptions in caller values. */
 import type zhCN from "./zh-CN";
 const messages = {
+  ...experimental,
   ...pages,
   ...app,
   "common.unavailable": "This feature is unavailable",

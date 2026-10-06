@@ -1,7 +1,9 @@
+import experimental from "./experimentalZh";
 import app from "./appZh";
 import pages from "./pagesZh";
 /** Fixed launcher UI messages. Keep names, paths, and remote descriptions in caller values. */
 const messages = {
+  ...experimental,
   ...pages,
   ...app,
   "common.unavailable": "此功能尚未开放",

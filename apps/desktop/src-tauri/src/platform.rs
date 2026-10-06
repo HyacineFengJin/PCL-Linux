@@ -82,6 +82,13 @@ impl Desktop {
                 vec!["json"],
                 "launcher-settings.json",
             ),
+            "extension_manifest" => (
+                "选择数据型插件声明",
+                false,
+                "json",
+                vec!["json", "pclext"],
+                "",
+            ),
             "import_settings" => ("导入启动器设置", false, "json", vec!["json"], ""),
             "export_log_zip" => (
                 "导出全部游戏日志",
@@ -465,6 +472,16 @@ impl Desktop {
         window: tauri::WebviewWindow,
         initial: PathBuf,
     ) -> Result<ResourceChoice, String> {
+        self.choose_named_toolbox_directory(window, initial, "选择下载保存文件夹")
+            .await
+    }
+
+    pub async fn choose_named_toolbox_directory(
+        self: &Arc<Self>,
+        window: tauri::WebviewWindow,
+        initial: PathBuf,
+        title: &str,
+    ) -> Result<ResourceChoice, String> {
         if self.choosing.swap(true, Ordering::SeqCst) {
             return Err("已有文件选择窗口，请先完成或取消选择".into());
         }
@@ -475,11 +492,7 @@ impl Desktop {
                 "无法连接桌面文件选择服务，请在桌面会话中运行启动器",
             ));
         }
-        let mut picker = window
-            .dialog()
-            .file()
-            .set_parent(&window)
-            .set_title("选择下载保存文件夹");
+        let mut picker = window.dialog().file().set_parent(&window).set_title(title);
         if initial.is_dir() {
             picker = picker.set_directory(initial);
         }

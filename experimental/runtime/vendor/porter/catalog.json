@@ -1,0 +1,103 @@
+{
+  "checked_at": "2026-10-06",
+  "scope": "Curated, observed catalog entries; not a complete or live compatibility matrix",
+  "targets": [
+    {
+      "id": "neoforge-26.3",
+      "loader": "neoforge",
+      "minecraft": "26.3",
+      "loader_version": "26.3.0.46-beta",
+      "channel": "beta",
+      "verification": "artifact-listed",
+      "source": "https://maven.neoforged.net/releases/net/neoforged/neoforge/",
+      "guide": "https://docs.neoforged.net/primer/docs/26.3/"
+    },
+    {
+      "id": "neoforge-26.2",
+      "loader": "neoforge",
+      "minecraft": "26.2",
+      "loader_version": "26.2.0.88",
+      "channel": "release",
+      "verification": "artifact-listed",
+      "source": "https://maven.neoforged.net/releases/net/neoforged/neoforge/",
+      "guide": "https://docs.neoforged.net/primer/docs/26.2/"
+    },
+    {
+      "id": "neoforge-26.1.2",
+      "loader": "neoforge",
+      "minecraft": "26.1.2",
+      "loader_version": "26.1.2.114",
+      "channel": "release",
+      "verification": "artifact-listed",
+      "source": "https://maven.neoforged.net/releases/net/neoforged/neoforge/",
+      "guide": "https://docs.neoforged.net/primer/docs/26.1/"
+    },
+    {
+      "id": "fabric-26.3",
+      "loader": "fabric",
+      "minecraft": "26.3",
+      "loader_version": null,
+      "channel": "unverified-pair",
+      "verification": "game-listed-loader-pair-unverified",
+      "source": "https://meta.fabricmc.net/v2/versions/game",
+      "guide": "https://docs.fabricmc.net/develop/porting/"
+    },
+    {
+      "id": "fabric-1.21-yarn-source",
+      "loader": "fabric",
+      "minecraft": "1.21",
+      "loader_version": null,
+      "channel": "source-recipe-only",
+      "verification": "versioned-api-documented-loader-pair-unverified",
+      "source": "https://fabricmc.net/2024/05/31/121.html",
+      "guide": "https://fabricmc.net/2024/05/31/121.html#identifier"
+    }
+  ],
+  "sources": [
+    {
+      "title": "Fabric game catalog",
+      "url": "https://meta.fabricmc.net/v2/versions/game",
+      "finding": "26.3, 26.2, 26.1.2 and 26.1 observed as stable game releases"
+    },
+    {
+      "title": "NeoForge artifact catalog",
+      "url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/",
+      "finding": "The exact NeoForge versions in this curated catalog were listed; availability is not mod compatibility"
+    },
+    {
+      "title": "Fabric mod metadata",
+      "url": "https://docs.fabricmc.net/develop/loader/fabric-mod-json",
+      "finding": "Metadata includes dependencies, entrypoints, mixins and license declarations"
+    },
+    {
+      "title": "NeoForge mod metadata",
+      "url": "https://docs.neoforged.net/docs/gettingstarted/modfiles/",
+      "finding": "neoforge.mods.toml describes mods and dependencies; Gradle can replace property placeholders"
+    },
+    {
+      "title": "Minecraft 26.3 migration primer",
+      "url": "https://docs.neoforged.net/primer/docs/26.3/",
+      "finding": "26.3 changes input and native-window plumbing from GLFW to SDL"
+    },
+    {
+      "title": "Fabric mappings migration",
+      "url": "https://docs.fabricmc.net/develop/porting/mappings/",
+      "finding": "Minecraft 26.1 is unobfuscated; pre-26.1 mapping workflows need review"
+    },
+    {
+      "title": "Sinytra Connector",
+      "url": "https://github.com/Sinytra/Connector",
+      "finding": "Current README lists 26.1.2 primary and 1.21.1 LTS; cross-version compatibility is not established"
+    },
+    {
+      "title": "Architectury API",
+      "url": "https://github.com/architectury/architectury-api",
+      "finding": "A possible common/platform split for maintainers; not an automatic porter"
+    },
+    {
+      "title": "Repository licensing",
+      "url": "https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository",
+      "finding": "Public source visibility alone does not establish permission to modify or redistribute"
+    }
+  ]
+}

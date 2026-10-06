@@ -1,12 +1,15 @@
 import { t } from "./i18n";
 import { useState } from "react";
 import type { Api } from "./types";
+import { ExperimentalTools } from "./ExperimentalTools";
+import type { ExperimentalNavigate } from "./experimentalTypes";
 import { ToolboxDownload } from "./ToolboxDownload";
 import { ToolboxGenerators } from "./ToolboxGenerators";
 import type { LocalTool } from "./useLauncherLocal";
 import "./toolbox-extra.css";
 export function Toolbox({
   onOpen,
+  onExperimentalNavigate,
   api,
   onTaskStart,
   onTool,
@@ -16,6 +19,7 @@ export function Toolbox({
   networkSubmissionReason,
 }: {
   onOpen: (s: string) => void;
+  onExperimentalNavigate: ExperimentalNavigate;
   root?: string;
   api?: Api;
   onTaskStart?: (id: string) => void;
@@ -59,6 +63,13 @@ export function Toolbox({
           </button>
         </div>
       </section>
+      {api && (
+        <ExperimentalTools
+          api={api}
+          native={native}
+          onNavigate={onExperimentalNavigate}
+        />
+      )}
       <ToolboxDownload
         api={api}
         native={native}

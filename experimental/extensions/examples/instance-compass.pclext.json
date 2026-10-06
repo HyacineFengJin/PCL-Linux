@@ -1,0 +1,60 @@
+{
+  "packageFormat": "pcl-linux.declarative-package",
+  "packageVersion": 1,
+  "manifest": {
+    "format": "pcl-linux.declarative-extension",
+    "schemaVersion": 1,
+    "id": "local.instance-compass",
+    "name": "实例罗盘 · Instance Compass",
+    "version": "1.0.0",
+    "publisher": "Local example (unverified)",
+    "api": {
+      "min": 1,
+      "maxExclusive": 2
+    },
+    "capabilities": [
+      {
+        "id": "ui.cards",
+        "required": true,
+        "reason": "在百宝箱添加一个可辨识来源的文字卡片。"
+      },
+      {
+        "id": "launcher.navigate",
+        "required": false,
+        "reason": "点击按钮后切换到启动器已有页面，不执行游戏或文件操作。"
+      },
+      {
+        "id": "instances.summary",
+        "required": false,
+        "reason": "点击后展示当前实例的游戏版本、加载器、模组数量与隔离状态，不读取路径或账号。"
+      }
+    ],
+    "contributions": {
+      "cards": [
+        {
+          "id": "compass",
+          "slot": "tools.cards",
+          "title": "出发之前，看一眼实例",
+          "text": "用一个小卡片回到实例选择，或查看由宿主生成的只读摘要。所有按钮都需要对应的授权。",
+          "actions": [
+            {
+              "id": "instances",
+              "label": "选择实例",
+              "kind": "navigate",
+              "target": "instances"
+            },
+            {
+              "id": "summary",
+              "label": "查看实例摘要",
+              "kind": "show-instance-summary"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "integrity": {
+    "algorithm": "sha256",
+    "manifestDigest": "8242e3a1f4e84e04e090d7e5e3a1561d8e73f0f004cb3082805e83af995e8b56"
+  }
+}

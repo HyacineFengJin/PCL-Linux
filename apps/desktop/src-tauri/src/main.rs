@@ -2,6 +2,7 @@ mod accounts;
 mod config;
 mod downloads;
 mod editing;
+mod experimental;
 mod export_presets;
 mod instance_commands;
 mod instance_delete;
@@ -1919,6 +1920,7 @@ fn main() {
             launcher_asset_commands::serve_media,
         )
         .plugin(tauri_plugin_dialog::init())
+        .manage(Arc::new(experimental::Host::new(state.project.clone())))
         .manage(state)
         .setup(|app| {
             let shared = app.state::<Arc<Shared>>().inner().clone();
@@ -1946,10 +1948,12 @@ fn main() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<Arc<Shared>>();
                 let decision = begin_launcher_close(&state);
+                let experiments = window.state::<Arc<experimental::Host>>();
+                experiments.shutdown();
                 // Observational only: frontend subscribers must never take
                 // over the native cancellation/drain-and-close decision.
                 let _ = window.emit("launcher_closing", decision.event);
-                if decision.wait_for_workers {
+                if decision.wait_for_workers || !experiments.is_stopped() {
                     api.prevent_close();
                     for id in decision.active_task_ids {
                         let _ = state.tasks.cancel(&id);
@@ -1957,10 +1961,12 @@ fn main() {
                     state.launcher_updates.service.cancel();
                     if decision.first_request {
                         let shared = state.inner().clone();
+                        let experiments = experiments.inner().clone();
                         let window = window.clone();
                         std::thread::spawn(move || {
                             while !shared.tasks.active_all().is_empty()
                                 || shared.launcher_updates.busy()
+                                || !experiments.is_stopped()
                             {
                                 std::thread::sleep(Duration::from_millis(100));
                             }
@@ -1972,6 +1978,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            experimental::experimental_call,
+            experimental::experimental_choose,
+            experimental::experimental_open,
             instance_metadata_update,
             instance_metadata_read,
             roots_list,

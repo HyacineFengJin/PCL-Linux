@@ -214,3 +214,15 @@ Rust 测试不能证明真实桌面选择器、网络授权页面或 Minecraft �
 工作线程在 operations 锁外调用 `wait_turn`，获得 turn 后重检目录登记、名称保留、恢复记录及方案 revision。取消只设置该任务的 token 并唤醒等待；任务 owner 释放暂存和捕获的文件描述符后才能报告终态、释放 scope。关闭入口捕获全部运行与等待任务，取消和 drain 在 admission 锁外执行。bootstrap 对恢复 journal 的抑制只查询实际运行的 workers，不能让 queued 任务遮住恢复问题。
 
 `download_tasks` 返回整个任务集合、单调修订号和同一快照下的 `blockedRootIds`。事件只唤醒集合读取，避免乱序事件覆盖新状态；`download_status(taskId)` 和取消结果按明确 ID 返回，旧无参数调用仅用于兼容。前端导航、轮询、取消都由独立的 owner/任务 ID 控制，一项结束不能退出其他尚未结束的任务。网络策略仅在集合空闲时交换，防止不同 Arc 快照产生多份总速度预算。
+
+## 实验功能接入
+
+`apps/desktop/src-tauri/src/experimental.rs` 管理一个独占的本地 Node 子进程，固定命令枚举通过有界 JSON 行通信。应用关闭先停止任务和受管 Python 子进程；传输损坏后丢弃会话，避免把旧回复当作下一命令的结果。项目路径来自宿主，实例摘要在 Rust 内投影，第三方声明不能获得完整 `Api` 或 bootstrap。
+
+`experimental/host.mjs` 是接线入口。共享运行时在 `experimental/runtime/src/`，确定性的 Python 工具在 `vendor/maker`、`vendor/porter`。`SOURCES.json` 记录集成版本与工具源码哈希。引擎管理工程任务、产物哈希与修改确认，模型只能提出修改；授权和应用仍由宿主 UI 调用。制作器恢复和模板更新通过宿主选择的工程副本进入源码编辑器；模型的源码编辑工具只接受原有补丁结构，不接受恢复路径。
+
+`ExperimentalTools` 负责入口、工程配置与任务记录，`ExperimentalMaker` 负责物品表单，`ExperimentalExtensions` 负责授权与纯文本卡片；它们使用现有 CE 控件与中英消息目录。数据型插件宿主在 `experimental/extensions/src/`。存储按声明内容摘要绑定授权；损坏时保留原文件并停用，未实现第三方代码执行或 PCL N / Nex ABI。
+
+实验数据位于项目配置目录下的 `experimental/`：工程历史和插件授权持久化，真实 AI 密钥仅保存在本次引擎会话中。常规安装与游戏目录事务仍使用原有 Rust 服务。实验工具不自动执行生成工程的构建脚本。
+
+前端兼容性优先面向 Chromium；Linux 桌面容器继续使用 Tauri 的 WebKitGTK。新增界面应使用通用浏览器 API，原生编辑等平台行为保持在 Rust 适配层。

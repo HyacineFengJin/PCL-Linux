@@ -71,6 +71,8 @@ import {
   type DownloadStatus,
 } from "./DownloadPanel";
 import defaultSkin from "./assets/game-icons/steve.png";
+import { ExperimentalCards } from "./ExperimentalExtensions";
+import type { ExperimentalNavigate } from "./experimentalTypes";
 import { Toolbox } from "./Toolbox";
 import { SettingsPanel } from "./SettingsPanel";
 import {
@@ -1636,7 +1638,19 @@ function App() {
   archiveAdmission.current = {
     blocked: !!busy || downloadBusy || resourceBusy || rootWorking,
     packBlocked: !!busy || resourceBusy || rootWorking,
-    packAvailable: rootAvailable && !data?.rename_recovery_error && !data?.reset_recovery_error && !data?.delete_recovery_error && !data?.resource_install_recovery_error && (!data?.import_recovery_error || taskView.tasks.some(task => task.kind === "modpack_install" && task.root_id === rootId && taskIsActive(task))),
+    packAvailable:
+      rootAvailable &&
+      !data?.rename_recovery_error &&
+      !data?.reset_recovery_error &&
+      !data?.delete_recovery_error &&
+      !data?.resource_install_recovery_error &&
+      (!data?.import_recovery_error ||
+        taskView.tasks.some(
+          (task) =>
+            task.kind === "modpack_install" &&
+            task.root_id === rootId &&
+            taskIsActive(task),
+        )),
     rootAvailable: rootAvailable && !instanceRecoveryBlocked,
   };
   async function save(cfg: Settings) {
@@ -1877,6 +1891,31 @@ function App() {
       </React.Fragment>
     ));
   }
+  // Extensions can request fixed page navigation only, never trigger a task.
+  const navigateExperimental: ExperimentalNavigate = (target) => {
+    switch (target) {
+      case "launch":
+        setScreen("home");
+        setTab("launch");
+        break;
+      case "instances":
+        setScreen("versions");
+        setTab("launch");
+        break;
+      case "downloads":
+        setScreen("home");
+        setTab("download");
+        break;
+      case "tools":
+        setScreen("home");
+        setTab("tools");
+        break;
+      case "settings":
+        setScreen("home");
+        setTab("settings");
+        break;
+    }
+  };
   return (
     <LauncherFavoritesContext.Provider
       value={{
@@ -2732,6 +2771,14 @@ function App() {
                             <ChevronRight size={18} />
                           </button>
                         )}
+                      {tab === "launch" && (
+                        <ExperimentalCards
+                          api={api}
+                          native={native && !tasks.closing}
+                          slot="home.secondary"
+                          onNavigate={navigateExperimental}
+                        />
+                      )}
                       {tab === "launch" && launcherMedia.homeUi}
                       {tab === "launch" && launcherDiscovery.announcementUi}
                       {tab === "settings" &&
@@ -2795,6 +2842,7 @@ function App() {
                       {tab === "tools" && (
                         <Toolbox
                           onOpen={open}
+                          onExperimentalNavigate={navigateExperimental}
                           api={api}
                           onTaskStart={showInstanceTask}
                           native={native && !tasks.closing}

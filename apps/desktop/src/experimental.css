@@ -1,0 +1,160 @@
+/* Experimental panels share CE surfaces and controls; only content-specific
+   wrapping, file lists and source editors are styled here. */
+.experimental-card p,
+.experimental-panel p {
+  line-height: 1.6;
+}
+.experimental-badge {
+  display: inline-block;
+  margin-left: 9px;
+  color: var(--ce-link, #2078da);
+  font-size: 11px;
+  font-weight: 400;
+}
+.experimental-origin {
+  color: var(--ce-muted-text, #9099a4);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.experimental-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.experimental-error {
+  color: var(--ce-danger-text, #bf4335);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.experimental-form .ce-row,
+.experimental-panel .ce-row {
+  grid-template-columns: minmax(110px, 165px) minmax(0, 1fr);
+}
+.experimental-form .ce-row > span {
+  overflow-wrap: anywhere;
+}
+.experimental-subtitle {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 18px 0 10px;
+}
+.experimental-item {
+  border: 1px solid var(--ce-border, #d6e3f3);
+  border-radius: 6px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+.experimental-permission {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 9px;
+}
+.experimental-capability {
+  align-items: flex-start;
+  margin: 14px 0;
+}
+.experimental-capability small {
+  display: block;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ce-muted-text, #9099a4);
+  margin-top: 4px;
+}
+.experimental-digest {
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.experimental-safe {
+  margin-top: 15px;
+}
+.experimental-editor {
+  width: 100%;
+  min-height: 230px;
+  resize: vertical;
+  box-sizing: border-box;
+  font-family: "Noto Sans Mono", monospace;
+  font-size: 12px;
+  line-height: 1.65;
+  padding: 10px;
+}
+.experimental-output {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 370px;
+  overflow: auto;
+  font:
+    12px/1.7 "Noto Sans Mono",
+    monospace;
+}
+.experimental-paths {
+  max-height: 240px;
+  overflow: auto;
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+}
+.experimental-paths .ce-check {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.experimental-summary {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 16px;
+  font-size: 13px;
+}
+.experimental-summary dd {
+  margin: 0;
+}
+.experimental-job-list {
+  display: grid;
+  gap: 6px;
+  max-height: 240px;
+  overflow: auto;
+}
+.experimental-job {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  text-align: left;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+}
+.experimental-engine > summary {
+  cursor: pointer;
+  color: var(--ce-text, #36414e);
+  font-size: 14px;
+  font-weight: 600;
+}
+.experimental-engine[open] > summary {
+  margin-bottom: 12px;
+}
+.experimental-mode {
+  margin-bottom: 12px;
+}
+.experimental-review-file {
+  border-bottom: 1px solid var(--ce-border, #d6e3f3);
+  padding: 6px 0;
+}
+@media (max-width: 900px) {
+  .experimental-form .ce-row,
+  .experimental-panel .ce-row {
+    grid-template-columns: minmax(85px, 130px) minmax(0, 1fr);
+  }
+}
+
+.experimental-panel .ce-actions .ce-button {
+  width: auto;
+  min-width: 120px;
+  max-width: 100%;
+  height: auto;
+  min-height: 28px;
+  white-space: normal;
+}
+.experimental-panel .ce-card-title > svg {
+  vertical-align: -3px;
+  margin-right: 3px;
+}

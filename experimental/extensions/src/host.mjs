@@ -1,0 +1,230 @@
+import { randomUUID } from 'node:crypto';
+import { readManifest, actionCapability, compareVersions } from './manifest.mjs';
+import { fail, freeze } from './json.mjs';
+import { readPackage } from './package.mjs';
+
+const REVIEW_TTL = 5 * 60_000;
+const ACTION_TTL = 30_000;
+const MAX_PENDING = 64;
+const MAX_INSTALLED = 32;
+const SNAPSHOT = /^[A-Za-z0-9._+ -]{1,80}(?![\s\S])/;
+
+// This object belongs to trusted host code. Extensions supply only JSON text.
+// It is a reference policy implementation, not a JavaScript execution sandbox.
+export class ExtensionHost {
+  #entries = new Map();
+  #reviews = new Map();
+  #actions = new Map();
+  #context = null;
+  #contextGeneration = 0;
+  #generation = 0;
+  #safeMode = false;
+  #clock;
+
+  constructor({ clock = Date.now } = {}) { this.#clock = clock; }
+
+  #clean(map) {
+    for (const [token, value] of map) if (value.expiresAt <= this.#clock()) map.delete(token);
+  }
+
+  #store(map, value, ttl) {
+    this.#clean(map);
+    if (map.size >= MAX_PENDING) fail('HOST_PENDING_LIMIT', 'Too many pending requests; finish or cancel a review first.');
+    const token = randomUUID();
+    map.set(token, { ...value, expiresAt: this.#clock() + ttl });
+    return token;
+  }
+
+  #take(map, token) {
+    const value = map.get(token);
+    map.delete(token);
+    if (!value || value.expiresAt <= this.#clock()) fail('HOST_TOKEN', 'This request expired, was cancelled, or has already been used.');
+    return value;
+  }
+
+  prepareReview(source) {
+    return this.#prepare(readManifest(source));
+  }
+
+  preparePackageReview(source) {
+    return this.#prepare(readPackage(source));
+  }
+
+  #prepare(loaded) {
+    const { manifest, digest } = loaded;
+    const previous = this.#entries.get(manifest.id);
+    if (!previous && this.#entries.size >= MAX_INSTALLED) fail('HOST_INSTALL_LIMIT', 'Experimental host extension limit reached.');
+    if (previous) {
+      const order = compareVersions(manifest.version, previous.manifest.version);
+      if (order < 0) fail('HOST_DOWNGRADE', 'Downgrades require a separate recovery workflow.');
+      if (order === 0 && digest !== previous.digest) fail('HOST_VERSION_REUSE', 'Changed manifest content must use a new version.');
+    }
+    const old = new Map(previous?.manifest.capabilities.map(c => [c.id, c]) ?? []);
+    const token = this.#store(this.#reviews, {
+      loaded, expectedGeneration: previous?.generation ?? null,
+    }, REVIEW_TTL);
+    return freeze({
+      token, id: manifest.id, name: manifest.name, version: manifest.version, digest,
+      publisher: manifest.publisher, publisherVerified: false,
+      package: loaded.package ?? null,
+      mode: previous ? (previous.digest === digest ? 'review-grants' : 'update') : 'install',
+      expiresAt: this.#clock() + REVIEW_TTL,
+      capabilities: manifest.capabilities.map(c => ({
+        ...c,
+        currentlyGranted: previous?.grants.has(c.id) ?? false,
+        newlyRequested: !old.has(c.id),
+        newlyRequired: c.required && old.get(c.id)?.required === false,
+      })),
+      note: 'Experimental local JSON only. Publisher is unverified; no code or package signature is loaded.',
+    });
+  }
+
+  cancelReview(token) { return this.#reviews.delete(token); }
+
+  // Call only after a trusted host consent UI explicitly confirms this exact
+  // digest and selected capability set. Manifest content cannot grant itself.
+  confirmReview(token, selectedCapabilityIds) {
+    const review = this.#take(this.#reviews, token);
+    const { manifest, digest } = review.loaded;
+    const previous = this.#entries.get(manifest.id);
+    if ((previous?.generation ?? null) !== review.expectedGeneration)
+      fail('HOST_STALE_REVIEW', 'Extension state changed; review the current version again.');
+    if (!previous && this.#entries.size >= MAX_INSTALLED) fail('HOST_INSTALL_LIMIT', 'Experimental host extension limit reached.');
+    const declared = new Set(manifest.capabilities.map(c => c.id));
+    if (!Array.isArray(selectedCapabilityIds) || selectedCapabilityIds.length > declared.size ||
+        new Set(selectedCapabilityIds).size !== selectedCapabilityIds.length ||
+        selectedCapabilityIds.some(c => typeof c !== 'string' || !declared.has(c)))
+      fail('HOST_GRANT', 'Selected grants must be unique capabilities declared by this manifest.');
+    const grants = new Set(selectedCapabilityIds);
+    if (manifest.capabilities.some(c => c.required && !grants.has(c.id)))
+      fail('HOST_REQUIRED_DENIED', 'Required permission was declined; extension remains unchanged.');
+    this.#entries.set(manifest.id, {
+      manifest, digest, package: review.loaded.package ?? null,
+      grants, enabled: true, generation: ++this.#generation,
+    });
+    return this.inspect(manifest.id);
+  }
+
+  #entry(id) {
+    const entry = this.#entries.get(id);
+    if (!entry) fail('HOST_NOT_FOUND', 'Extension is not installed in this host session.');
+    return entry;
+  }
+
+  #state(entry) {
+    if (this.#safeMode) return 'safe-mode';
+    if (!entry.enabled) return 'disabled';
+    if (entry.manifest.capabilities.some(c => c.required && !entry.grants.has(c.id))) return 'suspended';
+    return 'active';
+  }
+
+  inspect(id) {
+    const e = this.#entry(id);
+    return freeze({
+      id: e.manifest.id, name: e.manifest.name, version: e.manifest.version, digest: e.digest,
+      state: this.#state(e), grants: [...e.grants].sort(), generation: e.generation,
+      publisher: e.manifest.publisher, publisherVerified: false,
+      package: e.package,
+    });
+  }
+
+  list() { return freeze([...this.#entries.keys()].sort().map(id => this.inspect(id))); }
+
+  revoke(id, capability) {
+    const e = this.#entry(id);
+    if (!e.manifest.capabilities.some(c => c.id === capability)) fail('HOST_GRANT', 'Capability is not declared by this extension.');
+    e.grants.delete(capability);
+    e.generation = ++this.#generation;
+    return this.inspect(id);
+  }
+
+  disable(id) {
+    const e = this.#entry(id);
+    e.enabled = false; e.generation = ++this.#generation;
+    return this.inspect(id);
+  }
+
+  setSafeMode(enabled) {
+    if (typeof enabled !== 'boolean') fail('HOST_STATE', 'Safe mode requires a boolean.');
+    this.#safeMode = enabled;
+    // A leave/reenter of safe mode may not revive an old action or consent.
+    this.#actions.clear(); this.#reviews.clear();
+    return this.list();
+  }
+
+  // Host-only input. Opaque target binding stays private and never enters cards.
+  // The current target changes before any asynchronous response is accepted.
+  setContext(context) {
+    if (context === null) this.#context = null;
+    else {
+      if (!context || typeof context !== 'object' ||
+          !['rootId', 'instanceId', 'revision'].every(k => typeof context[k] === 'string' && context[k].length > 0 && context[k].length <= 512))
+        fail('HOST_CONTEXT', 'Selected instance needs a host-owned root, instance, and revision binding.');
+      const s = context.summary;
+      if (!s || typeof s.minecraftVersion !== 'string' || typeof s.loader !== 'string' ||
+          !SNAPSHOT.test(s.minecraftVersion) || !SNAPSHOT.test(s.loader) ||
+          !Number.isSafeInteger(s.modCount) || s.modCount < 0 || s.modCount > 1_000_000 || typeof s.isolated !== 'boolean')
+        fail('HOST_CONTEXT', 'Host summary has invalid values.');
+      this.#context = freeze({
+        rootId: context.rootId, instanceId: context.instanceId, revision: context.revision,
+        summary: { minecraftVersion: s.minecraftVersion, loader: s.loader, modCount: s.modCount, isolated: s.isolated },
+      });
+    }
+    this.#contextGeneration++;
+  }
+
+  cards(slot) {
+    const result = [];
+    for (const e of this.#entries.values()) {
+      if (this.#state(e) !== 'active') continue;
+      for (const card of e.manifest.contributions.cards) {
+        if (card.slot !== slot) continue;
+        result.push({
+          extensionId: e.manifest.id, extensionName: e.manifest.name,
+          publisherVerified: false, digest: e.digest,
+          id: card.id, title: card.title, text: card.text,
+          actions: card.actions.map(action => ({
+            id: action.id, label: action.label,
+            enabled: e.grants.has(actionCapability(action)) && (action.kind !== 'show-instance-summary' || this.#context !== null),
+            unavailableReason: !e.grants.has(actionCapability(action)) ? 'permission-not-granted' :
+              action.kind === 'show-instance-summary' && !this.#context ? 'no-selected-instance' : null,
+          })),
+        });
+      }
+    }
+    return freeze(result);
+  }
+
+  prepareAction(extensionId, cardId, actionId) {
+    const e = this.#entry(extensionId);
+    if (this.#state(e) !== 'active') fail('HOST_INACTIVE', 'Extension is inactive.');
+    const card = e.manifest.contributions.cards.find(c => c.id === cardId);
+    const action = card?.actions.find(a => a.id === actionId);
+    if (!action) fail('HOST_ACTION', 'Action was not declared by this extension.');
+    const capability = actionCapability(action);
+    if (!e.grants.has(capability)) fail('HOST_PERMISSION', 'Action permission has not been granted.');
+    if (action.kind === 'show-instance-summary' && !this.#context) fail('HOST_CONTEXT', 'No instance is selected.');
+    const token = this.#store(this.#actions, {
+      extensionId, generation: e.generation, contextGeneration: this.#contextGeneration,
+      action, capability,
+    }, ACTION_TTL);
+    return freeze({ token, extensionId, label: action.label, kind: action.kind });
+  }
+
+  cancelAction(token) { return this.#actions.delete(token); }
+
+  commitAction(token) {
+    const request = this.#take(this.#actions, token);
+    const e = this.#entry(request.extensionId);
+    if (this.#state(e) !== 'active' || e.generation !== request.generation || !e.grants.has(request.capability))
+      fail('HOST_STALE_ACTION', 'Extension permissions or state changed before this action completed.');
+    if (this.#contextGeneration !== request.contextGeneration)
+      fail('HOST_STALE_CONTEXT', 'Selection changed; use the current card action again.');
+    // Return only a fixed typed intent. There is no invoke/exec/fetch callback.
+    return freeze(request.action.kind === 'navigate' ? {
+      kind: 'navigate', target: request.action.target, extensionId: request.extensionId,
+    } : {
+      kind: 'show-instance-summary', summary: { ...this.#context.summary }, extensionId: request.extensionId,
+    });
+  }
+}

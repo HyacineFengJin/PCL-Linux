@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Maker/Porter host-owned read-only runtime summaries",
+  "description": "Runtime additionally enforces unique workflow/job identity, canonical real UTC dates, exact revision and conflict rules; no raw jobs, paths, prompts, error text or verification claims.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "summaries": {
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schemaVersion": {
+            "const": 1
+          },
+          "jobId": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}(?![\\s\\S])"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "workflow": {
+            "enum": [
+              "maker",
+              "porter"
+            ]
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "cancelled",
+              "failed",
+              "interrupted"
+            ]
+          },
+          "artifactState": {
+            "enum": [
+              "none",
+              "draft_ready",
+              "review_blocked"
+            ]
+          },
+          "blockedReason": {
+            "enum": [
+              null,
+              "build_execution_disabled",
+              "live_model_calls_disabled",
+              "review_required",
+              "runtime_error"
+            ]
+          },
+          "verificationState": {
+            "const": "not_run"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z(?![\\s\\S])"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "jobId",
+          "revision",
+          "workflow",
+          "status",
+          "artifactState",
+          "blockedReason",
+          "verificationState",
+          "updatedAt"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "summaries"
+  ]
+}

@@ -1,6 +1,6 @@
 # PCL Linux 实验版
 
-面向 Linux 的 Minecraft: Java Edition 启动器，采用 **Rust + Tauri 2 + React / TypeScript**，参考 PCL CE 的界面布局与交互理念。无需 .NET，运行时无需 Node 服务。本项目独立开发，非 PCL CE 官方发行。
+面向 Linux 的 Minecraft: Java Edition 启动器，采用 **Rust + Tauri 2 + React / TypeScript**，参考 PCL CE 的界面布局与交互理念。无需 .NET。启动器核心使用 Rust，实验功能使用本地 Node.js / Python 引擎。本项目独立开发，非 PCL CE 官方发行。
 
 ## 功能
 
@@ -23,6 +23,7 @@
 - 游戏进程管理、退出状态与日志查看。
 - PCL CE 风格导航、账号侧栏、实例修改／导出、资源详情及任务管理界面。
 - 启动器外观、媒体、功能隐藏、简体中文／English、设置备份与本地诊断。
+- **实验性功能**：数据型插件、Fabric 模组制作器与有限的模组迁移工具，统一使用启动器界面。[使用与限制](docs/EXPERIMENTAL.md)。
 - 共享下载并发与速度限制、代理与 DoH、日志导出清理及应用入口恢复。
 - 项目发行检查、校验下载、便携更新与回退，以及独立游戏监控。
 - 可分别开启 Minecraft 正式版与快照更新提醒，按官方发布时间判断新版本并保存已读记录。
@@ -32,7 +33,7 @@
 
 ## 构建与运行
 
-需要 Rust/Cargo、Node/npm、GTK 3、WebKitGTK 4.1 及相关开发依赖。构建脚本还使用 Python 3 和 curl。
+需要 Rust/Cargo、Node.js 22.19+ / npm、Python 3.11+、GTK 3、WebKitGTK 4.1 及相关开发依赖。构建脚本还使用 curl。
 
 ```sh
 git clone https://github.com/HyacineFengJin/PCL-Linux.git
@@ -83,6 +84,8 @@ Local ZIP/mrpack import detects PCL exports, Modrinth, HMCL, MCBBS, MultiMC/Pris
 Modrinth mods, resource packs and shaders can be installed with required dependencies, SHA-512 verification and exact-content reuse. Local Modrinth mods support compatible release updates, required-dependency planning, disabled-state preservation and recoverable replacement with persistent undo. Some legacy layouts, OptiFine/LabyMod installation, and online modpacks are not yet available.
 
 Microsoft sign-in is not yet available. The project maintainers are responsible for completing the service integration.
+
+Experimental tools are available from Tools: declarative extensions, a Fabric source-project maker and limited mod migration patches. They share a local Pi engine. Live AI requires explicit session configuration and has not been tested; generated source is not automatically built. See [experimental features](docs/EXPERIMENTAL.md).
 
 ## 致谢
 

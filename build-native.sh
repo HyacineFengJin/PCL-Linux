@@ -6,6 +6,8 @@ if [ ! -f assets/pcl-linux.png ]; then
     ./download-icon.sh
 fi
 npm ci --prefix apps/desktop --no-audit --no-fund
+# Pi stays in its own locked dependency tree; package lifecycle scripts are not needed.
+npm ci --prefix experimental/runtime --ignore-scripts --no-audit --no-fund
 npm run build --prefix apps/desktop
 # A bounded compile avoids excessive memory use on laptops.
 cargo build --locked -p pcl-desktop -p pcl-cli --features pcl-desktop/custom-protocol -j "${PCL_BUILD_JOBS:-2}"
