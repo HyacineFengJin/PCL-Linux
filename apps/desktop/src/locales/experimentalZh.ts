@@ -360,6 +360,30 @@ const messages = {
   "experimental.porterSend": "保存补充",
   "experimental.porterRounds": "处理轮次与历史版本",
   "experimental.porterCopies": "历史文本副本",
+  "experimental.porterCompare": "历史源码差异",
+  "experimental.porterCompareHelp":
+    "只读比较同一项目已登记的冻结输入或文本副本。选择版本后核对原有指纹和副本记录；不会改变源码基础或应用补丁，差异不代表已通过构建或游戏验证。",
+  "experimental.porterCompareFrom": "比较前版本",
+  "experimental.porterCompareTo": "比较后版本",
+  "experimental.porterCompareRun": "查看差异",
+  "experimental.porterCompareVersion":
+    "第 {round} 轮 · {kind} · 基础 {baseline} · {id}",
+  "experimental.porterFrozenInput": "冻结输入",
+  "experimental.porterTextCopy": "文本副本",
+  "experimental.porterCompareCounts":
+    "新增 {added} · 删除 {deleted} · 修改 {modified} · 未改变 {unchanged}",
+  "experimental.porterCompareAdded": "新增",
+  "experimental.porterCompareDeleted": "删除",
+  "experimental.porterCompareModified": "修改",
+  "experimental.porterCompareEqual": "两个版本的文本文件完全相同。",
+  "experimental.porterCompareEmpty":
+    "此项目尚无已登记的处理轮次。开始一轮后可比较其冻结输入和历史文本副本。",
+  "experimental.porterCompareOmitted":
+    "已列出全部冻结输入和较新轮次的副本，另有 {count} 个旧副本未列入本次有界列表；原副本仍保留。",
+  "experimental.porterCompareCoarse":
+    "这个文本块较大，使用整块删除与新增显示，块内未逐行寻找共同内容。",
+  "experimental.porterCompareTruncated":
+    "已达到文本差异显示上限。文件分类与指纹仍完整，原文件保留，请在自己的编辑器中核对完整内容。",
   "experimental.porterUseCopy": "用此副本继续维护",
   "experimental.porterUseCopyHelp":
     "明确选择后，此文本副本成为后续处理的基础，旧记录与副本保留。重新导入上游源码会替换处理基础；目前不会自动合并上游更新或手写改动，请先在外部核对差异。",

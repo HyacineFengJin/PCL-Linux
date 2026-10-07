@@ -70,6 +70,8 @@ pub enum Operation {
     PorterProjectArchive,
     PorterProjectConfigure,
     PorterProjectRound,
+    PorterProjectVersions,
+    PorterProjectCompare,
     ReviewRead,
     ReviewApply,
     ReviewCancel,

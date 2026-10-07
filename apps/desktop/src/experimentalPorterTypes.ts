@@ -94,6 +94,8 @@ export type PorterProject = {
     mode: string;
     targetId: string;
     baselineRevision: number;
+    sourceFingerprint?: string;
+    sourceRegistered?: boolean;
     createdAt: string;
     conversationThrough: string | null;
   }[];

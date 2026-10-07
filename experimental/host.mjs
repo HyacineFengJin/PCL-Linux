@@ -42,6 +42,7 @@ import {
 import { MakerProjects } from "./runtime/vendor/maker/projects.mjs";
 import { MakerWorkspace } from "./runtime/vendor/maker/workspace.mjs";
 import { PorterProjects } from "./porter-projects.mjs";
+import { PorterVersions } from "./porter-versions.mjs";
 import { resolvePorterOrigin } from "./porter-origins.mjs";
 import {
   compareProjectSources,
@@ -126,6 +127,11 @@ const porterProjects = await new PorterProjects(root, {
   hasActiveJob: hasCurrentJob,
 }).init();
 registerReviewPreviewTools(adapters.registry, reviews);
+const porterVersions = new PorterVersions({
+  projects: porterProjects,
+  store: runtime.store,
+  reviews,
+});
 for (const name of ["ask_user", "report_progress"]) {
   const fields =
     name === "ask_user"
@@ -627,6 +633,10 @@ async function dispatch(operation, a) {
       return porterProjects.list();
     case "porter_project_read":
       return porterProjects.read(a.projectId);
+    case "porter_project_versions":
+      return porterVersions.list(a.projectId);
+    case "porter_project_compare":
+      return porterVersions.compare(a.projectId, a.left, a.right);
     case "porter_project_create": {
       const catalog = await domain("catalog", {});
       if (!catalog.targets.some((t) => t.id === a.targetId))

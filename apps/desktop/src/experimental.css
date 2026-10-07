@@ -236,3 +236,6 @@
 .experimental-pi-link:hover {
   text-decoration: underline;
 }
+.experimental-porter-comparison summary {
+  overflow-wrap: anywhere;
+}

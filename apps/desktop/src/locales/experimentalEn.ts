@@ -382,6 +382,31 @@ const messages = {
   "experimental.porterSend": "Save addition",
   "experimental.porterRounds": "Rounds and version history",
   "experimental.porterCopies": "Historical text copies",
+  "experimental.porterCompare": "Historical source differences",
+  "experimental.porterCompareHelp":
+    "Read-only comparison of registered frozen inputs or text copies within this project. Original fingerprints and copy receipts are checked when reading. This does not change the baseline, apply patches, or establish build/game validation.",
+  "experimental.porterCompareFrom": "Before version",
+  "experimental.porterCompareTo": "After version",
+  "experimental.porterCompareRun": "View differences",
+  "experimental.porterCompareVersion":
+    "Round {round} · {kind} · baseline {baseline} · {id}",
+  "experimental.porterFrozenInput": "Frozen input",
+  "experimental.porterTextCopy": "Text copy",
+  "experimental.porterCompareCounts":
+    "Added {added} · Deleted {deleted} · Modified {modified} · Unchanged {unchanged}",
+  "experimental.porterCompareAdded": "Added",
+  "experimental.porterCompareDeleted": "Deleted",
+  "experimental.porterCompareModified": "Modified",
+  "experimental.porterCompareEqual":
+    "The two versions contain identical text files.",
+  "experimental.porterCompareEmpty":
+    "No registered rounds yet. Start a round to compare its frozen input and historical text copies.",
+  "experimental.porterCompareOmitted":
+    "All frozen inputs and copies from newer rounds are listed. {count} older copies were omitted from this bounded list; originals are retained.",
+  "experimental.porterCompareCoarse":
+    "This text block is large; it is shown as a whole-block deletion/addition without aligning common lines inside it.",
+  "experimental.porterCompareTruncated":
+    "The text difference display limit was reached. File classification and fingerprints are complete; originals are retained. Review full contents in your own editor.",
   "experimental.porterUseCopy": "Continue from this copy",
   "experimental.porterUseCopyHelp":
     "Explicitly selecting a copy makes it the next baseline. Earlier records and copies are retained. Importing upstream source replaces the baseline; upstream updates and handwritten changes are not automatically merged. Compare them externally first.",

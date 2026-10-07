@@ -239,6 +239,8 @@ export type ExperimentalOperation =
   | "porter_project_archive"
   | "porter_project_configure"
   | "porter_project_round"
+  | "porter_project_versions"
+  | "porter_project_compare"
   | "review_read"
   | "review_apply"
   | "review_cancel"
