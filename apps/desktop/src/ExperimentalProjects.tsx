@@ -18,6 +18,7 @@ import type {
   ProjectCheckpoint,
   ProjectSourceSelection,
 } from "./experimentalProjectTypes";
+import { ExperimentalProjectFiles } from "./ExperimentalProjectFiles";
 import { ExperimentalVersion } from "./ExperimentalVersion";
 import "./experimental.css";
 
@@ -89,6 +90,11 @@ export function ExperimentalProjects({
   const drafts = useRef(draft.current.drafts);
   const project = projects.find((value) => value.id === id),
     point = project?.checkpoints.find((value) => value.id === checkpointId);
+  const [indexEditable, setIndexEditable] = useState(true);
+  useEffect(
+    () => setIndexEditable(true),
+    [project?.id, project?.revision, point?.id],
+  );
   const [loadedRevision, setLoadedRevision] = useState(draft.current.revision);
   // The owning app retains drafts while users visit AI settings or source review.
   useEffect(() => {
@@ -459,7 +465,7 @@ export function ExperimentalProjects({
           <p>{t("experimental.projectVerification")}</p>
           <button
             className="ce-button"
-            disabled={unavailable || !point}
+            disabled={unavailable || !point || !indexEditable}
             onClick={() => void perform(() => open(point!))}
           >
             {t("experimental.continueEditing")}
@@ -498,6 +504,7 @@ export function ExperimentalProjects({
               disabled={
                 unavailable ||
                 project.archived ||
+                !indexEditable ||
                 point?.workflow !== "maker" ||
                 !prompt.trim() ||
                 name !== project.name ||
@@ -530,12 +537,25 @@ export function ExperimentalProjects({
           </div>
         </section>
       )}
+      {project && point && (
+        <ExperimentalProjectFiles
+          key={`${project.id}:${project.revision}:${point.id}`}
+          api={api}
+          native={native}
+          source={{
+            id,
+            expectedRevision: project.revision,
+            checkpointId: point.id,
+          }}
+          onIndexed={setIndexEditable}
+        />
+      )}
       {error && (
         <p className="experimental-error" role="alert">
           {error}
         </p>
       )}
-      <ExperimentalVersion version="0.5" />
+      <ExperimentalVersion version="0.6" />
     </div>
   );
 }

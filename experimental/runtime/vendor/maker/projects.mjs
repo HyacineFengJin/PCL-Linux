@@ -201,7 +201,7 @@ export class MakerProjects {
     );
     return this.view(record);
   }
-  async source({ id, expectedRevision, checkpointId }) {
+  async source({ id, expectedRevision, checkpointId }, capture = this.capture) {
     const project = await this.get(id);
     need(
       project.revision === expectedRevision,
@@ -211,7 +211,7 @@ export class MakerProjects {
       (value) => value.id === checkpointId,
     );
     need(point, "Select a recorded source version");
-    const captured = await this.capture(point.jobId, point.operationId);
+    const captured = await capture(point.jobId, point.operationId);
     need(
       captured.snapshot.fingerprint === point.fingerprint,
       "Recorded source version changed",

@@ -9,14 +9,15 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url),
   ts = require("typescript");
 const source = fileURLToPath(new URL("../src/", import.meta.url));
-function harness(api, retained) {
+function harness(api, retained, config = {}) {
   const modules = new Map(),
     hooks = [];
   let cursor = 0,
     dirty = false,
     pending = [],
     tree;
-  const opened = [];
+  const opened = [],
+    indexed = [];
   const react = {
     useState(initial) {
       const index = cursor++;
@@ -96,12 +97,21 @@ function harness(api, retained) {
     cursor = 0;
     dirty = false;
     pending = [];
-    tree = component.ExperimentalProjects({
-      api,
-      native: true,
-      draft,
-      onOpen: (value) => opened.push(value),
-    });
+    tree = config.files
+      ? load(
+          path.join(source, "ExperimentalProjectFiles.tsx"),
+        ).ExperimentalProjectFiles({
+          api,
+          native: true,
+          source: config.source,
+          onIndexed: (value) => indexed.push(value),
+        })
+      : component.ExperimentalProjects({
+          api,
+          native: true,
+          draft,
+          onOpen: (value) => opened.push(value),
+        });
     for (const effect of pending) effect();
   }
   async function flush() {
@@ -122,6 +132,7 @@ function harness(api, retained) {
       api = next;
       render();
     },
+    indexed,
     get tree() {
       return tree;
     },
@@ -133,7 +144,9 @@ function harness(api, retained) {
 function content(tree) {
   if (Array.isArray(tree)) return tree.map(content).join("");
   if (tree && typeof tree === "object") return content(tree.props?.children);
-  return typeof tree === "string" ? tree : "";
+  return typeof tree === "string" || typeof tree === "number"
+    ? String(tree)
+    : "";
 }
 function elements(tree, match) {
   if (!tree || typeof tree !== "object") return [];
@@ -325,7 +338,85 @@ test("opening and AI continuation use the host-selected checkpoint and return it
   assert.equal(
     elements(ui.tree, (node) => node.type?.name === "ExperimentalVersion")[0]
       .props.version,
-    "0.5",
+    "0.6",
+  );
+  ui.close();
+});
+
+test("source browser uses host cursors, resets filters, and displays read-only chunks and bounded search", async () => {
+  const requests = [],
+    ref = {
+      id: "project-1",
+      expectedRevision: "revision-1",
+      checkpointId: "point-1",
+    };
+  const name = "src/main/java/Unicode.java";
+  async function api(_, { operation, args }) {
+    requests.push({ operation, args });
+    if (operation === "project_files")
+      return {
+        fileCount: 352,
+        totalBytes: 1000000,
+        editableSnapshot: false,
+        files: [{ path: name, bytes: 300, sha256: "a", text: true }],
+        nextOffset: args.offset ? null : 50,
+      };
+    if (operation === "project_file_read")
+      return {
+        path: name,
+        bytes: 300,
+        sha256: "a",
+        offset: args.offset,
+        content: "a".repeat(100),
+        nextOffset: args.offset === 0 ? 100 : null,
+      };
+    if (operation === "project_search")
+      return {
+        scannedFiles: 32,
+        scannedBytes: 50000,
+        matches: [{ path: name, sha256: "a", line: 200, snippet: "needle" }],
+        nextOffset: 32,
+        truncatedFile: null,
+      };
+    throw new Error("Unexpected operation: " + operation);
+  }
+  const ui = harness(api, undefined, { files: true, source: ref });
+  await ui.flush();
+  assert.deepEqual(ui.indexed, [false]);
+  await click(ui, "experimental.nextPage");
+  assert.equal(requests.at(-1).args.offset, 50);
+  await change(ui, "experimental.pathFilter", "Unicode");
+  assert.equal(button(ui, "experimental.nextPage").props.disabled, true);
+  await click(ui, "experimental.refresh");
+  assert.equal(requests.at(-1).args.offset, 0);
+  assert.equal(requests.at(-1).args.filter, "Unicode");
+  await change(ui, "experimental.file", name);
+  assert.equal(
+    elements(ui.tree, (node) => node.type === "textarea")[0].props.readOnly,
+    true,
+  );
+  await click(ui, "experimental.nextChunk");
+  assert.equal(requests.at(-1).args.offset, 100);
+  await click(ui, "experimental.previousChunk");
+  assert.equal(requests.at(-1).args.offset, 0);
+  await change(ui, "experimental.sourceSearch", "needle");
+  await click(ui, "experimental.sourceSearch");
+  assert.equal(requests.at(-1).operation, "project_search");
+  assert.equal(
+    elements(
+      ui.tree,
+      (node) => node.type === "span" && content(node) === name + ":200",
+    ).length,
+    1,
+  );
+  assert.equal(
+    requests.every(
+      (value) =>
+        value.args.id === ref.id &&
+        value.args.expectedRevision === ref.expectedRevision &&
+        value.args.checkpointId === ref.checkpointId,
+    ),
+    true,
   );
   ui.close();
 });
@@ -536,4 +627,58 @@ test("an edit queued after save admission remains a local draft after the host c
     false,
   );
   ui.close();
+});
+
+test("source browser retires old API results and callbacks after replacement or unmount", async () => {
+  const delayed = deferred(),
+    ref = {
+      id: "project-1",
+      expectedRevision: "revision-1",
+      checkpointId: "point-1",
+    };
+  let oldCalls = 0,
+    newCalls = 0;
+  async function oldApi() {
+    oldCalls++;
+    return delayed.promise;
+  }
+  async function newApi() {
+    newCalls++;
+    return {
+      fileCount: 1,
+      totalBytes: 12,
+      editableSnapshot: true,
+      files: [{ path: "current.java", bytes: 12, sha256: "a", text: true }],
+      nextOffset: null,
+    };
+  }
+  const ui = harness(oldApi, undefined, { files: true, source: ref });
+  await ui.flush();
+  const retired = button(ui, "experimental.refresh").props.onClick;
+  ui.replaceApi(newApi);
+  await ui.flush();
+  delayed.resolve({
+    fileCount: 352,
+    totalBytes: 1000000,
+    editableSnapshot: false,
+    files: [{ path: "previous.java", bytes: 10, sha256: "b", text: true }],
+    nextOffset: 50,
+  });
+  await ui.flush();
+  retired();
+  await ui.flush();
+  assert.equal(oldCalls, 1);
+  assert.deepEqual(ui.indexed, [true]);
+  assert.equal(
+    elements(
+      ui.tree,
+      (node) => node.type === "option" && node.props.value === "previous.java",
+    ).length,
+    0,
+  );
+  const unmounted = button(ui, "experimental.refresh").props.onClick;
+  ui.close();
+  unmounted();
+  await ui.flush();
+  assert.equal(newCalls, 1);
 });
