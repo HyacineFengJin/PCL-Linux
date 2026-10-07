@@ -1,667 +1,427 @@
-/** Actual Maker workflow component events with isolated React scheduling and
- * a fault-injectable host fixture. No game, desktop, credentials or network. */
 import assert from "node:assert/strict";
 import test from "node:test";
-import fs from "node:fs";
-import path from "node:path";
-import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
-const require = createRequire(import.meta.url),
-  ts = require("typescript");
-const source = fileURLToPath(new URL("../src/", import.meta.url));
-function harness(api, initialJob = "job-a") {
-  const modules = new Map(),
-    hooks = [],
-    timers = new Map();
-  let cursor = 0,
-    dirty = false,
-    pending = [],
-    tree,
-    closed = false;
-  const drafts = { current: { maker: { jobId: initialJob } } };
-  const navigated = [],
-    configured = [];
-  const react = {
-    useLayoutEffect(effect, deps) {
-      react.useEffect(effect, deps);
-    },
-    useState(initial) {
-      const index = cursor++;
-      if (!(index in hooks)) hooks[index] = initial;
-      return [
-        hooks[index],
-        (next) => {
-          if (closed) return;
-          const value = typeof next === "function" ? next(hooks[index]) : next;
-          if (!Object.is(value, hooks[index])) {
-            hooks[index] = value;
-            dirty = true;
-          }
-        },
-      ];
-    },
-    useRef(value) {
-      return (hooks[cursor++] ??= { current: value });
-    },
-    useMemo(factory, deps) {
-      const index = cursor++,
-        old = hooks[index];
-      if (!old || deps.some((v, i) => !Object.is(v, old.deps[i])))
-        hooks[index] = { deps, value: factory() };
-      return hooks[index].value;
-    },
-    useEffect(effect, deps) {
-      const index = cursor++,
-        old = hooks[index];
-      if (!deps || !old || deps.some((v, i) => !Object.is(v, old.deps[i]))) {
-        hooks[index] = { deps };
-        pending.push(() => {
-          old?.cleanup?.();
-          hooks[index].cleanup = effect();
-        });
-      }
-    },
-  };
-  const window = {
-    setInterval(callback) {
-      const id = {};
-      timers.set(id, callback);
-      return id;
-    },
-    clearInterval(id) {
-      timers.delete(id);
-    },
-  };
-  function load(file) {
-    if (modules.has(file)) return modules.get(file).exports;
-    const module = { exports: {} };
-    modules.set(file, module);
-    const code = ts.transpileModule(fs.readFileSync(file, "utf8"), {
-      fileName: file,
-      compilerOptions: {
-        target: ts.ScriptTarget.ES2022,
-        module: ts.ModuleKind.CommonJS,
-        jsx: ts.JsxEmit.ReactJSX,
-      },
-    }).outputText;
-    function localRequire(name) {
-      if (name === "react") return react;
-      if (name === "./CeSelect") return { CeSelect: function CeSelect() {} };
-      if (name === "./instanceOperationUi")
-        return {
-          InstanceOperationDialog: function InstanceOperationDialog() {},
-        };
-      if (name === "./ExperimentalExtensions")
-        return { ExperimentalExtensions: function ExperimentalExtensions() {} };
-      if (name === "./ExperimentalPorterWorkspace")
-        return {
-          ExperimentalPorterWorkspace:
-            function ExperimentalPorterWorkspace() {},
-        };
-      if (name.endsWith(".css")) return {};
-      if (name.startsWith(".")) {
-        const base = path.resolve(path.dirname(file), name);
-        return load(
-          fs.existsSync(base + ".tsx") ? base + ".tsx" : base + ".ts",
-        );
-      }
-      return require(name);
-    }
-    new Function("require", "module", "exports", "window", code)(
-      localRequire,
-      module,
-      module.exports,
-      window,
-    );
-    return module.exports;
-  }
-  const component = load(path.join(source, "ExperimentalTools.tsx"));
-  const i18n = load(path.join(source, "i18n.ts"));
-  function render() {
-    cursor = 0;
-    dirty = false;
-    pending = [];
-    tree = component.ExperimentalTools({
-      api,
-      native: true,
-      page: "maker",
-      drafts,
-      onNavigate: (...args) => navigated.push(args),
-      onConfigureAi: () => configured.push(true),
-    });
-    // The integrated wrapper delegates Maker to this common component while
-    // Porter owns a separate workspace. Exercise the actual Maker handlers.
-    if (tree.type?.name === "ExperimentalCommonTools")
-      tree = tree.type(tree.props);
-    for (const effect of pending) effect();
-  }
-  async function flush() {
-    for (let count = 0; count < 30; count++) {
-      await new Promise((done) => setImmediate(done));
-      if (!dirty || closed) return tree;
-      render();
-    }
-    throw new Error("Maker workflow did not settle");
-  }
-  render();
-  return {
-    flush,
-    i18n,
-    drafts,
-    navigated,
-    configured,
-    get tree() {
-      return tree;
-    },
-    replaceApi(next) {
-      api = next;
-      render();
-    },
-    async poll() {
-      for (const callback of [...timers.values()]) callback();
-      await flush();
-    },
-    close() {
-      closed = true;
-      for (const hook of hooks) hook?.cleanup?.();
-    },
-  };
-}
-function elements(tree, match) {
-  if (!tree || typeof tree !== "object") return [];
-  if (Array.isArray(tree))
-    return tree.flatMap((value) => elements(value, match));
-  return [
-    ...(match(tree) ? [tree] : []),
-    ...elements(tree.props?.children, match),
-  ];
-}
-function content(tree) {
-  if (Array.isArray(tree)) return tree.map(content).join("");
-  if (tree && typeof tree === "object") return content(tree.props?.children);
-  return typeof tree === "string" || typeof tree === "number"
-    ? String(tree)
-    : "";
-}
-function button(ui, key) {
-  const value = elements(
-    ui.tree,
-    (n) => n.type === "button" && n.props.children === ui.i18n.t(key),
-  )[0];
-  assert.ok(value, "Missing button: " + key);
-  return value;
-}
-function field(ui, key) {
-  const label = elements(
-    ui.tree,
-    (n) =>
-      n.type === "label" &&
-      elements(
-        n.props.children,
-        (c) => c.type === "span" && c.props.children === ui.i18n.t(key),
-      ).length,
-  )[0];
-  assert.ok(label, "Missing field: " + key);
-  return elements(
-    label,
-    (n) =>
-      n.type === "input" ||
-      n.type === "textarea" ||
-      n.type?.name === "CeSelect",
-  )[0];
-}
-function editor(ui) {
-  return elements(
-    ui.tree,
-    (n) =>
-      n.type === "textarea" &&
-      n.props["aria-label"] === ui.i18n.t("experimental.sourceEdit"),
-  )[0];
-}
+import {
+  harness,
+  elements,
+  content,
+  button,
+  click,
+  deferred,
+  project,
+  checkpoint,
+} from "./maker-test-harness.mjs";
 function dialog(ui) {
   return elements(
     ui.tree,
-    (n) => n.type?.name === "InstanceOperationDialog",
+    (node) => node.type?.name === "InstanceOperationDialog",
   )[0];
 }
-function select(ui, id) {
-  const value = elements(
-    ui.tree,
-    (n) =>
-      n.type === "button" &&
-      n.props.className?.includes("experimental-job") &&
-      content(n).includes(id),
-  )[0];
-  assert.ok(value, "Missing task: " + id);
-  value.props.onClick();
-}
-async function change(ui, key, value) {
-  field(ui, key).props.onChange({ target: { value } });
-  await ui.flush();
-}
-async function edit(ui, value = "new source") {
-  editor(ui).props.onChange({ target: { value } });
-  await ui.flush();
-}
-async function preview(ui) {
-  assert.equal(button(ui, "experimental.previewEdit").props.disabled, false);
-  button(ui, "experimental.previewEdit").props.onClick();
-  await ui.flush();
-}
-function deferred() {
-  let resolve, reject;
-  const promise = new Promise((a, b) => {
-    resolve = a;
-    reject = b;
-  });
-  return { promise, resolve, reject };
-}
-const fileA = "src/main/java/First.java",
-  fileB = "src/main/java/Second.java";
-function fixture() {
+function reviewFixture() {
   const calls = [],
-    intercept = new Map(),
-    digest = "a".repeat(64);
-  const jobs = Object.fromEntries(
-    ["job-a", "job-b"].map((jobId) => [
-      jobId,
-      {
-        summary: {
-          jobId,
-          revision: 1,
-          workflow: "maker",
-          status: "completed",
-          mode: "template",
-          updatedAt: "2026-01-01T00:00:00Z",
-          artifactState: "generated",
-        },
-        mode: "template",
-        result: null,
-        artifacts: ["base", "source"].map((operationId) => ({
-          operationId,
-          directory: operationId,
-          files: [fileA, fileB],
-        })),
-        reviews: [],
-      },
-    ]),
-  );
-  const reviews = new Map();
-  let sequence = 0,
-    commits = 0;
-  function commit(args) {
-    const review = reviews.get(args.reviewId);
-    assert.equal(review.jobId, args.jobId);
-    assert.equal(review.reviewDigest, args.digest);
-    assert.equal(
-      review.status,
-      "pending",
-      "Fixture rejects replayed host approvals",
-    );
-    review.status = "applied";
-    commits++;
-    jobs[args.jobId].artifacts.push({
-      operationId: `host-${args.reviewId}`,
-      directory: "reviewed",
-      files: [fileA, fileB],
-    });
-    return { reviewId: args.reviewId };
-  }
-  async function api(command, payload) {
-    assert.equal(command, "experimental_call");
-    const { operation, args } = payload;
+    intercept = new Map();
+  let status = "pending";
+  const value = () => ({
+    jobId: "job-1",
+    reviewId: "review-1",
+    reviewDigest: "a".repeat(64),
+    status,
+    kind: "maker",
+    preview: { diffs: [{ path: "src/main/java/A.java", diff: "-old\n+new" }] },
+  });
+  const api = async (_, { operation, args }) => {
     calls.push({ operation, args });
     if (intercept.has(operation)) return intercept.get(operation)(args);
-    if (operation === "status")
-      return {
-        jobs: Object.values(jobs).map((j) => j.summary),
-        versions: {},
-        liveAvailable: true,
-      };
-    if (operation === "catalog") return { targets: [] };
-    if (operation === "job_read") return structuredClone(jobs[args.jobId]);
-    if (operation === "artifact_read")
-      return {
-        path: args.path,
-        sha256: "b".repeat(64),
-        content: `${args.jobId}/${args.operationId}/${args.path}`,
-        binary: false,
-      };
-    if (operation === "job_create") {
-      const jobId = "created-job";
-      jobs[jobId] = {
-        ...structuredClone(jobs["job-a"]),
-        summary: { ...jobs["job-a"].summary, jobId },
-      };
-      return { jobId };
+    if (operation === "review_read") return value();
+    if (operation === "review_apply") {
+      status = "applied";
+      return { reviewId: "review-1" };
     }
-    if (operation === "maker_review") {
-      const reviewId = "review-" + ++sequence;
-      reviews.set(reviewId, {
-        jobId: args.jobId,
-        reviewId,
-        reviewDigest: digest,
-        status: "pending",
-        kind: "maker_source_edit",
-        preview: { diffs: [{ path: args.path, diff: "+new source" }] },
-      });
-      jobs[args.jobId].reviews.push(reviewId);
-      return { reviewId, reviewDigest: digest };
-    }
-    if (operation === "review_read")
-      return structuredClone(reviews.get(args.reviewId));
-    if (operation === "review_apply") return commit(args);
-    if (operation === "review_cancel") {
-      reviews.get(args.reviewId).status = "revoked";
-      return {};
-    }
-    throw new Error("Unexpected operation: " + operation);
-  }
+    if (operation === "review_cancel")
+      return { reviewId: "review-1", status: "cancelled" };
+    throw new Error(operation);
+  };
   return {
     api,
     calls,
     intercept,
-    jobs,
-    reviews,
-    commit,
-    get commits() {
-      return commits;
+    value,
+    status(next) {
+      status = next;
     },
   };
 }
-async function ready(f = fixture()) {
-  const ui = harness(f.api);
+async function review(f = reviewFixture(), extra = {}) {
+  const applied = [];
+  const ui = harness("MakerReviewDialog", {
+    api: f.api,
+    native: true,
+    jobId: "job-1",
+    reviewId: "review-1",
+    onClose() {},
+    onApplied: async (id) => {
+      applied.push(id);
+    },
+    ...extra,
+  });
   await ui.flush();
-  assert.ok(editor(ui));
-  return { ui, f };
+  return { ui, f, applied };
 }
-async function reopen(ui) {
-  const value = elements(
-    ui.tree,
-    (n) =>
-      n.type === "button" &&
-      content(n).startsWith(ui.i18n.t("experimental.review") + " ·"),
-  )[0];
-  assert.ok(value);
-  value.props.onClick();
-  await ui.flush();
-}
-test("retired render and unmounted Maker events cannot submit or change source selections", async () => {
-  const { ui, f } = await ready();
-  await edit(ui);
-  const generate = button(ui, "experimental.generate").props.onClick;
-  const previewEdit = button(ui, "experimental.previewEdit").props.onClick;
-  const oldFile = field(ui, "experimental.file").props.onChange;
-  const oldSpec = elements(
-    ui.tree,
-    (n) => n.type?.name === "ExperimentalMaker",
-  )[0].props.onChange;
-  await change(ui, "experimental.file", fileB);
-  const before = f.calls.length;
-  generate();
-  previewEdit();
-  oldFile({ target: { value: fileA } });
-  oldSpec({ mod_id: "obsolete" });
-  await ui.flush();
-  assert.equal(f.calls.length, before);
-  assert.equal(field(ui, "experimental.file").props.value, fileB);
-  await edit(ui);
-  await preview(ui);
-  const confirm = dialog(ui).props.onConfirm,
-    close = dialog(ui).props.onClose;
-  const unmountedGenerate = button(ui, "experimental.generate").props.onClick;
-  const unmountedPreview = button(ui, "experimental.previewEdit").props.onClick;
-  const configure = button(ui, "experimental.ai").props.onClick;
-  const count = f.calls.length;
-  ui.close();
-  confirm();
-  close();
-  unmountedGenerate();
-  unmountedPreview();
-  configure();
-  await ui.flush();
-  assert.equal(f.calls.length, count);
-  assert.equal(ui.configured.length, 0);
-});
-test("admitted generation survives a queued selection but its delayed result cannot select its job", async () => {
-  const { ui, f } = await ready(),
-    delayed = deferred();
-  f.intercept.set("job_create", async () => {
-    await delayed.promise;
-    f.jobs["created-job"] = structuredClone(f.jobs["job-a"]);
-    return { jobId: "created-job" };
-  });
-  button(ui, "experimental.generate").props.onClick();
-  select(ui, "job-b");
-  await ui.flush();
-  delayed.resolve();
-  await ui.flush();
-  assert.ok(f.jobs["created-job"]);
-  assert.equal(ui.drafts.current.maker.jobId, "job-b");
-  assert.equal(f.calls.filter((v) => v.operation === "job_create").length, 1);
-  ui.close();
-});
-test("delayed preview and review reads cannot open a review after source or draft changes", async () => {
-  const { ui, f } = await ready(),
-    delayed = deferred();
-  await edit(ui);
-  f.intercept.set("maker_review", () => delayed.promise);
-  button(ui, "experimental.previewEdit").props.onClick();
-  field(ui, "experimental.file").props.onChange({ target: { value: fileB } });
-  await ui.flush();
-  delayed.resolve({ reviewId: "obsolete-review" });
-  await ui.flush();
-  assert.equal(f.calls.filter((v) => v.operation === "review_read").length, 0);
-  assert.equal(dialog(ui), undefined);
-  f.intercept.delete("maker_review");
-  await edit(ui);
-  const read = deferred();
-  f.intercept.set("review_read", () => read.promise);
-  button(ui, "experimental.previewEdit").props.onClick();
-  await ui.flush();
-  editor(ui).props.onChange({ target: { value: "newer draft" } });
-  await ui.flush();
-  read.resolve(structuredClone(f.reviews.get("review-1")));
-  await ui.flush();
-  assert.equal(dialog(ui), undefined);
-  assert.equal(editor(ui).props.value, "newer draft");
-  ui.close();
-});
-test("delayed source reads and poll errors do not overwrite the next file or its edits", async () => {
-  const { ui, f } = await ready(),
-    delayed = deferred();
-  f.intercept.set("artifact_read", (args) =>
-    args.path === fileB
-      ? delayed.promise
-      : {
-          path: args.path,
-          sha256: "c",
-          content: "current source",
-          binary: false,
-        },
-  );
-  await change(ui, "experimental.file", fileB);
-  await change(ui, "experimental.file", fileA);
-  await edit(ui, "local current draft");
-  delayed.resolve({
-    path: fileB,
-    sha256: "d",
-    content: "obsolete source",
-    binary: false,
-  });
-  await ui.flush();
-  assert.equal(editor(ui).props.value, "local current draft");
-  const poll = deferred();
-  f.intercept.set("job_read", () => poll.promise);
-  await ui.poll();
-  await edit(ui, "newer poll draft");
-  poll.reject(new Error("obsolete poll failure"));
-  await ui.flush();
-  assert.equal(content(ui.tree).includes("obsolete poll failure"), false);
-  ui.close();
-});
-test("review response identity is checked before exposing confirmation", async () => {
-  const { ui, f } = await ready();
-  await edit(ui);
-  f.intercept.set("review_read", () => ({
-    ...f.reviews.get("review-1"),
-    jobId: "job-b",
-  }));
-  await preview(ui);
-  assert.equal(dialog(ui), undefined);
-  assert.match(content(ui.tree), /Review response identity/);
-  ui.close();
-});
-test("duplicate confirmation is admitted once and selects only the owning committed copy", async () => {
-  const { ui, f } = await ready();
-  await edit(ui);
-  await preview(ui);
-  const confirm = dialog(ui).props.onConfirm;
-  confirm();
-  confirm();
-  await ui.flush();
-  assert.equal(f.commits, 1);
-  assert.equal(f.calls.filter((v) => v.operation === "review_apply").length, 1);
-  assert.equal(dialog(ui), undefined);
-  assert.equal(field(ui, "experimental.artifact").props.value, "host-review-1");
-  ui.close();
-});
-test("a confirmed host copy remains committed when its following job refresh fails", async () => {
-  const { ui, f } = await ready();
-  await edit(ui);
-  await preview(ui);
-  f.intercept.set("job_read", () => {
-    throw new Error("post-commit refresh failed");
-  });
-  const confirm = dialog(ui).props.onConfirm;
-  confirm();
-  await ui.flush();
-  confirm();
-  await ui.flush();
-  assert.equal(f.commits, 1);
-  assert.equal(dialog(ui), undefined);
-  assert.match(content(ui.tree), /post-commit refresh failed/);
-  assert.ok(
-    f.jobs["job-a"].artifacts.some((v) => v.operationId === "host-review-1"),
-  );
-  ui.close();
-});
-test("uncertain acknowledgements require an authoritative pending review before retry", async () => {
-  for (const committed of [false, true]) {
-    const { ui, f } = await ready();
-    await edit(ui);
-    await preview(ui);
-    f.intercept.set("review_apply", (args) => {
-      if (committed) f.commit(args);
-      throw new Error("acknowledgement unavailable");
-    });
-    dialog(ui).props.onConfirm();
-    await ui.flush();
+test("review binds job, identity and digest before confirmation", async () => {
+  for (const wrong of [
+    { jobId: "other" },
+    { reviewId: "other" },
+    { reviewDigest: "b".repeat(64) },
+  ]) {
+    const f = reviewFixture();
+    f.intercept.set("review_read", () => ({ ...f.value(), ...wrong }));
+    const { ui } = await review(f, { digest: "a".repeat(64) });
     assert.equal(dialog(ui).props.confirmDisabled, true);
-    dialog(ui).props.onConfirm();
-    await ui.flush();
-    assert.equal(
-      f.calls.filter((v) => v.operation === "review_apply").length,
-      1,
-    );
-    f.intercept.delete("review_apply");
-    await ui.poll();
-    await reopen(ui);
-    assert.equal(dialog(ui).props.confirmDisabled, committed);
-    dialog(ui).props.onConfirm();
-    await ui.flush();
-    assert.equal(f.commits, 1);
-    assert.equal(
-      f.calls.filter((v) => v.operation === "review_apply").length,
-      committed ? 1 : 2,
-    );
-    ui.close();
+    assert.match(content(ui.tree), /返回结果/);
   }
 });
-test("a delayed old-API approval is retained in the host without touching the replacement page", async () => {
-  const { ui, f } = await ready(),
-    delayed = deferred();
-  await edit(ui);
-  await preview(ui);
-  f.intercept.set("review_apply", async (args) => {
-    const result = f.commit(args);
-    await delayed.promise;
-    return result;
-  });
-  dialog(ui).props.onConfirm();
-  await ui.flush();
-  const replacement = fixture();
-  ui.replaceApi(replacement.api);
-  await ui.flush();
-  await edit(ui, "replacement source");
-  delayed.resolve();
-  await ui.flush();
-  assert.equal(f.commits, 1);
-  assert.equal(replacement.commits, 0);
-  assert.equal(editor(ui).props.value, "replacement source");
-  assert.equal(dialog(ui), undefined);
-  assert.equal(field(ui, "experimental.artifact").props.value, "source");
-  assert.equal(ui.navigated.length, 0);
-  ui.close();
-});
-
-test("a dialog retired by source selection cannot confirm or cancel its old review", async () => {
-  const { ui, f } = await ready();
-  await edit(ui);
-  await preview(ui);
-  const confirm = dialog(ui).props.onConfirm,
-    close = dialog(ui).props.onClose;
-  await change(ui, "experimental.artifact", "base");
-  const before = f.calls.length;
+test("duplicate queued approval is admitted once and calls the owning continuation", async () => {
+  const f = reviewFixture(),
+    pending = deferred();
+  f.intercept.set("review_apply", () => pending.promise);
+  const { ui, applied } = await review(f);
+  const confirm = dialog(ui).props.onConfirm;
   confirm();
-  close();
+  confirm();
   await ui.flush();
-  assert.equal(f.calls.length, before);
-  assert.equal(f.reviews.get("review-1").status, "pending");
-  assert.equal(dialog(ui), undefined);
-  assert.equal(field(ui, "experimental.artifact").props.value, "base");
+  assert.equal(
+    f.calls.filter((value) => value.operation === "review_apply").length,
+    1,
+  );
+  pending.resolve({ reviewId: "review-1" });
+  await ui.flush();
+  assert.deepEqual(applied, ["host-review-1"]);
+  assert.equal(dialog(ui).props.confirmDisabled, true);
+});
+test("uncertain apply acknowledgement remains blocked until authoritative pending status", async () => {
+  const f = reviewFixture();
+  f.intercept.set("review_apply", () => {
+    throw new Error("acknowledgement uncertain");
+  });
+  const { ui } = await review(f);
+  dialog(ui).props.onConfirm();
+  await ui.flush();
+  assert.equal(dialog(ui).props.confirmDisabled, true);
+  dialog(ui).props.onConfirm();
+  await ui.flush();
+  assert.equal(
+    f.calls.filter((value) => value.operation === "review_apply").length,
+    1,
+  );
+  f.status("applied");
+  await click(ui, "maker.refreshReview");
+  assert.equal(dialog(ui).props.confirmDisabled, true);
+  f.status("pending");
+  await click(ui, "maker.refreshReview");
+  assert.equal(dialog(ui).props.confirmDisabled, false);
+});
+test("an acknowledged copy is never replayed after its display callback fails", async () => {
+  const { ui, f } = await review(undefined, {
+    onApplied: async () => {
+      throw new Error("refresh failed");
+    },
+  });
+  dialog(ui).props.onConfirm();
+  await ui.flush();
+  assert.match(content(ui.tree), /refresh failed/);
+  dialog(ui).props.onConfirm();
+  await ui.flush();
+  assert.equal(
+    f.calls.filter((value) => value.operation === "review_apply").length,
+    1,
+  );
+});
+test("admitted old-API apply may finish in host but cannot update a replacement dialog", async () => {
+  const f = reviewFixture(),
+    pending = deferred();
+  f.intercept.set("review_apply", () => pending.promise);
+  const { ui, applied } = await review(f);
+  dialog(ui).props.onConfirm();
+  const replacement = reviewFixture();
+  ui.replace({ api: replacement.api });
+  await ui.flush();
+  pending.resolve({ reviewId: "review-1" });
+  await ui.flush();
+  assert.deepEqual(applied, []);
+  assert.equal(dialog(ui).props.confirmDisabled, false);
+});
+test("unmounted review events cannot confirm or cancel; delayed read never opens old content", async () => {
+  const { ui, f } = await review();
+  const events = dialog(ui).props;
+  ui.close();
+  events.onConfirm();
+  events.onClose();
+  await ui.flush();
+  assert.equal(
+    f.calls.filter((value) => value.operation !== "review_read").length,
+    0,
+  );
+  const old = reviewFixture(),
+    pending = deferred();
+  old.intercept.set("review_read", () => pending.promise);
+  const next = harness("MakerReviewDialog", {
+    api: old.api,
+    native: true,
+    jobId: "job-1",
+    reviewId: "review-1",
+    onClose() {},
+    onApplied: async () => {},
+  });
+  const replacement = reviewFixture();
+  next.replace({ api: replacement.api });
+  await next.flush();
+  pending.resolve({
+    ...old.value(),
+    preview: { diffs: [{ path: "retired.java", diff: "retired" }] },
+  });
+  await next.flush();
+  assert.ok(!content(next.tree).includes("retired.java"));
+});
+function sourceFixture() {
+  const calls = [],
+    intercept = new Map(),
+    paths = ["src/main/java/A.java", "src/main/java/B.java"];
+  const api = async (_, { operation, args }) => {
+    calls.push({ operation, args });
+    if (intercept.has(operation)) return intercept.get(operation)(args);
+    if (operation === "project_files")
+      return {
+        fingerprint: checkpoint.fingerprint,
+        fileCount: 2,
+        editableSnapshot: true,
+        files: paths.map((path) => ({ path, sha256: path, text: true })),
+        nextOffset: null,
+      };
+    if (operation === "project_file_read")
+      return {
+        path: args.path,
+        sha256: args.path,
+        offset: 0,
+        content: `class ${args.path.includes("A.java") ? "A" : "B"} {}`,
+        nextOffset: null,
+      };
+    if (operation === "artifact_read")
+      return {
+        path: args.path,
+        sha256: args.path,
+        content: "class A {}",
+        binary: false,
+      };
+    if (operation === "maker_review")
+      return { reviewId: "review-1", reviewDigest: "a".repeat(64) };
+    throw new Error(operation);
+  };
+  return { api, calls, intercept, paths };
+}
+async function source(f = sourceFixture()) {
+  const seed = harness("ExperimentalProjects", {
+    api: async () => {},
+    native: false,
+  }).state.createProjectManagerDraft();
+  const ui = harness("MakerSource", {
+    api: f.api,
+    native: true,
+    project: project(),
+    point: checkpoint,
+    source: checkpoint,
+    draft: seed,
+  });
+  await ui.flush();
+  return { ui, f, seed };
+}
+async function choose(ui, file) {
+  const tree = elements(
+    ui.tree,
+    (node) => node.type?.name === "MakerFileTree",
+  )[0];
+  assert.ok(tree);
+  const path = tree.props.names.find((name) => name.endsWith(file));
+  assert.ok(path);
+  tree.props.onChoose(path);
+  await ui.flush();
+}
+
+test("explorer opens receipt-bound readonly chunks; editing explicitly loads the bounded snapshot", async () => {
+  const { ui, f, seed } = await source();
+  await choose(ui, "A.java");
+  assert.equal(
+    elements(ui.tree, (node) => node.type === "textarea")[0].props.readOnly,
+    true,
+  );
+  assert.equal(
+    f.calls.filter((value) => value.operation === "artifact_read").length,
+    0,
+  );
+  await click(ui, "maker.editFile");
+  let editor = elements(ui.tree, (node) => node.type === "textarea")[0];
+  assert.equal(editor.props.readOnly, false);
+  editor.props.onChange({ target: { value: "class A { /* handwritten */ }" } });
+  await ui.flush();
+  assert.equal(seed.buffers.size, 1);
+  await click(ui, "maker.previewFileChanges");
+  assert.equal(
+    f.calls.find((value) => value.operation === "maker_review").args.sha256,
+    "src/main/java/A.java",
+  );
+  assert.equal(
+    elements(ui.tree, (node) => node.type?.name === "MakerReviewDialog").length,
+    1,
+  );
+});
+test("delayed source reads and previews cannot overwrite a newer selected file", async () => {
+  const f = sourceFixture(),
+    pending = deferred();
+  f.intercept.set("project_file_read", (args) =>
+    args.path.includes("A.java")
+      ? pending.promise
+      : {
+          path: args.path,
+          sha256: args.path,
+          offset: 0,
+          content: "class B {}",
+          nextOffset: null,
+        },
+  );
+  const { ui } = await source(f);
+  await choose(ui, "A.java");
+  await choose(ui, "B.java");
+  pending.resolve({
+    path: f.paths[0],
+    sha256: f.paths[0],
+    content: "RETIRE",
+    offset: 0,
+    nextOffset: null,
+  });
+  await ui.flush();
+  assert.equal(
+    elements(ui.tree, (node) => node.type === "textarea")[0].props.value,
+    "class B {}",
+  );
+});
+test("new file selection retires an admitted preview and retains handwritten buffers", async () => {
+  const { ui, f, seed } = await source();
+  await choose(ui, "A.java");
+  await click(ui, "maker.editFile");
+  elements(ui.tree, (node) => node.type === "textarea")[0].props.onChange({
+    target: { value: "local handwritten" },
+  });
+  await ui.flush();
+  const pending = deferred();
+  f.intercept.set("maker_review", () => pending.promise);
+  button(ui, "maker.previewFileChanges").props.onClick();
+  await choose(ui, "B.java");
+  pending.resolve({ reviewId: "old-review" });
+  await ui.flush();
+  assert.equal(
+    elements(ui.tree, (node) => node.type?.name === "MakerReviewDialog").length,
+    0,
+  );
+  assert.equal([...seed.buffers.values()][0].text, "local handwritten");
+});
+test("Porter source and large registered snapshots stay readonly", async () => {
+  const f = sourceFixture();
+  f.intercept.set("project_files", () => ({
+    fingerprint: checkpoint.fingerprint,
+    fileCount: 400,
+    editableSnapshot: false,
+    files: [{ path: f.paths[0], sha256: f.paths[0], text: true }],
+    nextOffset: 50,
+  }));
+  const { ui } = await source(f);
+  await choose(ui, "A.java");
+  assert.equal(
+    elements(
+      ui.tree,
+      (node) =>
+        node.type === "button" && content(node) === ui.i18n.t("maker.editFile"),
+    ).length,
+    0,
+  );
+  ui.replace({ readOnly: true });
+  await ui.flush();
+  assert.equal(
+    elements(ui.tree, (node) => node.type === "textarea")[0].props.readOnly,
+    true,
+  );
+});
+test("reopening an edited file retains its buffered draft and validates its source hash", async () => {
+  const { ui, f, seed } = await source();
+  await choose(ui, "A.java");
+  await click(ui, "maker.editFile");
+  elements(ui.tree, (node) => node.type === "textarea")[0].props.onChange({
+    target: { value: "local draft" },
+  });
+  await ui.flush();
+  await choose(ui, "B.java");
+  await choose(ui, "A.java");
+  await click(ui, "maker.editFile");
+  assert.equal(
+    elements(ui.tree, (node) => node.type === "textarea")[0].props.value,
+    "local draft",
+  );
+  await choose(ui, "B.java");
+  await choose(ui, "A.java");
+  f.intercept.set("artifact_read", (args) => ({
+    path: args.path,
+    sha256: "changed",
+    content: "different",
+    binary: false,
+  }));
+  await click(ui, "maker.editFile");
+  assert.ok(content(ui.tree).includes(ui.i18n.t("maker.responseMismatch")));
+  assert.equal([...seed.buffers.values()][0].text, "local draft");
+});
+test("task view distinguishes source, compile and game states without executing builds", async () => {
+  const calls = [];
+  const api = async (_, { operation }) => {
+    calls.push(operation);
+    return {
+      summary: {
+        jobId: "job-1",
+        workflow: "maker",
+        status: "completed",
+        updatedAt: checkpoint.createdAt,
+      },
+      result: { text: "Complex implementation proposal" },
+      reviews: [],
+      artifacts: [{ operationId: "generate-1", files: ["A.java"] }],
+    };
+  };
+  const ui = harness("MakerJob", {
+    api,
+    native: true,
+    jobId: "job-1",
+    onSource() {},
+  });
+  await ui.flush();
+  assert.ok(content(ui.tree).includes(ui.i18n.t("maker.sourceAvailable")));
+  assert.ok(content(ui.tree).includes(ui.i18n.t("maker.buildNotRun")));
+  assert.ok(content(ui.tree).includes(ui.i18n.t("maker.gameNotRun")));
+  assert.deepEqual(calls, ["job_read"]);
   ui.close();
 });
 
-test("a host apply admitted before a queued task selection cannot select its committed copy", async () => {
-  const { ui, f } = await ready(),
-    delayed = deferred();
-  await edit(ui);
-  await preview(ui);
-  f.intercept.set("review_apply", async (args) => {
-    const result = f.commit(args);
-    await delayed.promise;
-    return result;
-  });
-  dialog(ui).props.onConfirm();
-  select(ui, "job-b");
-  await ui.flush();
-  delayed.resolve();
-  await ui.flush();
-  assert.equal(f.commits, 1);
-  assert.equal(ui.drafts.current.maker.jobId, "job-b");
-  assert.equal(field(ui, "experimental.artifact").props.value, "source");
-  assert.equal(dialog(ui), undefined);
-  ui.close();
-});
-
-test("post-apply job reads cannot replace the source selected while that read was pending", async () => {
-  const { ui, f } = await ready(),
-    delayed = deferred();
-  await edit(ui);
-  await preview(ui);
-  f.intercept.set("job_read", () => delayed.promise);
-  dialog(ui).props.onConfirm();
-  await ui.flush();
-  assert.equal(dialog(ui), undefined);
-  field(ui, "experimental.artifact").props.onChange({
-    target: { value: "base" },
-  });
-  await ui.flush();
-  delayed.resolve(structuredClone(f.jobs["job-a"]));
-  await ui.flush();
-  assert.equal(f.commits, 1);
-  assert.equal(field(ui, "experimental.artifact").props.value, "base");
-  assert.match(editor(ui).props.value, /job-a\/base\//);
-  ui.close();
+test("source tree groups compact directories and reads only a selected listed path", async () => {
+  const selected = [],
+    ui = harness("MakerFileTree", {
+      names: [
+        "src/main/java/A.java",
+        "src/main/java/rules/B.java",
+        "build.gradle",
+      ],
+      selected: "",
+      disabled: false,
+      onChoose: (path) => selected.push(path),
+    });
+  assert.ok(elements(ui.tree, (node) => node.type === "details").length >= 2);
+  assert.ok(content(ui.tree).includes("src/main/java"));
+  elements(
+    ui.tree,
+    (node) => node.type === "button" && content(node) === "B.java",
+  )[0].props.onClick();
+  assert.deepEqual(selected, ["src/main/java/rules/B.java"]);
 });

@@ -287,6 +287,35 @@ test(
       operationId,
       label: "Initial source",
     });
+    const unitRef = { id: project.id, expectedRevision: project.revision };
+    const workspace = await rpc("project_units", unitRef);
+    const feature = await rpc("project_unit_save", {
+      ...unitRef,
+      expectedWorkspaceRevision: workspace.workspaceRevision,
+      unit: {
+        id: "",
+        name: "Capacity system",
+        kind: "systems",
+        state: "planned",
+        notes: "Persistent complex behavior",
+        files: [javaPath],
+      },
+    });
+    assert.equal(
+      (await rpc("project_unit_read", { ...unitRef, unitId: feature.unit.id }))
+        .unit.notes,
+      "Persistent complex behavior",
+    );
+    assert.equal(
+      (
+        await envelope("project_unit_save", {
+          ...unitRef,
+          expectedWorkspaceRevision: workspace.workspaceRevision,
+          unit: { ...feature.unit, updatedAt: undefined },
+        })
+      ).ok,
+      false,
+    );
     const sourceArgs = () => ({
       id: project.id,
       expectedRevision: project.revision,
@@ -309,6 +338,10 @@ test(
       await new Promise((resolve) => child.once("exit", resolve));
     launch();
     assert.deepEqual((await rpc("projects_list")).projects, [project]);
+    assert.equal(
+      (await rpc("project_units", unitRef)).units[0].id,
+      feature.unit.id,
+    );
     const opened = await rpc("project_open", sourceArgs());
     assert.deepEqual(opened.spec, spec);
     assert.equal(opened.operationId, operationId);
@@ -423,6 +456,19 @@ test(
       });
       assert.equal(original.sha256, copied.sha256);
     }
+    const natural = await rpc("job_create", {
+      mode: "live",
+      profile: "maker",
+      prompt: "Initialize a Fabric mod from natural-language requirements",
+    });
+    await until(async () => {
+      const value = await rpc("job_read", natural);
+      assert.notEqual(value.summary.status, "failed", JSON.stringify(value));
+      return value.summary.status === "completed";
+    });
+    const nlInput = userInput(requests.at(-1));
+    assert.equal("spec" in nlInput, false);
+    assert.match(nlInput.prompt, /natural-language/);
     const revision = await rpc("maker_review", {
       kind: "revision",
       jobId: continuation.jobId,
@@ -503,7 +549,7 @@ test(
       ).ok,
       false,
     );
-    assert.equal(requests.length, 2);
+    assert.equal(requests.length, 3); // continuation turns plus NL-only initialization
     const file = path.join(
       root,
       "jobs",
@@ -519,7 +565,7 @@ test(
     });
     assert.equal(rejected.ok, false);
     assert.match(rejected.error, /Source bytes differ/);
-    assert.equal(requests.length, 2); // tampering cannot start another model request
+    assert.equal(requests.length, 3); // continuation turns plus NL-only initialization // tampering cannot start another model request
     await rpc("shutdown");
   },
 );

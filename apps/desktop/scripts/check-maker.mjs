@@ -1,215 +1,317 @@
-/** Isolated component-event checks using real TS/JSX and message catalogs.
- * Only useRef is supplied by this harness; no desktop app or browser is opened.
- * Run with: node apps/desktop/scripts/check-maker.mjs
- */
 import assert from "node:assert/strict";
 import test from "node:test";
-import fs from "node:fs";
-import path from "node:path";
-import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
-const require = createRequire(import.meta.url);
-const ts = require("typescript");
-const source = fileURLToPath(new URL("../src/", import.meta.url));
-
-function panel() {
-  const modules = new Map(),
-    refs = [];
-  let cursor = 0;
-  function load(file) {
-    if (modules.has(file)) return modules.get(file).exports;
-    const module = { exports: {} };
-    modules.set(file, module);
-    const code = ts.transpileModule(fs.readFileSync(file, "utf8"), {
-      compilerOptions: {
-        target: ts.ScriptTarget.ES2022,
-        module: ts.ModuleKind.CommonJS,
-        jsx: ts.JsxEmit.ReactJSX,
-      },
-    }).outputText;
-    function localRequire(name) {
-      if (name === "react")
-        return {
-          useRef(value) {
-            const index = cursor++;
-            return (refs[index] ??= { current: value });
-          },
-        };
-      if (name.startsWith(".")) {
-        const base = path.resolve(path.dirname(file), name);
-        return load(
-          fs.existsSync(base + ".tsx") ? base + ".tsx" : base + ".ts",
-        );
-      }
-      return require(name);
+import {
+  harness,
+  elements,
+  content,
+  button,
+  field,
+  click,
+  change,
+  deferred,
+  project,
+  engine,
+} from "./maker-test-harness.mjs";
+function fixture(records = [project()]) {
+  const calls = [],
+    intercept = new Map();
+  const api = async (_, { operation, args }) => {
+    calls.push({ operation, args });
+    if (intercept.has(operation)) return intercept.get(operation)(args);
+    if (operation === "projects_list") return { projects: records };
+    if (operation === "status") return engine;
+    if (operation === "job_create" || operation === "project_continue")
+      return { jobId: "new-job" };
+    if (operation === "project_update") {
+      const value = {
+        ...records.find((value) => value.id === args.id),
+        ...args,
+        revision: "revision-2",
+      };
+      records = records.map((old) => (old.id === value.id ? value : old));
+      return value;
     }
-    new Function("require", "module", "exports", code)(
-      localRequire,
-      module,
-      module.exports,
-    );
-    return module.exports;
-  }
-  const maker = load(path.join(source, "ExperimentalMaker.tsx"));
-  const i18n = load(path.join(source, "i18n.ts"));
-  let spec = structuredClone(maker.initialMakerSpec);
-  function render(disabled = false) {
-    cursor = 0;
-    return maker.ExperimentalMaker({
-      spec,
-      disabled,
-      onChange(next) {
-        spec = next;
-      },
-    });
-  }
-  return {
-    maker,
-    i18n,
-    render,
-    get spec() {
-      return spec;
-    },
-    set spec(next) {
-      spec = next;
-    },
+    throw new Error(operation);
   };
+  return { api, calls, intercept };
 }
-
-function elements(tree, predicate) {
-  if (!tree || typeof tree !== "object") return [];
-  if (Array.isArray(tree))
-    return tree.flatMap((node) => elements(node, predicate));
-  return [
-    ...(predicate(tree) ? [tree] : []),
-    ...elements(tree.props?.children, predicate),
-  ];
-}
-function field(tree, text) {
-  const label = elements(
-    tree,
+function openProject(ui, id = "project-1") {
+  const tile = elements(
+    ui.tree,
     (node) =>
-      node.type === "label" && node.props.children[0].props.children === text,
+      node.type === "button" &&
+      node.props.className === "maker-project-tile ce-card" &&
+      content(node).includes(id),
   )[0];
-  assert.ok(label, `Field missing: ${text}`);
-  return label.props.children[1];
+  assert.ok(tile);
+  tile.props.onClick();
 }
-function button(tree, text) {
-  const found = elements(
-    tree,
-    (node) => node.type === "button" && node.props.children === text,
-  );
-  assert.ok(found.length, `Button missing: ${text}`);
-  return found;
-}
-
-test("adding after removal or manual rename keeps item IDs unique and defaults private", () => {
-  const p = panel();
-  const t = p.i18n.t;
-  button(p.render(), t("experimental.addItem"))[0].props.onClick();
-  button(p.render(), t("experimental.addItem"))[0].props.onClick();
-  button(p.render(), t("experimental.removeItem"))[1].props.onClick();
-  button(p.render(), t("experimental.addItem"))[0].props.onClick();
-  assert.equal(
-    new Set(p.spec.items.map((item) => item.id)).size,
-    p.spec.items.length,
-  );
-  const item = p.maker.createMakerItem([
-    { id: "item_1" },
-    { id: "item_2" },
-    { id: "item_4" },
-  ]);
-  assert.equal(item.id, "item_3");
-  item.names.en_us = "Edited";
-  item.recipe.ingredients.push("minecraft:diamond");
-  assert.equal(p.maker.initialMakerSpec.items[0].names.en_us, "Crystal");
-  assert.deepEqual(p.maker.initialMakerSpec.items[0].recipe.ingredients, [
-    "minecraft:amethyst_shard",
-  ]);
-});
-
-test("recipe draft follows retained items while replacement specs use their own ingredients", () => {
-  const p = panel();
-  const t = p.i18n.t;
-  const ingredients = t("experimental.ingredients");
-  field(p.render(), ingredients).props.onChange({
-    target: { value: "minecraft:diamond, " },
-  });
-  assert.equal(
-    field(p.render(), ingredients).props.value,
-    "minecraft:diamond, ",
-  );
-  assert.deepEqual(p.spec.items[0].recipe.ingredients, ["minecraft:diamond"]);
-  field(p.render(), t("experimental.recipeCount")).props.onChange({
-    target: { value: "2" },
-  });
-  assert.equal(
-    field(p.render(), ingredients).props.value,
-    "minecraft:diamond, ",
-  );
-  button(p.render(), t("experimental.addItem"))[0].props.onClick();
-  p.spec = { ...p.spec, items: [...p.spec.items].reverse() };
-  const labels = elements(
-    p.render(),
-    (node) =>
-      node.type === "label" &&
-      node.props.children[0].props.children === ingredients,
-  );
-  assert.equal(labels[1].props.children[1].props.value, "minecraft:diamond, ");
-  p.spec = structuredClone(p.maker.initialMakerSpec);
-  p.spec.items[0].recipe.ingredients = ["minecraft:emerald"];
-  assert.equal(field(p.render(), ingredients).props.value, "minecraft:emerald");
-});
-
-test("null recipe remains editable; bilingual fields and component footer stay in place", () => {
-  const p = panel();
-  p.spec.items[0].recipe = null;
-  for (const language of ["zh-CN", "en-US"]) {
-    p.i18n.configureLocale({ language, region: language });
-    const tree = p.render();
-    assert.equal(tree.props.className, "ce-card experimental-form");
-    assert.equal(
-      field(tree, p.i18n.t("experimental.ingredients")).props.value,
-      "",
-    );
-    assert.equal(
-      field(tree, p.i18n.t("experimental.itemId")).props.maxLength,
-      48,
-    );
-    const footer = elements(
-      tree,
-      (node) => typeof node.type === "function" && node.props.version,
-    )[0];
-    assert.equal(footer.props.version, "0.7");
-  }
-  field(p.render(), p.i18n.t("experimental.ingredients")).props.onChange({
-    target: { value: "minecraft:paper" },
-  });
-  assert.deepEqual(p.spec.items[0].recipe, {
-    ingredients: ["minecraft:paper"],
-    count: 1,
-  });
-});
-
-test("disabled and maximum item count retain existing control limits", () => {
-  const p = panel();
-  assert.ok(
-    elements(
-      p.render(true),
-      (node) => node.type === "input" && !node.props.readOnly,
-    ).every((node) => node.props.disabled),
-  );
-  assert.ok(
-    elements(p.render(true), (node) => node.type === "button").every(
-      (node) => node.props.disabled,
+test("library contains summaries only; opening a project exposes separate IDE documents", async () => {
+  const f = fixture(
+      Array.from({ length: 30 }, (_, i) => project(`project-${i + 1}`)),
     ),
-  );
-  p.spec.items = Array.from({ length: 16 }, (_, index) => ({
-    ...structuredClone(p.maker.initialMakerSpec.items[0]),
-    id: `item_${index}`,
-  }));
+    ui = harness("ExperimentalProjects", { api: f.api, native: true });
+  await ui.flush();
   assert.equal(
-    button(p.render(), p.i18n.t("experimental.addItem"))[0].props.disabled,
-    true,
+    elements(
+      ui.tree,
+      (node) => node.props.className === "maker-project-tile ce-card",
+    ).length,
+    24,
   );
+  assert.equal(elements(ui.tree, (node) => node.type === "textarea").length, 0);
+  assert.ok(!content(ui.tree).includes("Saved requirements"));
+  openProject(ui);
+  await ui.flush();
+  assert.equal(ui.props.draft.current.screen, "workspace");
+  assert.equal(
+    elements(ui.tree, (node) => node.props.className === "maker-project-tree")
+      .length,
+    1,
+  );
+  await click(ui, "maker.kind.rules");
+  const featurePanel = elements(
+    ui.tree,
+    (node) => node.type?.name === "MakerFeatures",
+  )[0];
+  assert.equal(featurePanel.props.route.section, "units");
+  assert.equal(featurePanel.props.route.kind, "rules");
+  featurePanel.props.onRoute({
+    projectId: "project-1",
+    section: "unit",
+    kind: "rules",
+    unitId: "rule-1",
+  });
+  await ui.flush();
+  assert.equal(
+    elements(ui.tree, (node) => node.type?.name === "MakerFeatures")[0].props
+      .route.unitId,
+    "rule-1",
+  );
+  assert.ok(elements(ui.tree, (node) => node.props.role === "tab").length >= 3);
+});
+test("creation submits natural language via saved shared AI; there is no template spec or implicit job", async () => {
+  const f = fixture([]),
+    ui = harness("ExperimentalProjects", { api: f.api, native: true });
+  await ui.flush();
+  assert.equal(
+    f.calls.filter((value) => value.operation === "job_create").length,
+    0,
+  );
+  await click(ui, "maker.newProject");
+  await change(ui, "experimental.projectName", "Large mod");
+  await change(
+    ui,
+    "maker.projectGoal",
+    "A multi-stage economy with rules and events",
+  );
+  await click(ui, "maker.createWithAi");
+  const request = f.calls.find(
+    (value) => value.operation === "job_create",
+  ).args;
+  assert.equal(request.mode, "live");
+  assert.equal(request.profile, "maker");
+  assert.equal("spec" in request, false);
+  assert.match(request.prompt, /multi-stage economy/);
+  assert.equal(ui.props.draft.current.pending.length, 1);
+  assert.equal(ui.props.draft.current.route.section, "tasks");
+});
+test("AI continuation includes the active document and selected source without a second engine", async () => {
+  const f = fixture(),
+    ui = harness("ExperimentalProjects", { api: f.api, native: true });
+  await ui.flush();
+  openProject(ui);
+  await ui.flush();
+  await click(ui, "maker.kind.rules");
+  elements(
+    ui.tree,
+    (node) => node.type?.name === "MakerFeatures",
+  )[0].props.onContext({
+    id: "rule",
+    name: "Moon rule",
+    kind: "rules",
+    notes: "Three-stage event",
+    files: ["src/main/java/Rule.java"],
+  });
+  await ui.flush();
+  let panel = elements(
+    ui.tree,
+    (node) => node.type?.name === "MakerAiPanel",
+  )[0];
+  panel.props.onPrompt("Implement the event");
+  await ui.flush();
+  panel = elements(ui.tree, (node) => node.type?.name === "MakerAiPanel")[0];
+  panel.props.onSend();
+  await ui.flush();
+  const request = f.calls.find(
+    (value) => value.operation === "project_continue",
+  ).args;
+  assert.equal(request.expectedRevision, "revision-1");
+  assert.equal(request.checkpointId, "point-1");
+  assert.match(request.prompt, /Moon rule/);
+  assert.match(request.prompt, /Three-stage event/);
+  assert.equal(ui.props.draft.current.route.jobId, "new-job");
+});
+test("project settings preserve local drafts across remount and reject stale revision until accepted", async () => {
+  const f = fixture(),
+    ui = harness("ExperimentalProjects", { api: f.api, native: true });
+  await ui.flush();
+  openProject(ui);
+  await ui.flush();
+  await click(ui, "maker.section.settings");
+  await change(ui, "maker.projectGoal", "My handwritten constraint");
+  const retained = ui.props.draft;
+  ui.close();
+  const fresh = project();
+  fresh.revision = "revision-new";
+  const next = fixture([fresh]);
+  next.intercept.set("project_update", (args) => {
+    if (args.expectedRevision !== "revision-new")
+      throw new Error("stale revision");
+    return { ...fresh, notes: args.notes, revision: "revision-final" };
+  });
+  const reopened = harness("ExperimentalProjects", {
+    api: next.api,
+    native: true,
+    draft: retained,
+  });
+  await reopened.flush();
+  assert.equal(
+    field(reopened, "maker.projectGoal").props.value,
+    "My handwritten constraint",
+  );
+  await click(reopened, "maker.saveProject");
+  assert.match(content(reopened.tree), /stale revision/);
+  assert.ok(retained.current.notes.has("project-1"));
+  await click(reopened, "maker.acceptProjectRevision");
+  await click(reopened, "maker.saveProject");
+  assert.equal(retained.current.notes.has("project-1"), false);
+});
+test("retired callbacks and late host completions cannot navigate a newer project selection", async () => {
+  const f = fixture([project(), project("project-2")]),
+    ui = harness("ExperimentalProjects", { api: f.api, native: true });
+  await ui.flush();
+  openProject(ui);
+  await ui.flush();
+  await click(ui, "maker.section.settings");
+  const stale = button(ui, "maker.saveProject").props.onClick;
+  await change(ui, "maker.projectGoal", "New notes");
+  stale();
+  await ui.flush();
+  assert.equal(
+    f.calls.filter((value) => value.operation === "project_update").length,
+    0,
+  );
+  const delayed = deferred();
+  f.intercept.set("project_update", () => delayed.promise);
+  button(ui, "maker.saveProject").props.onClick;
+  const save = button(ui, "maker.saveProject").props.onClick;
+  save();
+  await click(ui, "maker.allProjects");
+  openProject(ui, "project-2");
+  await ui.flush();
+  delayed.resolve({ ...project(), revision: "revision-2", notes: "New notes" });
+  await ui.flush();
+  assert.equal(ui.props.draft.current.route.projectId, "project-2");
+  assert.ok(ui.props.draft.current.notes.has("project-1"));
+});
+test("old API and unmounted callbacks cannot submit new AI requests", async () => {
+  const f = fixture([]),
+    ui = harness("ExperimentalProjects", { api: f.api, native: true });
+  await ui.flush();
+  await click(ui, "maker.newProject");
+  await change(ui, "experimental.projectName", "Mod");
+  await change(ui, "maker.projectGoal", "Complex behavior");
+  const old = button(ui, "maker.createWithAi").props.onClick;
+  const replacement = fixture([]);
+  ui.replace({ api: replacement.api });
+  await ui.flush();
+  old();
+  await ui.flush();
+  assert.equal(
+    f.calls.filter((value) => value.operation === "job_create").length,
+    0,
+  );
+  const current = button(ui, "maker.createWithAi").props.onClick;
+  ui.close();
+  current();
+  await ui.flush();
+  assert.equal(
+    replacement.calls.filter((value) => value.operation === "job_create")
+      .length,
+    0,
+  );
+});
+
+test("recording a new output appends a nested source reference and preserves archive state", async () => {
+  const f = fixture(),
+    ui = harness("ExperimentalProjects", { api: f.api, native: true });
+  await ui.flush();
+  openProject(ui);
+  await ui.flush();
+  await click(ui, "maker.section.tasks");
+  elements(ui.tree, (node) => node.type?.name === "MakerJob")[0].props.onRecord(
+    "host-review-1",
+  );
+  await ui.flush();
+  await change(ui, "experimental.versionLabel", "Second iteration");
+  const modal = elements(
+    ui.tree,
+    (node) => node.type?.name === "InstanceOperationDialog",
+  )[0];
+  modal.props.onConfirm();
+  await ui.flush();
+  const write = f.calls.find(
+    (value) => value.operation === "project_update",
+  ).args;
+  assert.equal(write.archived, false);
+  assert.deepEqual(write.source, {
+    jobId: "job-1",
+    operationId: "host-review-1",
+    label: "Second iteration",
+  });
+  assert.equal(ui.props.draft.current.route.section, "overview");
+});
+
+test("unrecorded output browsing cannot accidentally continue from a different recorded source", async () => {
+  const f = fixture(),
+    ui = harness("ExperimentalProjects", { api: f.api, native: true });
+  await ui.flush();
+  openProject(ui);
+  await ui.flush();
+  await click(ui, "maker.section.tasks");
+  elements(ui.tree, (node) => node.type?.name === "MakerJob")[0].props.onSource(
+    "new-unrecorded",
+  );
+  await ui.flush();
+  const assistant = elements(
+    ui.tree,
+    (node) => node.type?.name === "MakerAiPanel",
+  )[0];
+  assert.equal(assistant.props.disabled, true);
+  assert.ok(assistant.props.blockedReason);
+  assistant.props.onSend();
+  await ui.flush();
+  assert.equal(
+    f.calls.filter((value) => value.operation === "project_continue").length,
+    0,
+  );
+});
+
+test("closing an earlier document tab cannot retire or select a newer document", async () => {
+  const f = fixture(),
+    ui = harness("ExperimentalProjects", { api: f.api, native: true });
+  await ui.flush();
+  openProject(ui);
+  await ui.flush();
+  const oldClose = elements(
+    ui.tree,
+    (node) => node.props.className === "maker-tab-close",
+  )[0].props.onClick;
+  await click(ui, "maker.kind.rules");
+  const before = ui.props.draft.current.tabs.length;
+  oldClose();
+  await ui.flush();
+  assert.equal(ui.props.draft.current.tabs.length, before);
+  assert.equal(ui.props.draft.current.route.kind, "rules");
 });

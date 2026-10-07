@@ -1,0 +1,970 @@
+/* The IDE uses launcher surfaces and controls, with independently scrollable
+   navigation/documents. Narrow windows collapse docks without flattening pages. */
+.maker-studio {
+  --maker-line: var(--ce-border, #e2e7ee);
+  --maker-soft: #f3f6fa;
+  --maker-surface: #fcfdff;
+  --ce-accent: var(--ce-link, #167ac6);
+  color: var(--ce-text, #354052);
+  animation: maker-enter 0.18s ease-out;
+  min-width: 0;
+}
+.maker-studio button {
+  cursor: pointer;
+}
+.maker-studio button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.maker-studio h1 {
+  font-size: 26px;
+  letter-spacing: -0.6px;
+  margin: 8px 0 12px;
+}
+.maker-studio h2 {
+  font-size: 20px;
+  margin: 5px 0;
+}
+.maker-studio h3 {
+  font-size: 14px;
+}
+.maker-studio small {
+  color: var(--ce-muted-text, #8491a1);
+  font-size: 11px;
+}
+.maker-studio .ce-button {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+}
+.maker-library {
+  max-width: 1450px;
+  margin: auto;
+  padding: 16px 8px;
+  min-height: 530px;
+}
+.maker-library-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: center;
+  margin-bottom: 28px;
+}
+.maker-library-heading p {
+  font-size: 13px;
+  color: var(--ce-muted-text);
+  line-height: 1.7;
+  max-width: 650px;
+  margin: 0;
+}
+.maker-library-heading small,
+.maker-project-overview > small {
+  color: var(--ce-accent, #167ac6);
+  letter-spacing: 1px;
+}
+.maker-library-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.maker-library-toolbar > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+}
+.maker-library-toolbar .ce-field {
+  max-width: 370px;
+  width: 100%;
+}
+.maker-library-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.maker-project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+}
+.maker-project-tile.ce-card {
+  margin: 0;
+  padding: 20px;
+  min-height: 176px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition:
+    border-color 0.18s,
+    transform 0.18s;
+}
+.maker-project-tile:hover {
+  border-color: var(--ce-accent, #167ac6);
+  transform: translateY(-2px);
+}
+.maker-project-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--maker-soft);
+  color: var(--ce-accent, #167ac6);
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+}
+.maker-project-tile strong {
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+.maker-project-tile-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--maker-line);
+  padding-top: 12px;
+  margin-top: auto;
+  width: 100%;
+  font-size: 12px;
+}
+.maker-library-bottom {
+  margin-top: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.maker-library-empty {
+  min-height: 300px;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  color: var(--ce-muted-text);
+}
+.maker-library-empty p {
+  max-width: 420px;
+  text-align: center;
+  line-height: 1.7;
+  font-size: 13px;
+}
+.maker-pending-projects {
+  margin-bottom: 16px;
+}
+.maker-project-tile.pending {
+  border: 1px solid var(--maker-line);
+  border-radius: 10px;
+  background: var(--maker-surface);
+  padding: 14px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  margin-bottom: 8px;
+}
+.maker-project-tile.pending small {
+  margin-left: auto;
+}
+.maker-creation-page {
+  max-width: 760px;
+  margin: auto;
+  padding: 16px 12px 30px;
+}
+.maker-creation-heading {
+  margin: 32px 0;
+}
+.maker-creation-heading svg {
+  color: var(--ce-accent);
+}
+.maker-creation-heading p {
+  color: var(--ce-muted-text);
+  line-height: 1.7;
+}
+.maker-creation-page label,
+.maker-feature-document label,
+.maker-project-settings label {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-bottom: 20px;
+  font-size: 13px;
+}
+.maker-creation-page textarea,
+.maker-feature-document textarea,
+.maker-project-settings textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  line-height: 1.65;
+}
+.maker-creation-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 22px;
+}
+.maker-workspace-header {
+  border: 1px solid var(--maker-line);
+  background: var(--maker-surface);
+  border-radius: 10px 10px 0 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+}
+.maker-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  font-size: 12px;
+}
+.maker-breadcrumb strong,
+.maker-breadcrumb span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+.maker-breadcrumb > button:not(.maker-icon-button) {
+  border: none;
+  background: none;
+  color: var(--ce-muted-text);
+  padding: 4px 0;
+  white-space: nowrap;
+}
+.maker-icon-button {
+  border: none;
+  background: transparent;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px;
+  border-radius: 5px;
+}
+.maker-icon-button:hover {
+  background: var(--maker-soft);
+}
+.maker-workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  height: max(560px, calc(100vh - 228px));
+  max-height: 950px;
+  border: 1px solid var(--maker-line);
+  border-top: none;
+  background: var(--maker-surface);
+  border-radius: 0 0 10px 10px;
+  overflow: hidden;
+  position: relative;
+}
+.maker-workbench.with-tree {
+  grid-template-columns: 180px minmax(0, 1fr);
+}
+.maker-workbench.with-ai {
+  grid-template-columns: minmax(0, 1fr) 280px;
+}
+.maker-workbench.with-tree.with-ai {
+  grid-template-columns: 180px minmax(0, 1fr) 280px;
+}
+.maker-project-tree {
+  border-right: 1px solid var(--maker-line);
+  background: var(--maker-soft);
+  display: flex;
+  flex-direction: column;
+  padding: 16px 8px 10px;
+  overflow-y: auto;
+  gap: 4px;
+}
+.maker-tree-project {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px 18px;
+  font-size: 12px;
+}
+.maker-tree-project strong {
+  overflow-wrap: anywhere;
+}
+.maker-project-tree button {
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  border-radius: 6px;
+  padding: 9px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.maker-project-tree button:hover,
+.maker-project-tree button.selected {
+  color: var(--ce-accent, #167ac6);
+  background: var(--ce-tinted-surface, #e7f1fb);
+}
+.maker-tree-children {
+  display: flex;
+  flex-direction: column;
+  margin: 1px 0 8px 23px;
+  padding-left: 7px;
+  border-left: 1px solid var(--maker-line);
+}
+.maker-tree-children button {
+  padding: 7px 10px;
+}
+.maker-tree-bottom {
+  margin-top: auto;
+  padding: 18px 9px 0;
+  color: var(--ce-muted-text);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.maker-editor-area {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.maker-document-tabs {
+  display: flex;
+  flex-shrink: 0;
+  background: var(--maker-soft);
+  border-bottom: 1px solid var(--maker-line);
+  overflow-x: auto;
+  min-height: 40px;
+}
+.maker-document-tabs > div {
+  display: flex;
+  align-items: center;
+  border-right: 1px solid var(--maker-line);
+  border-top: 2px solid transparent;
+  flex-shrink: 0;
+}
+.maker-document-tabs > div.selected {
+  background: var(--maker-surface);
+  border-top-color: var(--ce-accent, #167ac6);
+}
+.maker-document-tabs button {
+  background: none;
+  border: none;
+  color: inherit;
+  padding: 10px 12px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.maker-document-tabs .maker-tab-close {
+  padding: 7px;
+  margin-right: 3px;
+}
+.maker-document-view {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+.maker-document {
+  padding: 24px;
+}
+.maker-document-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.maker-project-overview > p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.75;
+  max-height: 140px;
+  overflow: auto;
+  margin-bottom: 26px;
+}
+.maker-verification {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 18px 0;
+}
+.maker-verification span {
+  border: 1px solid var(--maker-line);
+  border-radius: 5px;
+  padding: 7px 9px;
+  font-size: 10px;
+  color: var(--ce-muted-text);
+}
+.maker-overview-links {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 28px;
+}
+.maker-overview-links button.ce-card {
+  margin: 0;
+  padding: 16px;
+  display: grid;
+  grid-template-columns: 1fr 16px;
+  text-align: left;
+  gap: 10px;
+}
+.maker-overview-links button small {
+  grid-row: 2;
+  line-height: 1.65;
+}
+.maker-overview-links svg {
+  grid-column: 2;
+  grid-row: 1/3;
+  align-self: center;
+}
+.maker-list-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 22px;
+}
+.maker-list-toolbar .ce-field {
+  min-width: 0;
+  flex: 1;
+}
+.maker-feature-list,
+.maker-version-list {
+  border-top: 1px solid var(--maker-line);
+}
+.maker-feature-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 14px 4px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  color: inherit;
+  border: none;
+  border-bottom: 1px solid var(--maker-line);
+}
+.maker-feature-row:hover,
+.maker-feature-row.selected {
+  background: var(--maker-soft);
+}
+.maker-feature-row > span:not(.maker-state):not(.maker-row-symbol) {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.maker-feature-row strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.maker-row-symbol {
+  border: 1px solid var(--maker-line);
+  background: var(--maker-soft);
+  border-radius: 7px;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-content: center;
+  flex-shrink: 0;
+  color: var(--ce-accent);
+}
+.maker-state {
+  font-size: 10px;
+  background: var(--maker-soft);
+  padding: 4px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+  color: var(--ce-muted-text);
+}
+.maker-state.in_progress {
+  color: var(--ce-accent, #167ac6);
+}
+.maker-state.ready {
+  color: var(--ce-success-text, #27876c);
+}
+.maker-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+  font-size: 11px;
+}
+.maker-pagination > span:first-child {
+  margin-right: auto;
+  color: var(--ce-muted-text);
+}
+.maker-two-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+.maker-notes {
+  line-height: 1.7;
+}
+.maker-code-input {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+.maker-related-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.maker-related-list span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.maker-empty {
+  padding: 50px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--ce-muted-text);
+  text-align: center;
+}
+.maker-empty p {
+  font-size: 12px;
+  max-width: 330px;
+  line-height: 1.7;
+}
+.maker-ai-panel {
+  border-left: 1px solid var(--maker-line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 14px 12px;
+  background: var(--maker-surface);
+}
+.maker-ai-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 0 14px;
+  font-size: 12px;
+}
+.maker-ai-panel > header > span {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.maker-ai-panel > header svg,
+.maker-ai-intro > svg {
+  color: var(--ce-accent, #167ac6);
+}
+.maker-ai-context {
+  background: var(--maker-soft);
+  border: 1px solid var(--maker-line);
+  border-radius: 7px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.maker-ai-context strong,
+.maker-ai-context span {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.maker-ai-context code {
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.maker-ai-intro {
+  margin: 28px 2px;
+  flex: 1;
+}
+.maker-ai-intro p {
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--ce-muted-text);
+}
+.maker-ai-task-note {
+  border-left: 2px solid var(--ce-accent);
+  padding-left: 10px;
+}
+.maker-ai-composer {
+  border: 1px solid var(--maker-line);
+  border-radius: 8px;
+  padding: 10px;
+}
+.maker-ai-composer textarea.ce-field {
+  border: none;
+  background: none;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font-size: 12px;
+  line-height: 1.7;
+  padding: 0;
+}
+.maker-composer-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 10px;
+  color: var(--ce-muted-text);
+}
+.maker-composer-footer > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.maker-composer-footer .ce-button {
+  padding: 6px 8px;
+}
+.maker-ai-settings {
+  margin-top: 12px;
+  width: 100%;
+}
+.maker-ai-review-note {
+  font-size: 10px;
+  color: var(--ce-muted-text);
+  line-height: 1.6;
+  margin: 12px 2px 0;
+}
+.maker-task-selector {
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--maker-line);
+}
+.maker-task-section {
+  margin-top: 24px;
+}
+.maker-task-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.maker-ai-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.maker-artifact-row {
+  border: 1px solid var(--maker-line);
+  border-radius: 7px;
+  padding: 12px;
+  margin: 10px 0;
+}
+.maker-artifact-row > span {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.maker-artifact-row > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.maker-source-workspace {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  height: 100%;
+  min-height: 450px;
+}
+.maker-source-explorer {
+  padding: 12px 10px;
+  border-right: 1px solid var(--maker-line);
+  overflow-y: auto;
+}
+.maker-explorer-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  margin-bottom: 14px;
+}
+.maker-source-explorer .ce-field {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+.maker-file-tree {
+  margin: 14px 0;
+}
+.maker-file-tree summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 10px;
+  padding: 7px 0;
+}
+.maker-file-tree summary span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.maker-file-tree summary svg {
+  flex-shrink: 0;
+}
+.maker-directory-children {
+  border-left: 1px solid var(--maker-line);
+  margin-left: 5px;
+  padding-left: 8px;
+}
+.maker-file-tree button {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  border: none;
+  background: none;
+  color: inherit;
+  width: 100%;
+  text-align: left;
+  padding: 7px 2px;
+  font-size: 11px;
+}
+.maker-file-tree button.selected {
+  background: var(--ce-tinted-surface, #e7f1fb);
+  color: var(--ce-accent);
+}
+.maker-file-tree button svg {
+  flex-shrink: 0;
+}
+.maker-file-tree button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.maker-file-tree button small {
+  display: block;
+  font-size: 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.maker-pagination.compact button {
+  border: 1px solid var(--maker-line);
+  background: var(--maker-soft);
+  border-radius: 4px;
+  color: inherit;
+}
+.maker-source-search {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--maker-line);
+}
+.maker-search-match {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+  overflow-wrap: anywhere;
+  font-size: 10px;
+  margin-top: 12px;
+}
+.maker-search-match small {
+  display: block;
+  font-size: 10px;
+  margin-top: 5px;
+}
+.maker-editor-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.maker-editor-tabs {
+  display: flex;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--maker-line);
+  min-height: 33px;
+  flex-shrink: 0;
+}
+.maker-editor-tabs button {
+  border: none;
+  border-right: 1px solid var(--maker-line);
+  background: var(--maker-soft);
+  color: inherit;
+  padding: 9px 12px;
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.maker-editor-tabs button.selected {
+  background: var(--maker-surface);
+  color: var(--ce-accent);
+}
+.maker-editor-toolbar {
+  padding: 10px 12px;
+  font-size: 10px;
+  border-bottom: 1px solid var(--maker-line);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.maker-editor-toolbar > span {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  overflow-wrap: anywhere;
+}
+.maker-editor-toolbar > div {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.maker-editor-toolbar .ce-button {
+  font-size: 10px;
+}
+.maker-code-editor {
+  flex: 1;
+  min-height: 250px;
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  border: none;
+  outline: none;
+  padding: 18px;
+  color: inherit;
+  background: var(--maker-surface);
+  font:
+    12px/1.8 ui-monospace,
+    "Cascadia Code",
+    monospace;
+  tab-size: 4;
+  white-space: pre;
+  overflow: auto;
+}
+.maker-editor-status {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--maker-soft);
+  border-top: 1px solid var(--maker-line);
+  font-size: 9px;
+  color: var(--ce-muted-text);
+}
+.maker-global-error {
+  padding: 12px;
+  margin: 10px 0 0;
+  border: 1px solid currentColor;
+  border-radius: 7px;
+  font-size: 12px;
+}
+.maker-studio > .experimental-component-version {
+  margin-top: 10px;
+}
+@keyframes maker-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (max-width: 1150px) {
+  .maker-workbench.with-tree.with-ai {
+    grid-template-columns: 155px minmax(0, 1fr) 250px;
+  }
+  .maker-document {
+    padding: 20px;
+  }
+  .maker-source-workspace {
+    grid-template-columns: 155px minmax(0, 1fr);
+  }
+}
+@media (max-width: 950px) {
+  .maker-workbench.with-ai,
+  .maker-workbench.with-tree.with-ai {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .maker-workbench.with-tree {
+    grid-template-columns: 150px minmax(0, 1fr);
+  }
+  .maker-workbench.with-tree.with-ai {
+    grid-template-columns: 150px minmax(0, 1fr);
+  }
+  .maker-ai-panel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 265px;
+    z-index: 2;
+    box-shadow: -8px 0 25px #0001;
+  }
+}
+@media (max-width: 650px) {
+  .maker-library-heading {
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .maker-library-toolbar {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .maker-library-toolbar > div {
+    flex-basis: 100%;
+  }
+  .maker-workbench.with-tree,
+  .maker-workbench.with-tree.with-ai {
+    grid-template-columns: 120px minmax(0, 1fr);
+  }
+  .maker-tree-children {
+    margin-left: 9px;
+  }
+  .maker-breadcrumb > span,
+  .maker-breadcrumb > strong + svg {
+    display: none;
+  }
+  .maker-document {
+    padding: 16px;
+  }
+  .maker-overview-links,
+  .maker-two-fields {
+    grid-template-columns: 1fr;
+  }
+  .maker-source-workspace {
+    grid-template-columns: 130px minmax(0, 1fr);
+  }
+  .maker-state {
+    display: none;
+  }
+  .maker-feature-row {
+    gap: 8px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .maker-studio {
+    animation: none;
+  }
+  .maker-project-tile {
+    transition: none;
+  }
+}
+
+:root[data-launcher-theme="dark"] .maker-studio {
+  --maker-surface: #273548;
+  --maker-soft: #213043;
+}
+.maker-heading-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
