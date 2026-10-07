@@ -199,7 +199,7 @@ fn release_url(tag: &str) -> Option<String> {
         return None;
     }
     let mut url =
-        reqwest::Url::parse("https://github.com/HyacineFengJin/PCL-Linux/releases/tag/").ok()?;
+        reqwest::Url::parse("https://github.com/HyacineFengJin/PCL-RH/releases/tag/").ok()?;
     url.path_segments_mut().ok()?.pop_if_empty().push(tag);
     Some(url.into())
 }

@@ -41,7 +41,7 @@ function id(value, pattern, max) {
 export function readManifest(source) {
   const m = parseJson(source);
   object(m, ['format', 'schemaVersion', 'id', 'name', 'version', 'publisher', 'api', 'capabilities', 'contributions']);
-  if (m.format !== FORMAT || m.schemaVersion !== 1) fail('MANIFEST_FORMAT', 'This is not a supported PCL Linux declarative extension manifest.');
+  if (m.format !== FORMAT || m.schemaVersion !== 1) fail('MANIFEST_FORMAT', 'This is not a supported PCL RH declarative extension manifest.');
   id(m.id, ID, 128); text(m.name, 80); text(m.publisher, 80);
   if (typeof m.version !== 'string' || !VERSION.test(m.version)) fail('MANIFEST_VERSION', 'Use three bounded stable version numbers, such as 1.0.0.');
   object(m.api, ['min', 'maxExclusive']);

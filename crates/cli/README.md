@@ -8,7 +8,7 @@ cargo run -p pcl-cli -- --root /path/to/.minecraft install 1.20.1
 cargo run -p pcl-cli -- list
 cargo run -p pcl-cli -- plan '1.20.1' --player Player --memory 8
 cargo run -p pcl-cli -- run '1.20.1' --player Player --memory 8
-cargo run -p pcl-cli -- --project /path/to/PCL-Linux --root /path/to/.minecraft list
+cargo run -p pcl-cli -- --project /path/to/PCL-RH --root /path/to/.minecraft list
 ```
 
 `catalog` lists official versions as JSON. `install` downloads a vanilla version

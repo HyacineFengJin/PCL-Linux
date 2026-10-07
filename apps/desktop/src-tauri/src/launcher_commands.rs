@@ -188,7 +188,7 @@ pub fn apply_window(
     window.set_title(if prefs.title.mode == TitleMode::Text {
         &prefs.title.text
     } else {
-        "PCL Linux"
+        "PCL RH"
     })
 }
 

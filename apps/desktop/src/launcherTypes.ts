@@ -20,6 +20,11 @@ export type LauncherMenuId =
   | "settings.logs"
   | "tools.network"
   | "tools.toolbox"
+  | "tools.extensions"
+  | "tools.marketplace"
+  | "tools.maker"
+  | "tools.porter"
+  | "tools.ai"
   | "instance.modify"
   | "instance.export"
   | "instance.saves"
@@ -43,6 +48,11 @@ export type LauncherPreferences = {
     lock_window_size: boolean;
     launch_tips: boolean;
     advanced_materials: boolean;
+    custom_cursor: boolean;
+    cursor_style: "accent" | "outline";
+    cursor_size: "small" | "standard";
+    custom_context_menu: boolean;
+    context_menu_density: "comfortable" | "compact";
     global_font: string;
     motd_font: string;
   };
@@ -183,6 +193,11 @@ export function defaultLauncherPreferenceView(): LauncherPreferenceView {
         lock_window_size: false,
         launch_tips: true,
         advanced_materials: false,
+        custom_cursor: true,
+        cursor_style: "accent",
+        cursor_size: "small",
+        custom_context_menu: true,
+        context_menu_density: "comfortable",
         global_font: "",
         motd_font: "",
       },

@@ -73,6 +73,56 @@ mod fixtures {
     }
 
     #[test]
+    fn interaction_preferences_migrate_defaults_and_survive_restart() {
+        let fixture = Fixture::new();
+        // Legacy files omit interaction fields and can retain hidden network IDs.
+        fixture.seed(br#"{"schema_version":1,"preferences":{"appearance":{"theme":"dark"},"navigation":{"hidden_menu_ids":["tools.network","settings.network"]}}}"#);
+        let store = fixture.store();
+        let before = store.snapshot();
+        assert!(before.preferences.appearance.custom_cursor);
+        assert_eq!(before.preferences.appearance.cursor_size, CursorSize::Small);
+        assert_eq!(
+            before.preferences.appearance.cursor_style,
+            CursorStyle::Accent
+        );
+        assert!(before.preferences.appearance.custom_context_menu);
+        let after = store.update(&before.revision, patch(serde_json::json!({
+            "appearance": {"custom_cursor": false, "cursor_style": "outline", "cursor_size": "standard",
+                "custom_context_menu": false, "context_menu_density": "compact"},
+            "navigation": {"hidden_menu_ids": ["tools.network", "tools.ai", "tools.maker", "tools.porter", "tools.extensions"]}
+        }))).unwrap();
+        assert_eq!(after.preferences.appearance.theme, Theme::Dark);
+        assert!(!after.preferences.appearance.custom_cursor);
+        assert_eq!(
+            after.preferences.appearance.cursor_style,
+            CursorStyle::Outline
+        );
+        assert_eq!(
+            after.preferences.appearance.context_menu_density,
+            ContextMenuDensity::Compact
+        );
+        assert_eq!(fixture.store().snapshot().preferences, after.preferences);
+    }
+
+    #[test]
+    fn interaction_preferences_reject_unknown_styles_without_writing() {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        for value in [
+            serde_json::json!({"appearance":{"cursor_size":"giant"}}),
+            serde_json::json!({"appearance":{"cursor_style":"unknown"}}),
+            serde_json::json!({"appearance":{"context_menu_density":"unknown"}}),
+        ] {
+            assert!(serde_json::from_value::<LauncherPreferencesPatch>(value).is_err());
+        }
+        assert!(!fixture.file().exists());
+        assert_eq!(
+            store.snapshot().preferences.appearance.cursor_size,
+            CursorSize::Small
+        );
+    }
+
+    #[test]
     fn partial_updates_survive_restart_without_changing_game_settings() {
         let fixture = Fixture::new();
         fixture.seed(b"{\"schema_version\":1,\"preferences\":{}}");

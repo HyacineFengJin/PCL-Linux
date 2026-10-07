@@ -2307,3 +2307,34 @@ button.resource-row:hover {
 .ce-loader-intro .ce-card-title {
   margin-bottom: 10px;
 }
+
+/* English labels need intrinsic width. Max-width and wrapping keep unusually
+   long labels within the same card instead of painting outside button borders. */
+:root:lang(en) .ce-actions .ce-button {
+  width: auto;
+  min-width: min(140px, 100%);
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  padding-block: 7px;
+}
+:root:lang(en) .tools-shell .section-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+}
+.tools-shell .section-label {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+.tools-shell .side-item {
+  min-height: 36px;
+  height: auto;
+  padding-block: 8px;
+  white-space: normal;
+}
+.tools-shell .side-item > span {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}

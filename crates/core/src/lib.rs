@@ -812,7 +812,7 @@ fn build_launch_plan_inner(
             data["type"].as_str().unwrap_or("release").into(),
         ),
         ("natives_directory", natives.display().to_string()),
-        ("launcher_name", "PCL-Linux".into()),
+        ("launcher_name", "PCL-RH".into()),
         ("launcher_version", "0.1.0".into()),
         (
             "classpath",

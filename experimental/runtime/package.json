@@ -1,9 +1,9 @@
 {
-  "name": "pcl-linux-experimental-runtime",
+  "name": "pcl-rh-experimental-runtime",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Private shared Pi engine for PCL Linux experimental Maker and Porter",
+  "description": "Private shared Pi engine for PCL RH experimental Maker and Porter",
   "engines": {
     "node": ">=22.19.0"
   },

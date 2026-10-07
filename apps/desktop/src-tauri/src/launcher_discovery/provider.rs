@@ -5,7 +5,7 @@ use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 pub(super) const MAX_BYTES: usize = 1024 * 1024;
 pub(super) const MAX_RELEASES: usize = 30;
 pub(super) const API: &str =
-    "https://api.github.com/repos/HyacineFengJin/PCL-Linux/releases?per_page=30&page=1";
+    "https://api.github.com/repos/HyacineFengJin/PCL-RH/releases?per_page=30&page=1";
 pub(super) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 #[derive(Clone, Copy)]
 pub(super) enum Failure {
@@ -42,7 +42,7 @@ impl Provider for GitHub {
             let client = self
                 .network
                 .async_client()
-                .user_agent("PCL-Linux-announcements/0.2.0")
+                .user_agent("PCL-RH-announcements/0.2.0")
                 .https_only(true)
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(8))

@@ -1,3 +1,4 @@
+import { ExperimentalVersion } from "./ExperimentalVersion";
 import { useEffect, useRef, useState } from "react";
 import type { Api } from "./types";
 import { t, serviceError, type MessageKey } from "./i18n";
@@ -90,12 +91,7 @@ export function ExperimentalCards({
           key={`${card.extensionId}:${card.id}`}
           className="ce-card experimental-card"
         >
-          <h2 className="ce-card-title">
-            {card.title}
-            <span className="experimental-badge">
-              {t("experimental.badge")}
-            </span>
-          </h2>
+          <h2 className="ce-card-title">{card.title}</h2>
           <p className="experimental-origin">{card.extensionName}</p>
           <p className="experimental-body">{card.text}</p>
           <div className="ce-actions">
@@ -209,12 +205,7 @@ export function ExperimentalExtensions({
   return (
     <>
       <section className="ce-card">
-        <h2 className="ce-card-title">
-          {t("experimental.extensions")}{" "}
-          <span className="experimental-badge">
-            0.6 · {t("experimental.badge")}
-          </span>
-        </h2>
+        <h2 className="ce-card-title">{t("experimental.extensions")}</h2>
         <p>{t("experimental.extensionsHelp")}</p>
         <div className="ce-actions">
           <button
@@ -263,6 +254,7 @@ export function ExperimentalExtensions({
           />
           <span>{t("experimental.safeMode")}</span>
         </label>
+        <ExperimentalVersion version="0.6" />
       </section>
       {error && (
         <p className="experimental-error" role="alert">

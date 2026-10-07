@@ -215,7 +215,7 @@ const messages = {
   "local.created": "Launcher shortcut created",
   "local.restored": "Launcher entry restored",
   "local.countTitle": "Launch counts",
-  "local.stopTitle": "Stop using PCL Linux",
+  "local.stopTitle": "Stop using PCL RH",
   "local.create": "Create",
   "local.removeClose": "Remove entries and close",
   "local.close": "Close",
@@ -250,7 +250,7 @@ const messages = {
     "Launcher settings imported. Previous settings backup: {path}",
   "assets.refreshed": "Refreshed {count} media files",
   "local.luck": "Today's luck: {score} / 100",
-  "updater.found": "PCL Linux update found: {version}",
+  "updater.found": "PCL RH update found: {version}",
   "updater.stagedNotice":
     "Update downloaded and verified. Review the installation plan on the update page.",
   "misc.delayHelp":

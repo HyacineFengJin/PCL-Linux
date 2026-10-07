@@ -12,8 +12,8 @@ cat > "$applications_dir/pcl-linux-experimental.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=PCL Linux (实验版)
-Name[zh_CN]=PCL Linux（实验版）
+Name=PCL RH
+Name[zh_CN]=PCL RH
 Comment=Launch existing Minecraft versions on Linux
 Comment[zh_CN]=在 Linux 上启动已有的 Minecraft 版本
 Exec="$project_dir/start-native.sh"

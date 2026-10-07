@@ -1,3 +1,4 @@
+import { ExperimentalVersion } from "./ExperimentalVersion";
 import { t } from "./i18n";
 import type { MakerSpec } from "./experimentalTypes";
 import { useState } from "react";
@@ -44,12 +45,7 @@ export function ExperimentalMaker({
   }
   return (
     <section className="ce-card experimental-form">
-      <h2 className="ce-card-title">
-        {t("experimental.maker")}{" "}
-        <span className="experimental-badge">
-          0.4 · {t("experimental.badge")}
-        </span>
-      </h2>
+      <h2 className="ce-card-title">{t("experimental.maker")}</h2>
       <p>{t("experimental.makerHelp")}</p>
       <label className="ce-row">
         <span>{t("experimental.target")}</span>
@@ -221,6 +217,7 @@ export function ExperimentalMaker({
       >
         {t("experimental.addItem")}
       </button>
+      <ExperimentalVersion version="0.4" />
     </section>
   );
 }

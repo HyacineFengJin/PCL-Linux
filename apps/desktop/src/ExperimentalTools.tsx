@@ -1,13 +1,10 @@
-import { useEffect, useRef, useState } from "react";
-import { Puzzle, WandSparkles, ArrowRightLeft } from "lucide-react";
+import { ExperimentalVersion } from "./ExperimentalVersion";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { CeSelect } from "./CeSelect";
 import { t, formatDate, serviceError, type MessageKey } from "./i18n";
 import type { Api } from "./types";
 import { InstanceOperationDialog } from "./instanceOperationUi";
-import {
-  ExperimentalCards,
-  ExperimentalExtensions,
-} from "./ExperimentalExtensions";
+import { ExperimentalExtensions } from "./ExperimentalExtensions";
 import { ExperimentalMaker, initialMakerSpec } from "./ExperimentalMaker";
 import {
   experimentalCall as call,
@@ -20,16 +17,6 @@ import {
 } from "./experimentalTypes";
 import "./experimental.css";
 const pretty = (value: unknown) => JSON.stringify(value, null, 2);
-const names = {
-  extensions: "experimental.extensions",
-  maker: "experimental.maker",
-  porter: "experimental.porter",
-} as const;
-const descriptions = {
-  extensions: "experimental.extensionsHelp",
-  maker: "experimental.makerHelp",
-  porter: "experimental.porterHelp",
-} as const;
 type ImportedSource = {
   sourceId: string;
   files: Record<string, string>;
@@ -48,35 +35,57 @@ type PorterReport = {
   status: string;
 };
 
+// Drafts stay in the owning app session while users visit AI configuration.
+// Credentials are never part of this record; submitted jobs remain host-owned.
+export type ExperimentalDraft = {
+  spec: typeof initialMakerSpec;
+  source: ImportedSource | null;
+  directory: string;
+  targetId: string;
+  rights: string;
+  beta: boolean;
+  allowed: string[];
+  mode: string;
+  prompt: string;
+  jobId: string;
+};
+
 /** UI owns only drafts and display selections. Jobs, path grants, file hashes
  * and one-use approvals remain in the native host and the supplied runtime. */
 export function ExperimentalTools({
   api,
   native,
+  page,
+  drafts,
   onNavigate,
+  onConfigureAi,
 }: {
   api: Api;
   native: boolean;
+  page: ExperimentalPage;
+  drafts: RefObject<Partial<Record<ExperimentalPage, ExperimentalDraft>>>;
+  onConfigureAi?: () => void;
   onNavigate: ExperimentalNavigate;
 }) {
-  const [page, setPage] = useState<ExperimentalPage | null>(null),
-    [status, setStatus] = useState<EngineStatus | null>(null);
+  const draft = drafts.current[page];
+  const [status, setStatus] = useState<EngineStatus | null>(null);
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
-    [key, setKey] = useState(""),
-    [mode, setMode] = useState("template"),
-    [prompt, setPrompt] = useState("");
-  const [spec, setSpec] = useState(initialMakerSpec),
-    [source, setSource] = useState<ImportedSource | null>(null),
-    [directory, setDirectory] = useState("");
+    [mode, setMode] = useState(draft?.mode ?? "template"),
+    [prompt, setPrompt] = useState(draft?.prompt ?? "");
+  const [spec, setSpec] = useState(draft?.spec ?? initialMakerSpec),
+    [source, setSource] = useState<ImportedSource | null>(
+      draft?.source ?? null,
+    ),
+    [directory, setDirectory] = useState(draft?.directory ?? "");
   const [targets, setTargets] = useState<
       { id: string; minecraft: string; loader: string; channel: string }[]
     >([]),
-    [targetId, setTargetId] = useState("neoforge-26.3"),
-    [rights, setRights] = useState("unknown"),
-    [beta, setBeta] = useState(false),
-    [allowed, setAllowed] = useState<string[]>([]);
-  const [jobId, setJobId] = useState(""),
+    [targetId, setTargetId] = useState(draft?.targetId ?? "neoforge-26.3"),
+    [rights, setRights] = useState(draft?.rights ?? "unknown"),
+    [beta, setBeta] = useState(draft?.beta ?? false),
+    [allowed, setAllowed] = useState<string[]>(draft?.allowed ?? []);
+  const [jobId, setJobId] = useState(draft?.jobId ?? ""),
     [job, setJob] = useState<JobView | null>(null),
     [report, setReport] = useState<PorterReport | null>(null);
   const [operationId, setOperationId] = useState(""),
@@ -93,6 +102,33 @@ export function ExperimentalTools({
     [purpose, setPurpose] = useState("");
   const live = useRef(true),
     working = useRef(false);
+  useEffect(() => {
+    drafts.current[page] = {
+      spec,
+      source,
+      directory,
+      targetId,
+      rights,
+      beta,
+      allowed,
+      mode,
+      prompt,
+      jobId,
+    };
+  }, [
+    drafts,
+    page,
+    spec,
+    source,
+    directory,
+    targetId,
+    rights,
+    beta,
+    allowed,
+    mode,
+    prompt,
+    jobId,
+  ]);
   async function refresh() {
     const value = await call<EngineStatus>(api, "status");
     if (live.current) setStatus(value);
@@ -228,11 +264,6 @@ export function ExperimentalTools({
     });
     if (live.current) setReview({ ...data, ownerJob });
   }
-  function go(next: ExperimentalPage | null) {
-    setPage(next);
-    setJobId("");
-    setError("");
-  }
   async function start() {
     if (page !== "maker" && page !== "porter") return;
     const value = await call<{ jobId: string }>(api, "job_create", {
@@ -270,7 +301,7 @@ export function ExperimentalTools({
           onChange={(e) => setMode(e.target.value)}
         >
           <option value="template">{t("experimental.template")}</option>
-          <option value="live" disabled={!status?.liveConfigured}>
+          <option value="live" disabled={!status?.liveAvailable}>
             {t("experimental.live")}
           </option>
         </CeSelect>
@@ -290,13 +321,20 @@ export function ExperimentalTools({
       )}
       <div className="ce-actions">
         <button
+          className="ce-button"
+          disabled={busy || !onConfigureAi}
+          onClick={onConfigureAi}
+        >
+          {t("experimental.ai")}
+        </button>
+        <button
           className="ce-button primary"
           disabled={
             busy ||
             !native ||
             noCapacity ||
             (page === "porter" && !source) ||
-            (mode === "live" && (!status?.liveConfigured || !prompt.trim()))
+            (mode === "live" && (!status?.liveAvailable || !prompt.trim()))
           }
           onClick={() => void perform(start)}
         >
@@ -313,52 +351,6 @@ export function ExperimentalTools({
   );
   return (
     <div className="experimental-panel">
-      {page ? (
-        <div className="ce-actions">
-          <button
-            className="ce-button"
-            disabled={busy}
-            onClick={() => go(null)}
-          >
-            {t("experimental.back")}
-          </button>
-        </div>
-      ) : (
-        <>
-          <section className="ce-card">
-            <h2 className="ce-card-title">
-              {t("experimental.title")}
-              <span className="experimental-badge">
-                {t("experimental.badge")}
-              </span>
-            </h2>
-            <p>{t("experimental.engineHelp")}</p>
-          </section>
-          {(["extensions", "maker", "porter"] as const).map((name, index) => {
-            const Icon = [Puzzle, WandSparkles, ArrowRightLeft][index];
-            return (
-              <section className="ce-card" key={name}>
-                <h2 className="ce-card-title">
-                  <Icon size={17} /> {t(names[name])}
-                  <span className="experimental-badge">
-                    {t("experimental.badge")}
-                  </span>
-                </h2>
-                <p>{t(descriptions[name])}</p>
-                <button className="ce-button" onClick={() => go(name)}>
-                  {t("experimental.open")}
-                </button>
-              </section>
-            );
-          })}
-          <ExperimentalCards
-            api={api}
-            native={native}
-            slot="tools.cards"
-            onNavigate={onNavigate}
-          />
-        </>
-      )}
       {page === "extensions" && (
         <ExperimentalExtensions
           api={api}
@@ -379,12 +371,7 @@ export function ExperimentalTools({
       {page === "porter" && (
         <>
           <section className="ce-card">
-            <h2 className="ce-card-title">
-              {t("experimental.porter")}
-              <span className="experimental-badge">
-                0.5.1 · {t("experimental.badge")}
-              </span>
-            </h2>
+            <h2 className="ce-card-title">{t("experimental.porter")}</h2>
             <p>{t("experimental.porterHelp")}</p>
             <label className="ce-row">
               <span>{t("experimental.source")}</span>
@@ -508,6 +495,7 @@ export function ExperimentalTools({
                 </div>
               </details>
             )}
+            <ExperimentalVersion version="0.5.1" />
           </section>
           {modeUi}
         </>
@@ -549,9 +537,6 @@ export function ExperimentalTools({
               <h2 className="ce-card-title">
                 {t(`experimental.job.${job.summary.status}` as MessageKey)}
               </h2>
-              <p className="experimental-origin">
-                {t("experimental.engineHelp")}
-              </p>
               {job.error && (
                 <p className="experimental-error">{job.error.message}</p>
               )}
@@ -860,54 +845,6 @@ export function ExperimentalTools({
           )}
         </>
       )}
-      <details className="ce-card experimental-engine">
-        <summary>{t("experimental.engine")}</summary>
-        <p>{t("experimental.engineHelp")}</p>
-        <label className="ce-row">
-          <span>{t("experimental.key")}</span>
-          <input
-            className="ce-field"
-            type="password"
-            autoComplete="off"
-            value={key}
-            disabled={busy}
-            onChange={(e) => setKey(e.target.value)}
-          />
-        </label>
-        <div className="ce-actions">
-          <button
-            className="ce-button"
-            disabled={busy || !native || key.length < 16}
-            onClick={() =>
-              void perform(async () => {
-                await call(api, "provider_configure", { key });
-                if (live.current) setKey("");
-              })
-            }
-          >
-            {t("experimental.keySave")}
-          </button>
-          <button
-            className="ce-button"
-            disabled={busy || !native || !status?.liveConfigured}
-            onClick={() =>
-              void perform(async () => {
-                await call(api, "provider_configure", { key: null });
-                if (live.current) setMode("template");
-              })
-            }
-          >
-            {t("experimental.keyClear")}
-          </button>
-        </div>
-        {status?.liveConfigured && <p>{t("experimental.keyReady")}</p>}
-        <p className="experimental-origin">
-          {t("experimental.workspace")}: {status?.workspace || "—"}
-        </p>
-        {status?.storeWarning && (
-          <p className="experimental-error">{status.storeWarning}</p>
-        )}
-      </details>
       {review && (
         <InstanceOperationDialog
           title={t("experimental.review")}

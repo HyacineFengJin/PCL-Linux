@@ -93,7 +93,7 @@ function Check({
     </label>
   );
 }
-const project = "https://github.com/HyacineFengJin/PCL-Linux";
+const project = "https://github.com/HyacineFengJin/PCL-RH";
 const NotifyContext = createContext<(message: string) => void>(() => {});
 function LinkButton({
   children,
@@ -655,7 +655,7 @@ function ExtraSettingsContent({
             url="https://github.com/PCL-Community"
           />
           <Credit
-            name="PCL Linux"
+            name="PCL RH"
             description={tr.t("about.version")}
             image={launcherIcon}
             action={tr.t("about.source")}

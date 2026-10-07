@@ -1,7 +1,7 @@
 import { t } from "./i18n";
 import { useState } from "react";
 import type { Api } from "./types";
-import { ExperimentalTools } from "./ExperimentalTools";
+import { ExperimentalCards } from "./ExperimentalExtensions";
 import type { ExperimentalNavigate } from "./experimentalTypes";
 import { ToolboxDownload } from "./ToolboxDownload";
 import { ToolboxGenerators } from "./ToolboxGenerators";
@@ -64,9 +64,10 @@ export function Toolbox({
         </div>
       </section>
       {api && (
-        <ExperimentalTools
+        <ExperimentalCards
           api={api}
           native={native}
+          slot="tools.cards"
           onNavigate={onExperimentalNavigate}
         />
       )}

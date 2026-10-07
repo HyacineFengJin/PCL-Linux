@@ -60,10 +60,22 @@ const messages = {
     "Hide pages you do not need or disable specific features. Press F12 on any page to temporarily reveal hidden features.",
   "hiding.unavailable":
     "Feature hiding and temporary F12 reveal are not connected",
+  "personalize.interaction": "Cursor and context menu",
+  "personalize.customCursor": "Use custom cursors",
+  "personalize.cursorStyle": "Cursor style",
+  "personalize.cursorAccent": "Blue gradient",
+  "personalize.cursorOutline": "Clean outline",
+  "personalize.cursorSize": "Cursor size",
+  "personalize.cursorSmall": "Small (24 px)",
+  "personalize.cursorStandard": "Standard (28 px)",
+  "personalize.customContextMenu": "Use custom text context menu",
+  "personalize.menuDensity": "Menu spacing",
+  "personalize.menuComfortable": "Comfortable",
+  "personalize.menuCompact": "Compact",
   "personalize.basic": "Basics",
   "personalize.opacity": "Opacity",
   "personalize.projectNotice":
-    "PCL Linux uses a blue color palette. This project provides updates and source code.",
+    "PCL RH uses a blue color palette. This project provides updates and source code.",
   "personalize.project": "View Linux project",
   "personalize.theme": "Theme",
   "personalize.systemTheme": "Follow system",
@@ -163,7 +175,7 @@ const messages = {
   "misc.import": "Import settings",
   "misc.stopUnavailable":
     "The Linux launcher removal workflow is not connected",
-  "misc.stop": "Stop using PCL Linux",
+  "misc.stop": "Stop using PCL RH",
   "misc.network": "Network",
   "misc.dohUnavailable":
     "DoH resolution is not connected to the network client",
@@ -303,16 +315,16 @@ const messages = {
     "The User Agent request header includes the launcher version. Authentication, resource downloads, and project queries send the requests needed by their respective services.",
   "about.other": "Other information",
   "about.independent":
-    "PCL Linux is an independent native Linux implementation with an interface based on Plain Craft Launcher Community Edition.",
+    "PCL RH is an independent native Linux implementation with an interface based on Plain Craft Launcher Community Edition.",
   "about.minecraftNotice":
     "NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.",
-  "about.linuxSource": "PCL Linux source code",
+  "about.linuxSource": "PCL RH source code",
   "about.accounts": "Privacy and account information",
   "about.guide": "Project usage guide",
   "about.attribution": "Upstream resource attribution",
   "about.assetSources": "Interface and image sources",
   "about.attributionText":
-    "PCL Linux is an independent native Linux implementation. Its interface is based on PCL CE; some images come from HMCL, Minecraft, and loader projects. Attribution is retained under each resource's copyright and license terms.",
+    "PCL RH is an independent native Linux implementation. Its interface is based on PCL CE; some images come from HMCL, Minecraft, and loader projects. Attribution is retained under each resource's copyright and license terms.",
   "about.noLobby":
     "This project does not use the PCL CE multiplayer lobby or Natayark OpenID service.",
   "about.upstream": "View upstream project",

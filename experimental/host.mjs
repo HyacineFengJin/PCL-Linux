@@ -15,6 +15,10 @@ import {
   registerReviewPreviewTools,
   LivePiProvider,
 } from "./runtime/src/index.mjs";
+import {
+  getPiCatalog,
+  publicPiSelection,
+} from "./runtime/src/providers/pi-selection.mjs";
 import { SubprocessSupervisor } from "./runtime/src/subprocesses.mjs";
 import {
   captureSourceArtifact,
@@ -23,12 +27,17 @@ import {
 import { ExtensionHost } from "./extensions/src/host.mjs";
 import { readManifest } from "./extensions/src/manifest.mjs";
 import { readPackage } from "./extensions/src/package.mjs";
+import { AiPresets } from "./ai-presets.mjs";
 
 const code = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(process.argv[2]);
 await fs.mkdir(root, { recursive: true, mode: 0o700 });
-let key = null,
+let selection = null,
   closing = false;
+const presets = await new AiPresets(root).init();
+// Per-job snapshots outlive edits, preset deletion and the engine's stop flag.
+// Keys never enter durable job input, receipts or renderer projections.
+const liveRuns = new Map();
 const adapters = registerDomainAdapters(createDefaultTools());
 const bridge = new SubprocessSupervisor({
   trustedCommands: Object.fromEntries(
@@ -82,7 +91,11 @@ class TemplateProvider {
     return ctx.invoke("inspect", "porter.inspect", ctx.job.input);
   }
 }
-const live = new LivePiProvider({ enabled: true, getApiKey: () => key });
+const live = new LivePiProvider({
+  enabled: true,
+  getSelection: (job) => liveRuns.get(job.id)?.selection,
+  getLimits: (job) => liveRuns.get(job.id)?.limits,
+});
 const runtime = await new AgentRuntime({
   root: path.join(root, "jobs"),
   tools: adapters.registry,
@@ -256,7 +269,10 @@ async function dispatch(operation, a) {
           pi: "1.0.4",
         },
         jobs: await listJobs(),
-        liveConfigured: !!key,
+        liveConfigured: !!selection,
+        liveAvailable: !!presets.selected(),
+        liveSelection: publicPiSelection(selection),
+        aiPresets: presets.view(),
         liveTested: false,
         workspace: root,
         storeWarning,
@@ -334,25 +350,38 @@ async function dispatch(operation, a) {
       sourceImports.set(id, result.files);
       return { sourceId: id, files: result.files, skipped: result.skipped };
     }
-    case "provider_configure":
-      if (
-        a.key !== null &&
-        (typeof a.key !== "string" ||
-          a.key.length < 16 ||
-          a.key.length > 512 ||
-          /\s/.test(a.key))
-      )
-        throw new Error("Invalid API key");
-      key = a.key;
-      return { liveConfigured: !!key, liveTested: false };
+    case "provider_catalog":
+      return getPiCatalog();
+    case "provider_presets":
+      return presets.view();
+    case "provider_preset_save":
+      return presets.save(a);
+    case "provider_preset_select":
+      return presets.select(a.id);
+    case "provider_preset_delete":
+      return presets.remove(a.id);
+    case "provider_start": {
+      const record = presets.selected();
+      if (!record) throw new Error("Save and select an AI preset first");
+      selection = record.selection;
+      return {
+        liveConfigured: true,
+        liveSelection: publicPiSelection(selection),
+      };
+    }
+    case "provider_stop":
+      selection = null;
+      await Promise.all([...liveRuns.keys()].map((id) => runtime.cancel(id)));
+      return { liveConfigured: false, liveSelection: null };
     case "job_create": {
       if (
         !["maker", "porter"].includes(a.profile) ||
         !["template", "live"].includes(a.mode)
       )
         throw new Error("Choose a supported workflow");
-      if (a.mode === "live" && !key)
-        throw new Error("Configure a session key first");
+      const preset = a.mode === "live" ? presets.selected() : null;
+      if (a.mode === "live" && !preset)
+        throw new Error("Save and select an AI preset first");
       if (
         (await listJobs()).filter((j) =>
           ["queued", "running"].includes(j.status),
@@ -385,7 +414,25 @@ async function dispatch(operation, a) {
           files,
           permittedPaths: a.permittedPaths,
         });
-      void runtime.start(job.id).catch(() => {});
+      if (preset) {
+        selection = preset.selection;
+        liveRuns.set(job.id, {
+          selection: preset.selection,
+          limits: preset.limits,
+        });
+      }
+      try {
+        void runtime
+          .start(job.id)
+          .catch(() => {})
+          .finally(() => liveRuns.delete(job.id));
+      } catch (error) {
+        // Admission can change after the disk read. Do not leave a queued job
+        // or a private credential snapshot behind if runtime admission refuses.
+        liveRuns.delete(job.id);
+        await runtime.cancel(job.id);
+        throw error;
+      }
       return { jobId: job.id };
     }
     case "job_read": {
@@ -524,7 +571,7 @@ async function dispatch(operation, a) {
     }
     case "shutdown":
       closing = true;
-      key = null;
+      selection = null;
       await runtime.shutdown();
       await Promise.all([
         reviews.shutdown(),

@@ -499,3 +499,71 @@ fn marker_absence_under_owned_lifetime_lock_stays_conservatively_busy() {
     drop(guard);
     assert!(read_status(&project).unwrap().is_none());
 }
+
+/// A completed marker copied during a project move may still name the old
+/// compatibility alias. Reading it must preserve bytes and all process guards.
+fn relocation_marker(f: &Fixture, recorded: &Path, phase: &str) -> Vec<u8> {
+    let mut monitor = process::identity(std::process::id()).unwrap().unwrap();
+    // Keep the valid boot identity but use absent PIDs: these fixtures never
+    // signal or launch a process, and cannot report a false running game.
+    monitor.pid = i32::MAX as u32;
+    monitor.start_time = 1;
+    let mut game = monitor.clone();
+    game.pid -= 1;
+    serde_json::to_vec(&serde_json::json!({
+        "schema_version":1,"project":recorded,"root_id":"root-generic",
+        "root_path":f.0.join("root"),"log_path":f.0.join("root/.pcl-linux/logs/generic.log"),
+        "monitor":monitor,"game":game,"phase":phase,"started_at":1,"exit_code":0
+    }))
+    .unwrap()
+}
+#[test]
+fn relocation_alias_accepts_same_project_without_rewriting_marker() {
+    let f = Fixture::new();
+    let current = f.0.join("project");
+    let alias = f.0.join("former-project");
+    std::os::unix::fs::symlink(&current, &alias).unwrap();
+    let scope = crate::launcher_local::filesystem::Scope::create(&current, "game-monitor").unwrap();
+    let marker = scope.path().join("active.json");
+    let bytes = relocation_marker(&f, &alias, "exited");
+    fs::write(&marker, &bytes).unwrap();
+    let status = read_status(&current).unwrap().unwrap();
+    assert_eq!(status.phase, "exited");
+    assert!(!status.busy);
+    assert_eq!(fs::read(marker).unwrap(), bytes);
+}
+#[test]
+fn relocation_alias_keeps_live_process_and_future_schema_guards() {
+    let f = Fixture::new();
+    let current = f.0.join("project");
+    let alias = f.0.join("former-project");
+    std::os::unix::fs::symlink(&current, &alias).unwrap();
+    let scope = crate::launcher_local::filesystem::Scope::create(&current, "game-monitor").unwrap();
+    let marker = scope.path().join("active.json");
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&relocation_marker(&f, &alias, "running")).unwrap();
+    value["monitor"] =
+        serde_json::to_value(process::identity(std::process::id()).unwrap().unwrap()).unwrap();
+    fs::write(&marker, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(read_status(&current).unwrap().unwrap().busy);
+    value["schema_version"] = serde_json::json!(2);
+    let bytes = serde_json::to_vec(&value).unwrap();
+    fs::write(&marker, &bytes).unwrap();
+    assert!(read_status(&current).is_err());
+    assert_eq!(fs::read(marker).unwrap(), bytes);
+}
+#[test]
+fn relocation_alias_to_another_project_or_missing_path_is_rejected() {
+    let f = Fixture::new();
+    let current = f.0.join("project");
+    let scope = crate::launcher_local::filesystem::Scope::create(&current, "game-monitor").unwrap();
+    let marker = scope.path().join("active.json");
+    let alias = f.0.join("foreign-project");
+    std::os::unix::fs::symlink(f.0.join("root"), &alias).unwrap();
+    for recorded in [alias, f.0.join("missing-project")] {
+        let bytes = relocation_marker(&f, &recorded, "exited");
+        fs::write(&marker, &bytes).unwrap();
+        assert!(read_status(&current).is_err());
+        assert_eq!(fs::read(&marker).unwrap(), bytes);
+    }
+}

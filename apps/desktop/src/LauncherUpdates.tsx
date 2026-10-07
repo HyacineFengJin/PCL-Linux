@@ -203,7 +203,7 @@ export function LauncherUpdates({
             style={{ flex: "1 1 220px", minWidth: 0, overflowWrap: "anywhere" }}
           >
             <strong>
-              {view ? `PCL Linux ${view.current.version}` : "PCL Linux"}
+              {view ? `PCL RH ${view.current.version}` : "PCL RH"}
             </strong>
             <p>{reason || tr.t(stateKeys[view?.state || "idle"])}</p>
             {view && (
@@ -366,7 +366,7 @@ export function LauncherUpdates({
               className="ce-button"
               onClick={() =>
                 void api("ui_open_link", {
-                  url: "https://github.com/HyacineFengJin/PCL-Linux/commits/master/",
+                  url: "https://github.com/HyacineFengJin/PCL-RH/commits/master/",
                 }).catch((error) =>
                   current.current.onNotify(
                     current.current.tr.serviceError(error),

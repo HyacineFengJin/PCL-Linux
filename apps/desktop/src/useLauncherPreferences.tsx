@@ -196,6 +196,16 @@ export function useLauncherPreferences(
     );
     return () => media.removeEventListener("change", apply);
   }, [prefs.appearance.theme, prefs.appearance.opacity_percent]);
+  useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.customCursor = String(prefs.appearance.custom_cursor);
+    root.dataset.cursorStyle = prefs.appearance.cursor_style;
+    root.dataset.cursorSize = prefs.appearance.cursor_size;
+  }, [
+    prefs.appearance.custom_cursor,
+    prefs.appearance.cursor_style,
+    prefs.appearance.cursor_size,
+  ]);
   useEffect(
     () =>
       animateLauncher(prefs.animation.fps_limit, prefs.animation.speed_percent),

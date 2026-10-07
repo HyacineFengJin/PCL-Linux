@@ -116,6 +116,12 @@ export function configureLocale(
   systemLocale?: string,
 ): void {
   active = createTranslator(localization, systemLocale);
+  // Keep screen-reader language and language-specific layout in sync with UI text.
+  if (
+    typeof document !== "undefined" &&
+    document.documentElement.lang !== active.language
+  )
+    document.documentElement.lang = active.language;
 }
 export function t<K extends MessageKey>(
   key: K,

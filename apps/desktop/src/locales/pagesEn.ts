@@ -266,7 +266,7 @@ const messages = {
   "export.servers": "Multiplayer server list",
   "export.other": "Other folders",
   "export.otherHelp": "Folders not covered by the options above",
-  "export.launcher": "PCL Linux launcher",
+  "export.launcher": "PCL RH launcher",
   "export.launcherHelp":
     "Bundle the launcher so players without one can install the modpack",
   "export.advanced": "Advanced options",

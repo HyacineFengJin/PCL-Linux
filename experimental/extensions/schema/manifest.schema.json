@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "PCL Linux declarative extension lab v1",
+  "title": "PCL RH declarative extension lab v1",
   "description": "Editor-assist structural schema. Runtime additionally rejects duplicate object keys, reserved keys, control/bidi characters, whitespace, incompatible API intervals, duplicate IDs and undeclared capabilities, and enforces byte/complexity limits.",
   "type": "object",
   "additionalProperties": false,

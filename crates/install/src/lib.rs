@@ -190,7 +190,7 @@ impl Installer {
         Ok(Self {
             client: factory
                 .async_client()
-                .user_agent("PCL-Linux/0.1")
+                .user_agent("PCL-RH/0.1")
                 .connect_timeout(Duration::from_secs(15))
                 .timeout(Duration::from_secs(120))
                 .redirect(reqwest::redirect::Policy::none())

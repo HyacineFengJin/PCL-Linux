@@ -132,7 +132,7 @@ async fn stable_filter_cache_refresh_and_network_identity_use_actual_provider() 
     assert!(!all.cached);
     assert!(all.items.iter().all(|item| item
         .url
-        .starts_with("https://github.com/HyacineFengJin/PCL-Linux/releases/tag/")));
+        .starts_with("https://github.com/HyacineFengJin/PCL-RH/releases/tag/")));
     let important = store
         .read_with(
             AnnouncementScope::Important,

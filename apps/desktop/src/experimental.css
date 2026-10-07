@@ -4,13 +4,6 @@
 .experimental-panel p {
   line-height: 1.6;
 }
-.experimental-badge {
-  display: inline-block;
-  margin-left: 9px;
-  color: var(--ce-link, #2078da);
-  font-size: 11px;
-  font-weight: 400;
-}
 .experimental-origin {
   color: var(--ce-muted-text, #9099a4);
   font-size: 12px;
@@ -157,4 +150,82 @@
 .experimental-panel .ce-card-title > svg {
   vertical-align: -3px;
   margin-right: 3px;
+}
+
+/* Sibling tool pages use the available content width, including narrow windows. */
+.experimental-ai .ce-row {
+  grid-template-columns: minmax(100px, 150px) minmax(0, 1fr);
+}
+.experimental-ai .ce-field {
+  min-width: 0;
+}
+.experimental-ai .ce-card-title {
+  flex-wrap: wrap;
+}
+.experimental-ai .experimental-provider-status,
+.experimental-ai .experimental-origin {
+  overflow-wrap: anywhere;
+}
+.experimental-prices {
+  margin: 12px 0;
+}
+.experimental-prices summary {
+  margin-bottom: 10px;
+}
+
+.experimental-preset-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.experimental-preset-controls > .ce-select {
+  flex: 1 1 170px;
+  min-width: 0;
+}
+.experimental-launch-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 18px;
+}
+.experimental-launch-controls .launch-button {
+  height: 54px;
+  border-color: var(--ce-link, #2078da);
+}
+.experimental-launch-controls .launch-button > span {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.experimental-advanced {
+  margin-top: 18px;
+}
+.experimental-advanced > summary {
+  color: var(--ce-link, #2078da);
+  padding: 10px 0;
+}
+.experimental-advanced .ce-actions {
+  margin-bottom: 18px;
+}
+
+.experimental-component-version {
+  margin-top: 14px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--ce-muted-text, #9099a4);
+}
+.experimental-engine-credit > p {
+  margin: 0;
+}
+.experimental-pi-link {
+  margin-left: 12px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ce-link, #2078da);
+}
+.experimental-pi-link:hover {
+  text-decoration: underline;
 }

@@ -34,7 +34,6 @@ const hidingGroups: {
       { id: "settings.launch", labelKey: "nav.launch" },
       { id: "settings.java", labelKey: "nav.java" },
       { id: "settings.manage", labelKey: "nav.manage" },
-      { id: "settings.network", labelKey: "nav.network" },
       { id: "settings.personalize", labelKey: "nav.personalize" },
       { id: "settings.language", labelKey: "nav.language" },
       { id: "settings.misc", labelKey: "nav.misc" },
@@ -47,8 +46,12 @@ const hidingGroups: {
   {
     labelKey: "hiding.tools",
     items: [
-      { id: "tools.network", labelKey: "nav.network" },
       { id: "tools.toolbox", labelKey: "nav.toolbox" },
+      { id: "tools.extensions", labelKey: "experimental.extensions" },
+      { id: "tools.marketplace", labelKey: "experimental.marketplace" },
+      { id: "tools.maker", labelKey: "experimental.maker" },
+      { id: "tools.porter", labelKey: "experimental.porter" },
+      { id: "tools.ai", labelKey: "experimental.ai" },
     ],
   },
   {
@@ -120,6 +123,78 @@ export function LauncherPersonalize(
           })}
         </p>
       )}
+      <Card title={tr.t("personalize.interaction")}>
+        <Check
+          value={p.appearance.custom_cursor}
+          disabled={disabled("appearance")}
+          reason={reason("appearance")}
+          onChange={(custom_cursor) =>
+            patch("appearance", { appearance: { custom_cursor } })
+          }
+        >
+          {tr.t("personalize.customCursor")}
+        </Check>
+        <Field label={tr.t("personalize.cursorStyle")}>
+          <Select
+            label={tr.t("personalize.cursorStyle")}
+            value={p.appearance.cursor_style}
+            options={[
+              { value: "accent", label: tr.t("personalize.cursorAccent") },
+              { value: "outline", label: tr.t("personalize.cursorOutline") },
+            ]}
+            disabled={disabled("appearance") || !p.appearance.custom_cursor}
+            reason={reason("appearance")}
+            onChange={(cursor_style) =>
+              patch("appearance", { appearance: { cursor_style } })
+            }
+          />
+        </Field>
+        <Field label={tr.t("personalize.cursorSize")}>
+          <Select
+            label={tr.t("personalize.cursorSize")}
+            value={p.appearance.cursor_size}
+            options={[
+              { value: "small", label: tr.t("personalize.cursorSmall") },
+              { value: "standard", label: tr.t("personalize.cursorStandard") },
+            ]}
+            disabled={disabled("appearance") || !p.appearance.custom_cursor}
+            reason={reason("appearance")}
+            onChange={(cursor_size) =>
+              patch("appearance", { appearance: { cursor_size } })
+            }
+          />
+        </Field>
+        <Check
+          value={p.appearance.custom_context_menu}
+          disabled={disabled("appearance")}
+          reason={reason("appearance")}
+          onChange={(custom_context_menu) =>
+            patch("appearance", { appearance: { custom_context_menu } })
+          }
+        >
+          {tr.t("personalize.customContextMenu")}
+        </Check>
+        <Field label={tr.t("personalize.menuDensity")}>
+          <Select
+            label={tr.t("personalize.menuDensity")}
+            value={p.appearance.context_menu_density}
+            options={[
+              {
+                value: "comfortable",
+                label: tr.t("personalize.menuComfortable"),
+              },
+              { value: "compact", label: tr.t("personalize.menuCompact") },
+            ]}
+            disabled={
+              disabled("appearance") || !p.appearance.custom_context_menu
+            }
+            reason={reason("appearance")}
+            onChange={(context_menu_density) =>
+              patch("appearance", { appearance: { context_menu_density } })
+            }
+          />
+        </Field>
+      </Card>
       <Card title={tr.t("personalize.basic")}>
         <Field label={tr.t("personalize.opacity")}>
           <Range
@@ -143,7 +218,7 @@ export function LauncherPersonalize(
             onClick={() =>
               void props
                 .api("ui_open_link", {
-                  url: "https://github.com/HyacineFengJin/PCL-Linux",
+                  url: "https://github.com/HyacineFengJin/PCL-RH",
                 })
                 .catch((e) => props.onNotify(tr.serviceError(e)))
             }

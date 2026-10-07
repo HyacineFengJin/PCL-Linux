@@ -56,3 +56,13 @@
     animation: none;
   }
 }
+
+.ce-context-menu[data-density="compact"] {
+  width: 192px;
+  font-size: 13px;
+}
+.ce-context-menu[data-density="compact"] button {
+  min-height: 26px;
+  padding: 3px 6px;
+  gap: 7px;
+}

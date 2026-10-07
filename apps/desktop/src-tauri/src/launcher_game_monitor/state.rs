@@ -62,7 +62,7 @@ fn parse(project: &Path, snapshot: &Snapshot) -> Result<Marker, String> {
     let marker: Marker = serde_json::from_slice(&snapshot.header)
         .map_err(|_| "游戏监控状态无效，已保留文件；暂停启动和文件操作")?;
     if marker.schema_version != 1
-        || marker.project != project
+        || !project_matches(&marker.project, project)
         || marker.root_id.is_empty()
         || marker.root_id.len() > 128
         || marker.root_id.chars().any(char::is_control)
@@ -77,6 +77,14 @@ fn parse(project: &Path, snapshot: &Snapshot) -> Result<Marker, String> {
     }
     validate_log_path(&marker.root_path, &marker.log_path)?;
     Ok(marker)
+}
+/// A project move can retain its former path as a compatibility symlink. Accept
+/// that alias only when it resolves to this same project, leaving PID boot/start
+/// identity, log ownership, marker revision and writer checks intact. No marker
+/// is rewritten while a supervisor might still own it.
+fn project_matches(recorded: &Path, current: &Path) -> bool {
+    recorded == current
+        || (recorded.is_absolute() && recorded.canonicalize().ok().as_deref() == Some(current))
 }
 fn status(marker: &Marker, revision: String) -> Result<MonitorStatus, String> {
     let supervisor_running = process::alive(&marker.monitor)?;

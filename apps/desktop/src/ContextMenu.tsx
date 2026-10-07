@@ -86,17 +86,21 @@ function capture(
  * no clipboard contents or password values cross our IPC boundary. */
 export function ContextMenu({
   native,
+  enabled,
+  density,
   scopeKey,
   onNotify,
 }: {
   native: boolean;
+  enabled: boolean;
+  density: "comfortable" | "compact";
   scopeKey: string;
   onNotify: (message: string) => void;
 }) {
   const [menu, setMenu] = useState<Menu | null>(null);
   const [position, setPosition] = useState({ left: 0, top: 0 });
   const popup = useRef<HTMLDivElement>(null);
-  const visible = menu?.scope === scopeKey ? menu : null;
+  const visible = enabled && menu?.scope === scopeKey ? menu : null;
   const current = useRef(visible);
   current.current = visible;
 
@@ -118,6 +122,8 @@ export function ContextMenu({
   }
 
   useEffect(() => {
+    setMenu(null);
+    if (!enabled) return;
     const open = (event: MouseEvent) => {
       // React's directory menu has already claimed the event before it bubbles
       // to document. Never put a second generic menu over a specific one.
@@ -206,7 +212,7 @@ export function ContextMenu({
       window.removeEventListener("resize", close);
       window.removeEventListener("blur", close);
     };
-  }, [scopeKey]);
+  }, [scopeKey, enabled]);
 
   useLayoutEffect(() => {
     if (!visible || !popup.current) return;
@@ -225,7 +231,7 @@ export function ContextMenu({
       popup.current
         .querySelector<HTMLButtonElement>("button:not(:disabled)")
         ?.focus({ preventScroll: true });
-  }, [visible]);
+  }, [visible, density]);
 
   if (!visible) return null;
   const options = [
@@ -282,6 +288,7 @@ export function ContextMenu({
   return createPortal(
     <div
       className="ce-context-menu"
+      data-density={density}
       ref={popup}
       role="menu"
       aria-label={t("context.menu")}

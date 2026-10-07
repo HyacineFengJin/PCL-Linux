@@ -5,7 +5,7 @@ use tauri::State;
 
 fn client() -> Result<reqwest::Client, String> {
     pcl_network::async_client()
-        .user_agent("PCL-Linux/0.2.0 (https://github.com/HyacineFengJin/PCL-Linux)")
+        .user_agent("PCL-RH/0.2.0 (https://github.com/HyacineFengJin/PCL-RH)")
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())
@@ -37,6 +37,7 @@ pub fn ui_open_link(url: String) -> Result<(), String> {
             parsed.host_str(),
             Some(
                 "github.com"
+                    | "pi.dev"
                     | "neoforged.net"
                     | "www.mcmod.cn"
                     | "files.minecraftforge.net"
@@ -327,7 +328,7 @@ pub struct Issue {
 #[tauri::command]
 pub async fn project_feedback() -> Result<Vec<Issue>, String> {
     let data = get(
-        "https://api.github.com/repos/HyacineFengJin/PCL-Linux/issues?state=open&per_page=100",
+        "https://api.github.com/repos/HyacineFengJin/PCL-RH/issues?state=open&per_page=100",
         2 * 1024 * 1024,
     )
     .await?;

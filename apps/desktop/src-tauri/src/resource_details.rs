@@ -12,7 +12,7 @@ fn valid_id(value: &str) -> bool {
 
 fn client() -> Result<reqwest::Client, String> {
     pcl_network::async_client()
-        .user_agent("PCL-Linux/0.2.0 (https://github.com/HyacineFengJin/PCL-Linux)")
+        .user_agent("PCL-RH/0.2.0 (https://github.com/HyacineFengJin/PCL-RH)")
         .timeout(Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::none())
         .build()

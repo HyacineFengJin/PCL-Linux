@@ -74,7 +74,7 @@ impl Provider for Mojang {
             let client = self
                 .network
                 .async_client()
-                .user_agent("PCL-Linux-Minecraft-update-hints")
+                .user_agent("PCL-RH-Minecraft-update-hints")
                 .https_only(self.url == API)
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(8))

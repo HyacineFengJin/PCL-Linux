@@ -254,3 +254,42 @@ fn unsafe_legacy_exec_is_withdrawable_but_cannot_be_silently_reused() {
     );
     assert_eq!(desktop_value("/project ").unwrap(), "/project\\s");
 }
+
+#[test]
+fn product_rename_keeps_exact_former_entries_and_rejects_edited_entries() {
+    let f = Fixture::new();
+    let store = f.store();
+    fs::create_dir_all(&store.paths.applications).unwrap();
+    let path = store.paths.applications.join(NAME);
+    let current = String::from_utf8(store.contents().unwrap()).unwrap();
+    assert!(current.contains(CURRENT_NAMES));
+    let former = current.replace(CURRENT_NAMES, FORMER_NAMES);
+    fs::write(&path, &former).unwrap();
+    let plan = store.prepare_withdraw().unwrap();
+    assert_eq!(plan.entries.len(), 1);
+    store.withdraw(&plan.revision).unwrap();
+    let row = store.recovery().unwrap().remove(0);
+    store.restore(&row.operation_id, &row.revision).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), former);
+    fs::write(&path, former + "X-Edited=true\n").unwrap();
+    assert!(store.prepare_create(ShortcutTarget::Applications).is_err());
+    assert!(store.prepare_withdraw().unwrap().entries.is_empty());
+}
+#[test]
+fn product_rename_recognizes_current_install_script_entry() {
+    let f = Fixture::new();
+    let store = f.store();
+    fs::create_dir_all(&store.paths.applications).unwrap();
+    let current = String::from_utf8(store.legacy().unwrap())
+        .unwrap()
+        .replace(FORMER_NAMES, CURRENT_NAMES);
+    fs::write(store.paths.applications.join(NAME), current).unwrap();
+    assert_eq!(store.prepare_withdraw().unwrap().entries.len(), 1);
+    assert!(
+        store
+            .prepare_create(ShortcutTarget::Applications)
+            .unwrap()
+            .entries[0]
+            .already_registered
+    );
+}

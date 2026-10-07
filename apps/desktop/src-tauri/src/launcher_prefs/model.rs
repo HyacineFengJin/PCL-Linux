@@ -20,6 +20,12 @@ selection!(Theme {
     Dark
 });
 selection!(Palette { Blue });
+selection!(CursorStyle { Accent, Outline });
+selection!(CursorSize { Small, Standard });
+selection!(ContextMenuDensity {
+    Comfortable,
+    Compact
+});
 selection!(DownloadFileName {
     Original,
     ProjectVersion
@@ -108,6 +114,16 @@ pub enum MenuId {
     ToolsMultiplayer,
     #[serde(rename = "tools.toolbox")]
     ToolsToolbox,
+    #[serde(rename = "tools.extensions")]
+    ToolsExtensions,
+    #[serde(rename = "tools.marketplace")]
+    ToolsMarketplace,
+    #[serde(rename = "tools.maker")]
+    ToolsMaker,
+    #[serde(rename = "tools.porter")]
+    ToolsPorter,
+    #[serde(rename = "tools.ai")]
+    ToolsAi,
     #[serde(rename = "instance.modify")]
     InstanceModify,
     #[serde(rename = "instance.export")]
@@ -151,6 +167,11 @@ impl MenuId {
         Self::SettingsLogs,
         Self::ToolsMultiplayer,
         Self::ToolsToolbox,
+        Self::ToolsExtensions,
+        Self::ToolsMarketplace,
+        Self::ToolsMaker,
+        Self::ToolsPorter,
+        Self::ToolsAi,
         Self::InstanceModify,
         Self::InstanceExport,
         Self::InstanceSaves,
@@ -177,6 +198,11 @@ pub struct AppearancePreferences {
     pub lock_window_size: bool,
     pub launch_tips: bool,
     pub advanced_materials: bool,
+    pub custom_cursor: bool,
+    pub cursor_style: CursorStyle,
+    pub cursor_size: CursorSize,
+    pub custom_context_menu: bool,
+    pub context_menu_density: ContextMenuDensity,
     /// Empty selects the current launcher CSS font. One family name is accepted.
     pub global_font: String,
     pub motd_font: String,
@@ -192,6 +218,11 @@ impl Default for AppearancePreferences {
             lock_window_size: false,
             launch_tips: true,
             advanced_materials: false,
+            custom_cursor: true,
+            cursor_style: CursorStyle::default(),
+            cursor_size: CursorSize::default(),
+            custom_context_menu: true,
+            context_menu_density: ContextMenuDensity::default(),
             global_font: String::new(),
             motd_font: String::new(),
         }
@@ -396,7 +427,9 @@ macro_rules! patch {
 patch!(AppearancePatch => AppearancePreferences {
     opacity_percent: u8, theme: Theme, light_palette: Palette, dark_palette: Palette,
     show_logo: bool, lock_window_size: bool, launch_tips: bool,
-    advanced_materials: bool, global_font: String, motd_font: String,
+    advanced_materials: bool, custom_cursor: bool, cursor_style: CursorStyle,
+    cursor_size: CursorSize, custom_context_menu: bool, context_menu_density: ContextMenuDensity,
+    global_font: String, motd_font: String,
 });
 patch!(BackgroundPatch => BackgroundPreferences {
     color_overlay: bool, background_asset_id: String, music_asset_id: String,

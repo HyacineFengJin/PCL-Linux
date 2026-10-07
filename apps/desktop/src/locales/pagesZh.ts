@@ -250,7 +250,7 @@ const messages = {
   "export.servers": "多人游戏服务器列表",
   "export.other": "其他文件夹",
   "export.otherHelp": "未被上方选项覆盖的文件夹",
-  "export.launcher": "PCL Linux 启动器程序",
+  "export.launcher": "PCL RH 启动器程序",
   "export.launcherHelp": "打包启动器，以便没有启动器的玩家安装整合包",
   "export.advanced": "高级选项",
   "export.assets": "打包资源文件，以避免在导入时下载",

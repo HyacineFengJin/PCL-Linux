@@ -51,8 +51,8 @@ import {
   Image,
   Server,
   ArrowRight,
-  Link2,
-  Waypoints,
+  WandSparkles,
+  ArrowRightLeft,
   ShieldCheck,
   Network,
   Unplug,
@@ -72,7 +72,9 @@ import {
 } from "./DownloadPanel";
 import defaultSkin from "./assets/game-icons/steve.png";
 import { ExperimentalCards } from "./ExperimentalExtensions";
-import type { ExperimentalNavigate } from "./experimentalTypes";
+import type { ExperimentalNavigate, ToolsPage } from "./experimentalTypes";
+import { ExperimentalTools, type ExperimentalDraft } from "./ExperimentalTools";
+import { ExperimentalAi } from "./ExperimentalAi";
 import { Toolbox } from "./Toolbox";
 import { SettingsPanel } from "./SettingsPanel";
 import {
@@ -832,9 +834,13 @@ function Cube({ forge = false }: { forge?: boolean }) {
   );
 }
 function App() {
+  const experimentalDrafts = React.useRef<
+    Partial<Record<"extensions" | "maker" | "porter", ExperimentalDraft>>
+  >({});
   const [data, setData] = useState<State | null>(null),
     [error, setError] = useState(""),
     [tab, setTab] = useState("launch"),
+    [toolsPage, setToolsPage] = useState<ToolsPage>("toolbox"),
     [dialog, setDialog] = useState<
       "versions" | "instance" | "accounts" | "account-type" | null
     >(null),
@@ -1223,7 +1229,7 @@ function App() {
     screen === "resource"
       ? `${resource?.source || ""}:${resource?.project_id || resource?.local_path || ""}`
       : "";
-  const navigationKey = `${rootKey}:${screen}:${tab}:${instancePage}:${data?.settings.selected || ""}:${resourceNavigation}`;
+  const navigationKey = `${rootKey}:${screen}:${tab}:${toolsPage}:${instancePage}:${data?.settings.selected || ""}:${resourceNavigation}`;
   if (taskNavigation.current.key !== navigationKey) {
     taskNavigation.current = {
       key: navigationKey,
@@ -1375,8 +1381,22 @@ function App() {
     ) {
       setSettingsPage("launch");
       if (launcher.isHidden("settings.launch")) setTab("launch");
-    } else if (tab === "tools" && launcher.isHidden("tools.toolbox")) {
-      setTab("launch");
+    } else if (
+      tab === "tools" &&
+      launcher.isHidden(`tools.${toolsPage}` as LauncherMenuId)
+    ) {
+      const visible = (
+        [
+          "toolbox",
+          "extensions",
+          "marketplace",
+          "maker",
+          "porter",
+          "ai",
+        ] as const
+      ).find((page) => !launcher.isHidden(`tools.${page}` as LauncherMenuId));
+      if (visible) setToolsPage(visible);
+      else setTab("launch");
     }
     const instanceId =
       instancePage === "litematics" ? "schematics" : instancePage;
@@ -1397,6 +1417,7 @@ function App() {
     screen,
     settingsPage,
     instancePage,
+    toolsPage,
   ]);
   function applyState(snapshot: State) {
     const next = normalizedState(snapshot);
@@ -1821,13 +1842,6 @@ function App() {
     { id: "java", label: t("nav.java"), icon: Coffee },
     { id: "manage", label: t("nav.manage"), icon: BookMarked },
     {
-      id: "network",
-      label: t("nav.network"),
-      group: t("nav.tools"),
-      icon: Waypoints,
-      disabled: true,
-    },
-    {
       id: "personalize",
       label: t("nav.personalize"),
       group: t("main.launcher"),
@@ -1855,7 +1869,7 @@ function App() {
     }[],
     value: string,
     choose: (s: string) => void,
-    prefix?: "settings" | "instance",
+    prefix?: "settings" | "instance" | "tools",
   ) {
     let group: string | undefined, shownGroup: string | undefined;
     const visible = items.flatMap((item) => {
@@ -1907,6 +1921,7 @@ function App() {
         setTab("download");
         break;
       case "tools":
+        setToolsPage("toolbox");
         setScreen("home");
         setTab("tools");
         break;
@@ -1973,6 +1988,8 @@ function App() {
           {launcherMedia.backgroundUi}
           <ContextMenu
             native={native}
+            enabled={launcher.prefs.appearance.custom_context_menu}
+            density={launcher.prefs.appearance.context_menu_density}
             scopeKey={`${navigationKey}:${settingsPage}:${downloadPage}`}
             onNotify={notify}
           />
@@ -2007,7 +2024,7 @@ function App() {
                   ) : (
                     <>
                       <span className="wordmark">PCL</span>
-                      <span className="ce-badge">CE</span>
+                      <span className="ce-badge">RH</span>
                     </>
                   )}
                 </div>
@@ -2100,7 +2117,7 @@ function App() {
             <div className="loading">
               {launcher.view.revision &&
                 launcher.prefs.appearance.show_logo && (
-                  <span className="wordmark">PCL Linux</span>
+                  <span className="wordmark">PCL RH</span>
                 )}
               <LoaderCircle className="spin" />
               {t("main.loading")}
@@ -2421,27 +2438,46 @@ function App() {
                   )
                 ) : (
                   <>
-                    {!launcher.isHidden("tools.network") && (
-                      <>
-                        <div className="section-label">{t("nav.network")}</div>
-                        <button
-                          className="side-item"
-                          disabled
-                          title={t("main.networkUnavailable")}
-                        >
-                          <Link2 size={19} />
-                          <span>{t("main.lobby")}</span>
-                        </button>
-                      </>
+                    {menu(
+                      [
+                        {
+                          id: "toolbox",
+                          label: t("nav.toolbox"),
+                          group: t("main.smallTools"),
+                          icon: Gift,
+                        },
+                        {
+                          id: "extensions",
+                          label: t("experimental.extensions"),
+                          group: t("experimental.pluginGroup"),
+                          icon: Puzzle,
+                        },
+                        {
+                          id: "marketplace",
+                          label: t("experimental.marketplace"),
+                          icon: Puzzle,
+                        },
+                        {
+                          id: "maker",
+                          group: t("experimental.betaGroup"),
+                          label: t("experimental.maker"),
+                          icon: WandSparkles,
+                        },
+                        {
+                          id: "porter",
+                          label: t("experimental.porter"),
+                          icon: ArrowRightLeft,
+                        },
+                        {
+                          id: "ai",
+                          label: t("experimental.ai"),
+                          icon: Sparkles,
+                        },
+                      ],
+                      toolsPage,
+                      (id) => setToolsPage(id as ToolsPage),
+                      "tools",
                     )}
-                    <div className="section-label">{t("main.smallTools")}</div>
-                    <button
-                      className="side-item selected"
-                      title={t("nav.toolbox")}
-                    >
-                      <Gift size={19} />
-                      <span>{t("nav.toolbox")}</span>
-                    </button>
                   </>
                 )}
               </aside>
@@ -2839,7 +2875,41 @@ function App() {
                             native={native}
                           />
                         ))}
-                      {tab === "tools" && (
+                      {tab === "tools" && toolsPage === "marketplace" && (
+                        <section className="ce-card">
+                          <h2 className="ce-card-title">
+                            {t("experimental.marketplace")}
+                          </h2>
+                          <p className="experimental-origin">
+                            {t("experimental.marketplaceEmpty")}
+                          </p>
+                        </section>
+                      )}
+                      {tab === "tools" && toolsPage === "ai" && (
+                        <ExperimentalAi
+                          api={api}
+                          native={native && !tasks.closing}
+                        />
+                      )}
+                      {tab === "tools" &&
+                        toolsPage !== "toolbox" &&
+                        toolsPage !== "ai" &&
+                        toolsPage !== "marketplace" && (
+                          <ExperimentalTools
+                            key={toolsPage}
+                            page={toolsPage}
+                            drafts={experimentalDrafts}
+                            api={api}
+                            native={native && !tasks.closing}
+                            onNavigate={navigateExperimental}
+                            onConfigureAi={
+                              launcher.isHidden("tools.ai")
+                                ? undefined
+                                : () => setToolsPage("ai")
+                            }
+                          />
+                        )}
+                      {tab === "tools" && toolsPage === "toolbox" && (
                         <Toolbox
                           onOpen={open}
                           onExperimentalNavigate={navigateExperimental}

@@ -5,10 +5,10 @@ use reqwest::{header, Client, Response, Url};
 use serde::Deserialize;
 use std::{future::Future, pin::Pin, time::Duration};
 
-pub(super) const REPOSITORY: &str = "HyacineFengJin/PCL-Linux";
-pub(super) const MANIFEST_NAME: &str = "pcl-linux-update.json";
+pub(super) const REPOSITORY: &str = "HyacineFengJin/PCL-RH";
+pub(super) const MANIFEST_NAME: &str = "pcl-rh-update.json";
 pub(super) const MAX_BINARY_BYTES: u64 = 512 * 1024 * 1024;
-const API_ROOT: &str = "https://api.github.com/repos/HyacineFengJin/PCL-Linux";
+const API_ROOT: &str = "https://api.github.com/repos/HyacineFengJin/PCL-RH";
 const MAX_API_BYTES: usize = 2 * 1024 * 1024;
 pub(super) const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 pub(super) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
@@ -57,7 +57,7 @@ impl GitHubProvider {
     pub(super) fn new() -> Result<Self, String> {
         let client = pcl_network::snapshot()
             .async_client()
-            .user_agent("PCL-Linux-launcher-updates")
+            .user_agent("PCL-RH-launcher-updates")
             .https_only(true)
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))

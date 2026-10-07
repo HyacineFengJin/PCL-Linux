@@ -39,7 +39,7 @@ export const mediaUrl = (collection: string, id: string) =>
 function preset(): Homepage {
   return {
     schema_version: 1,
-    title: "PCL Linux",
+    title: "PCL RH",
     sections: [
       {
         title: t("assets.welcome"),
@@ -47,7 +47,7 @@ function preset(): Homepage {
         links: [
           {
             label: t("assets.project"),
-            url: "https://github.com/HyacineFengJin/PCL-Linux",
+            url: "https://github.com/HyacineFengJin/PCL-RH",
           },
         ],
       },

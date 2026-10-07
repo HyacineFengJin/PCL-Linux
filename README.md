@@ -1,6 +1,8 @@
-# PCL Linux 实验版
+# PCL RH
 
-面向 Linux 的 Minecraft: Java Edition 启动器，采用 **Rust + Tauri 2 + React / TypeScript**，参考 PCL CE 的界面布局与交互理念。无需 .NET。启动器核心使用 Rust，实验功能使用本地 Node.js / Python 引擎。本项目独立开发，非 PCL CE 官方发行。
+基于 Rust 的 Minecraft: Java Edition 启动器，当前提供 Linux 原生实现，采用 **Rust + Tauri 2 + React / TypeScript**，参考 PCL CE 的界面布局与交互理念。无需 .NET。启动器核心使用 Rust，实验功能使用本地 Node.js / Python 引擎。本项目独立开发，非 PCL CE 官方发行。
+
+RH 中的 R 代表 Rust，H 来自维护者的 GitHub 名称；RH 也呼应黎曼猜想（Riemann Hypothesis）。
 
 ## 功能
 
@@ -36,8 +38,8 @@
 需要 Rust/Cargo、Node.js 22.19+ / npm、Python 3.11+、GTK 3、WebKitGTK 4.1 及相关开发依赖。构建脚本还使用 curl。
 
 ```sh
-git clone https://github.com/HyacineFengJin/PCL-Linux.git
-cd PCL-Linux
+git clone https://github.com/HyacineFengJin/PCL-RH.git
+cd PCL-RH
 ./build-native.sh
 ./start-native.sh
 ```
@@ -75,7 +77,7 @@ npm run dev --prefix apps/desktop
 
 ## English
 
-PCL Linux is an experimental native Linux launcher for Minecraft: Java Edition, built with Rust, Tauri 2, React, and TypeScript. It installs vanilla, Fabric, and modern Forge/NeoForge versions with custom instance names, launches existing game installations, and displays game logs. Java can be selected automatically or registered manually, with global and per-instance choices. Tasks support cancellation and incomplete-file cleanup.
+PCL RH is a Rust-based launcher for Minecraft: Java Edition, currently available for Linux and built with Rust, Tauri 2, React, and TypeScript. It installs vanilla, Fabric, and modern Forge/NeoForge versions with custom instance names, launches existing game installations, and displays game logs. Java can be selected automatically or registered manually, with global and per-instance choices. Tasks support cancellation and incomplete-file cleanup.
 
 Local management includes multiple game directories, instance display preferences, physical renaming with reference migration and recovery, mod toggling, resource imports, and recoverable removal. Supported existing instances can reset their loader components with core backups and interruption recovery, or export selected content to a local ZIP. The launcher can import its own local ZIP exports under a custom name and restore recoverably deleted instances.
 
@@ -85,7 +87,7 @@ Modrinth mods, resource packs and shaders can be installed with required depende
 
 Microsoft sign-in is not yet available. The project maintainers are responsible for completing the service integration.
 
-Experimental tools are available from Tools: declarative extensions, a Fabric source-project maker and limited mod migration patches. They share a local Pi engine. Live AI requires explicit session configuration and has not been tested; generated source is not automatically built. See [experimental features](docs/EXPERIMENTAL.md).
+Experimental tools are available from Tools: declarative extensions, a Fabric source-project maker and limited mod migration patches. They share a local Pi engine. Live AI uses saved provider presets with editable budgets and has not been tested online; generated source is not automatically built. See [experimental features](docs/EXPERIMENTAL.md).
 
 ## 致谢
 

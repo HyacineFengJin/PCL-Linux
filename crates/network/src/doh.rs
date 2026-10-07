@@ -98,7 +98,7 @@ impl DohResolver {
             .no_brotli()
             .no_deflate()
             .no_zstd()
-            .user_agent("PCL-Linux/0.2.0 DNS")
+            .user_agent("PCL-RH/0.2.0 DNS")
             .build()
             .map_err(|_| "无法初始化受验证 TLS 的 DoH 客户端")?;
         Ok(Self::from_client(client, ENDPOINT.into(), fallback))

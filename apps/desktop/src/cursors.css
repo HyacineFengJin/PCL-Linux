@@ -1,31 +1,66 @@
-/* CSS cursors stay inside this WebView; native text, resize and busy states
-   keep their meaning. Fixed hotspots avoid a lagging DOM pointer overlay. */
-:root {
-  --ce-cursor-arrow: url("./assets/cursors/arrow.svg") 4 3;
-  --ce-cursor-hand: url("./assets/cursors/hand.svg") 13 3;
+/* Native CSS hotspots keep motion immediate. Text, resize and busy cursors
+   retain their meaning. Root attributes also cover menus rendered in portals. */
+:root[data-cursor-style="accent"][data-cursor-size="small"] {
+  --ce-cursor-arrow: url("./assets/cursors/arrow-accent-small.svg") 3 2;
+  --ce-cursor-hand: url("./assets/cursors/hand-accent-small.svg") 10 2;
 }
-body {
+:root[data-cursor-style="accent"][data-cursor-size="standard"] {
+  --ce-cursor-arrow: url("./assets/cursors/arrow-accent-standard.svg") 4 3;
+  --ce-cursor-hand: url("./assets/cursors/hand-accent-standard.svg") 11 3;
+}
+:root[data-cursor-style="outline"][data-cursor-size="small"] {
+  --ce-cursor-arrow: url("./assets/cursors/arrow-outline-small.svg") 3 2;
+  --ce-cursor-hand: url("./assets/cursors/hand-outline-small.svg") 10 2;
+}
+:root[data-cursor-style="outline"][data-cursor-size="standard"] {
+  --ce-cursor-arrow: url("./assets/cursors/arrow-outline-standard.svg") 4 3;
+  --ce-cursor-hand: url("./assets/cursors/hand-outline-standard.svg") 11 3;
+}
+html[data-custom-cursor="true"] body {
   cursor: var(--ce-cursor-arrow), default;
 }
-.app-shell
+html[data-custom-cursor="true"]
+  :is(.app-shell, .ce-select-menu, .ce-context-menu)
+  :is(
+    button:not(:disabled):not([aria-disabled="true"]),
+    a[href],
+    summary,
+    [role="button"]:not([aria-disabled="true"]),
+    [role="option"]:not([aria-disabled="true"]),
+    .ce-local-resource-row,
+    .ce-export-tree-row,
+    input:is([type="checkbox"], [type="radio"], [type="range"]):not(:disabled),
+    label:has(input:is([type="checkbox"], [type="radio"]):not(:disabled))
+  ) {
+  cursor: var(--ce-cursor-hand), pointer;
+}
+/* Checkboxes have a UA cursor, and nested spans/SVGs can override inheritance.
+   Cover their actual hit targets without overriding embedded text inputs. */
+html[data-custom-cursor="true"]
+  :is(.app-shell, .ce-select-menu, .ce-context-menu)
   :is(
     button:not(:disabled),
     a[href],
     summary,
     [role="button"],
-    input[type="range"],
-    label:has(input[type="checkbox"]),
-    label:has(input[type="radio"])
-  ),
-.ce-select-menu [role="option"]:not([aria-disabled="true"]),
-.ce-context-menu button:not(:disabled) {
-  cursor: var(--ce-cursor-hand), pointer;
+    [role="option"],
+    label:has(input:is([type="checkbox"], [type="radio"]))
+  )
+  :is(span, svg, svg *, img) {
+  cursor: inherit;
 }
-.app-shell :is(button:disabled, [aria-disabled="true"]),
-.ce-context-menu button:disabled {
+html[data-custom-cursor="true"]
+  :is(.app-shell, .ce-select-menu, .ce-context-menu)
+  :is(
+    button:disabled,
+    [aria-disabled="true"],
+    input:disabled,
+    label:has(input:is([type="checkbox"], [type="radio"]):disabled)
+  ) {
   cursor: var(--ce-cursor-arrow), default;
 }
-.app-shell
+html[data-custom-cursor="true"]
+  .app-shell
   :is(
     textarea,
     [contenteditable="true"],

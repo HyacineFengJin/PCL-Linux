@@ -55,7 +55,7 @@ pub async fn download(
 ) -> Result<DownloadResult> {
     let client = network
         .async_client()
-        .user_agent(concat!("PCL-Linux/", env!("CARGO_PKG_VERSION"), " Toolbox"))
+        .user_agent(concat!("PCL-RH/", env!("CARGO_PKG_VERSION"), " Toolbox"))
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(24 * 60 * 60))

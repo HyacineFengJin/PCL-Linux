@@ -1,5 +1,6 @@
 import type { Api } from "./types";
 export type ExperimentalPage = "extensions" | "maker" | "porter";
+export type ToolsPage = "toolbox" | ExperimentalPage | "ai" | "marketplace";
 export type ExperimentalNavigate = (
   target: "launch" | "instances" | "downloads" | "tools" | "settings",
 ) => void;
@@ -69,10 +70,57 @@ export type ReviewView = {
     locked_files?: string[];
   };
 };
+export type PiCatalogModel = {
+  id: string;
+  name: string;
+  api: string;
+  baseUrl: string;
+  reasoning: boolean;
+  contextWindow: number;
+  maxTokens: number;
+  cost: { input: number; output: number } | null;
+};
+export type PiCatalog = {
+  providers: { id: string; name: string; models: PiCatalogModel[] }[];
+};
+export type PiSelection = {
+  provider: string;
+  model: string;
+  api: string;
+  baseUrl: string;
+  contextWindow: number;
+  thinking: string;
+  keyConfigured: boolean;
+  cost: { input: number; output: number } | null;
+  costKnown: boolean;
+};
+export type PiWorkLimits = {
+  modelTurns: number;
+  toolCalls: number;
+  maximumOutputTokens: number;
+  wallTimeMs: number;
+  estimatedBudgetUsd: number;
+};
+export type AiPreset = {
+  id: string;
+  name: string;
+  selection: PiSelection;
+  limits: PiWorkLimits;
+};
+export type AiPresetStore = {
+  selectedId: string | null;
+  presets: AiPreset[];
+  defaults: PiWorkLimits;
+  ranges: Record<keyof PiWorkLimits, [number, number]>;
+  warning: string | null;
+};
 export type EngineStatus = {
   versions: Record<string, string>;
   jobs: JobSummary[];
   liveConfigured: boolean;
+  liveAvailable: boolean;
+  aiPresets: AiPresetStore;
+  liveSelection: PiSelection | null;
   workspace: string;
   storeWarning: string | null;
 };
@@ -104,7 +152,13 @@ export type ExperimentalOperation =
   | "extensions_cards"
   | "extensions_action"
   | "source_import"
-  | "provider_configure"
+  | "provider_catalog"
+  | "provider_presets"
+  | "provider_preset_save"
+  | "provider_preset_select"
+  | "provider_preset_delete"
+  | "provider_start"
+  | "provider_stop"
   | "job_create"
   | "job_read"
   | "job_cancel"
