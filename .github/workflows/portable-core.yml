@@ -25,11 +25,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     env:
-      CARGO_TERM_COLOR: always
+      CARGO_TERM_COLOR: never
+      RUST_BACKTRACE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
       - name: Install stable Rust
         run: rustup toolchain install stable --profile minimal
+      - name: Windows network diagnostics
+        if: runner.os == 'Windows'
+        run: cargo +stable test --locked -p pcl-network -- --nocapture --test-threads=1
       - name: Test portable crates on their native host
         run: cargo +stable test --locked -p pcl-core -p pcl-network -p pcl-auth
       - name: Report host toolchain

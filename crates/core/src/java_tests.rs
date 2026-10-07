@@ -142,7 +142,13 @@ fn malformed_nonzero_nonexecutable_and_wrong_arch_are_unavailable() {
     assert!(inspect(&bad).unwrap_err().contains("版本"));
     let invalid = fixture.executable("invalid", "");
     fs::write(&invalid, b"not an executable format").unwrap();
-    assert!(inspect(&invalid).unwrap_err().contains("无法执行"));
+    // Linux reports ENOEXEC at spawn; Darwin may create a child that then
+    // rejects the image. Both must fail probing, never yield a Java runtime.
+    let invalid_error = inspect(&invalid).unwrap_err();
+    assert!(
+        invalid_error.contains("无法执行") || invalid_error.contains("异常退出"),
+        "{invalid_error}"
+    );
     let failed = fixture.executable(
         "failure",
         "printf 'java.specification.version = 21\\n'; exit 7",
