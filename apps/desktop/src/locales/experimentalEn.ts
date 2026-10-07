@@ -1,4 +1,35 @@
 const messages = {
+  "experimental.compareVersions": "Compare source versions",
+  "experimental.compareHelp":
+    "Compare two recorded versions by path and content hash. This only displays changes and preserves source and project records. Select a file to view a bounded text-line preview.",
+  "experimental.compareBase": "Baseline version",
+  "experimental.compareTarget": "Target version",
+  "experimental.comparePairRequired": "Select two different recorded versions.",
+  "experimental.compareCounts":
+    "Added {added} · Deleted {deleted} · Modified {modified} · Unchanged {unchanged}",
+  "experimental.comparePageSize":
+    "{count} changed files after filtering · Showing {start}–{end}",
+  "experimental.compareNoChanges":
+    "No file changes on this page match the filter.",
+  "experimental.compareAdded": "Added",
+  "experimental.compareDeleted": "Deleted",
+  "experimental.compareModified": "Modified",
+  "experimental.comparePreview": "View text preview",
+  "experimental.compareAbsent": "File absent from this version",
+  "experimental.compareTextSize":
+    "Preview {bytes} / {total} bytes · {lines} lines",
+  "experimental.compareBinary": "Contains binary control bytes",
+  "experimental.compareType": "Binary or unsupported text file type",
+  "experimental.compareEncoding": "Unsupported encoding or invalid UTF-8",
+  "experimental.compareUncomparable":
+    "Text comparison is unavailable. File additions, deletions and modifications are still listed by content hash.",
+  "experimental.compareTruncated":
+    "Preview truncated: at most {bytes} bytes and {lines} lines per side. Later content is omitted; use the source browser to read chunks.",
+  "experimental.compareLineLegend":
+    "Baseline to target: + added lines, − deleted lines; line numbers are baseline:target. Only text within the preview bounds is shown.",
+  "experimental.compareEmptyText": "No text lines within the preview bounds.",
+  "experimental.compareIdentityError":
+    "The comparison response does not match the selected project versions. Refresh and retry.",
   "experimental.sourceIndex": "Source browser",
   "experimental.sourceIndexHelp":
     "Read-only access to the selected source version. The host verifies file inventory and hashes; text arrives in bounded chunks. Files and literal text search results are paginated.",

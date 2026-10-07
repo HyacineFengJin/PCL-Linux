@@ -28,6 +28,8 @@ pub enum Operation {
     ProjectFiles,
     ProjectFileRead,
     ProjectSearch,
+    ProjectCompare,
+    ProjectCompareFile,
     ProjectOpen,
     ProjectContinue,
     ExtensionsList,

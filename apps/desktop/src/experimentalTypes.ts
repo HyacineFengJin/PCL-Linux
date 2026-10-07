@@ -188,6 +188,8 @@ export type ExperimentalOperation =
   | "project_files"
   | "project_file_read"
   | "project_search"
+  | "project_compare"
+  | "project_compare_file"
   | "project_open"
   | "project_continue"
   | "catalog"

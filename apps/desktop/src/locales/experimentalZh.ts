@@ -1,4 +1,33 @@
 const messages = {
+  "experimental.compareVersions": "比较源码版本",
+  "experimental.compareHelp":
+    "按路径和内容哈希比较已登记的两个版本。仅查看变化，不修改源码或项目记录。选择文件后可查看有固定限额的文本行预览。",
+  "experimental.compareBase": "基准版本",
+  "experimental.compareTarget": "目标版本",
+  "experimental.comparePairRequired": "请选择两个不同的已登记版本。",
+  "experimental.compareCounts":
+    "新增 {added} · 删除 {deleted} · 修改 {modified} · 未变 {unchanged}",
+  "experimental.comparePageSize":
+    "筛选后 {count} 个变化文件 · 当前 {start}–{end}",
+  "experimental.compareNoChanges": "此页没有符合筛选条件的文件变化。",
+  "experimental.compareAdded": "新增",
+  "experimental.compareDeleted": "删除",
+  "experimental.compareModified": "修改",
+  "experimental.comparePreview": "查看文本预览",
+  "experimental.compareAbsent": "此版本没有该文件",
+  "experimental.compareTextSize": "预览 {bytes} / {total} 字节 · {lines} 行",
+  "experimental.compareBinary": "包含二进制控制字节",
+  "experimental.compareType": "二进制或不支持的文本文件类型",
+  "experimental.compareEncoding": "不支持的编码或无效 UTF-8",
+  "experimental.compareUncomparable":
+    "无法进行文本比较。文件的增删改状态仍按内容哈希列出。",
+  "experimental.compareTruncated":
+    "预览已截断：每侧最多 {bytes} 字节、{lines} 行。后续内容未显示，可在源码浏览中分段查看。",
+  "experimental.compareLineLegend":
+    "从基准版本到目标版本：+ 新增行，− 删除行；行号为基准:目标。此处只显示预览范围内的文本。",
+  "experimental.compareEmptyText": "预览范围内没有文本行。",
+  "experimental.compareIdentityError":
+    "比较响应与所选项目版本不一致，请刷新后重试。",
   "experimental.sourceIndex": "源码浏览",
   "experimental.sourceIndexHelp":
     "只读浏览所选源码版本。宿主核对文件清单和内容哈希，按片段返回文本；文件列表和字面文本搜索结果均分页显示。",

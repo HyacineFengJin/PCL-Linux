@@ -55,3 +55,58 @@ export type ProjectSearchPage = {
   nextOffset: number | null;
   truncatedFile: string | null;
 };
+export type ProjectComparisonRef = {
+  id: string;
+  expectedRevision: string;
+  baseCheckpointId: string;
+  targetCheckpointId: string;
+};
+export type ProjectComparisonIdentity = {
+  id: string;
+  revision: string;
+  baseCheckpointId: string;
+  targetCheckpointId: string;
+  baseFingerprint: string;
+  targetFingerprint: string;
+};
+export type ProjectFileChange = {
+  path: string;
+  kind: "added" | "deleted" | "modified";
+  before: { bytes: number; sha256: string } | null;
+  after: { bytes: number; sha256: string } | null;
+};
+export type ProjectComparisonPage = ProjectComparisonIdentity & {
+  counts: {
+    added: number;
+    deleted: number;
+    modified: number;
+    unchanged: number;
+  };
+  totalChanges: number;
+  filteredCount: number;
+  changes: ProjectFileChange[];
+  offset: number;
+  pageSize: number;
+  nextOffset: number | null;
+};
+export type ProjectComparisonSide = {
+  bytes: number;
+  sha256: string;
+  status: "text" | "binary" | "unsupported_type" | "unsupported_encoding";
+  truncated: boolean;
+  previewBytes: number;
+  previewLines: number;
+};
+export type ProjectComparisonPreview = ProjectComparisonIdentity & {
+  change: ProjectFileChange;
+  status: "text" | "uncomparable";
+  before: ProjectComparisonSide | null;
+  after: ProjectComparisonSide | null;
+  rows: {
+    kind: "context" | "added" | "deleted";
+    beforeLine: number | null;
+    afterLine: number | null;
+    text: string;
+  }[];
+  limits: { bytes: number; lines: number; rows: number };
+};

@@ -38,6 +38,10 @@ import {
 import { MakerProjects } from "./runtime/vendor/maker/projects.mjs";
 import { PorterProjects } from "./porter-projects.mjs";
 import { resolvePorterOrigin } from "./porter-origins.mjs";
+import {
+  compareProjectSources,
+  compareProjectFile,
+} from "./runtime/vendor/maker/source-compare.mjs";
 
 const code = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(process.argv[2]);
@@ -372,7 +376,7 @@ async function dispatch(operation, a) {
       return {
         versions: {
           extensions: "0.6.1",
-          maker: "0.6",
+          maker: "0.7",
           porter: "0.6.0",
           runtime: "v7",
           pi: "1.0.4",
@@ -401,6 +405,10 @@ async function dispatch(operation, a) {
       return readIndexFile(await projects.source(a), a);
     case "project_search":
       return searchIndex(await projects.source(a), a);
+    case "project_compare":
+      return compareProjectSources(projects, a);
+    case "project_compare_file":
+      return compareProjectFile(projects, a);
     case "project_open": {
       const source = await projects.source(a, artifact);
       return {
