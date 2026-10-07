@@ -1,27 +1,30 @@
 {
   "schema_version": 1,
   "components": {
-    "extensions": "0.6.0",
-    "maker": "0.4.0",
-    "porter": "0.5.1",
+    "extensions": "0.6.1",
+    "maker": "0.6.0",
+    "porter": "0.6.0",
     "runtime": "v7",
     "pi": "1.0.4"
   },
   "vendor_sha256": {
-    "vendor/porter/source_cli.py": "58e05f829b2b0e176bab0ea024d50691395afae1b622377a0df003daf2c85f26",
-    "vendor/porter/analyzer.py": "d439aba7b94f454438a54ab773009779b0d743c28ee94f8d396f27a4e72647ea",
-    "vendor/porter/provider_contract.py": "10332c37e151d0c33fecd6ef79cdbdc18157f7d3c90d497bf9369b6089e1f7e2",
-    "vendor/porter/metadata_cli.py": "eb73125f78937e3e7120eb8d26489b2a8e7cbe558be5c39bf98aad231b09b070",
-    "vendor/porter/__init__.py": "3526599c93ca8918114bf8e7769c7a76dd5364664ace125e9f3f80a1b8b51d9e",
-    "vendor/porter/metadata_port.py": "3356b546cf6f0fc4f7b3375ac0834dc02fb3692527dc796e703ff4f3f33b9cae",
-    "vendor/porter/patch_cli.py": "fa9dfe68424e5a504e71b45343260cea355298fe636d2b1b794d2069a24f316e",
-    "vendor/porter/java_identifier.py": "ea8c2d8ca78251cac2ecb48e1e0efce976fdedce7e3b87263a4ee7c3f2010ebc",
-    "vendor/porter/__main__.py": "4fda53a2cd5858a283821ee072296c0803ce53b6bdd71c8fb49762f029710360",
-    "vendor/porter/patches.py": "b04e4c65e4cca7ed09e10d5e175f5ec05ffb6749020c78f8fb8b2a76e6e2f30d",
-    "vendor/porter/LICENSE": "40e2ace1590a52ed85ac4e53b34558d8c65411b16771a17a38afe5f6e28ba418",
-    "vendor/porter/catalog.json": "11bd0d1f7f98ac81fc5dcba8f5273fd8afc81b9172de01ae6788fea4d37da8dd",
-    "vendor/maker/source_editor.py": "827c183e2a824c3aa57a59cd712af0a06b24e47cca7c569d60fd2f63c4ceb7a1",
     "vendor/maker/LICENSE": "2c57b3d0eca4f585a92b09359308cf329a4cac4f80148a34fe6dc06f653b2484",
-    "vendor/maker/mod_creator.py": "6e3d202c2236f848cd6f9538bb9dfc7eca61866987e609fd8f533b78c631f5aa"
+    "vendor/maker/mod_creator.py": "8dcfbf7cf5971cb925aabfcebbfea5df9c872db7eac49a722a775c14f546ecb3",
+    "vendor/maker/projects.mjs": "6368a4cfd8a3e2644a79e68a82ae2ab5abf82e9a6cd2ecdc860539eba9f830c7",
+    "vendor/maker/source-index.mjs": "bd8fee9eef038d5aefa080778ef13dd2c41998cdd7a0b70a935a04f0b9fe917b",
+    "vendor/maker/source_editor.py": "c5c38f7b011b2321a6c2ac28f63d50a11549fc5736027827821afe65c45ce470",
+    "vendor/porter/LICENSE": "40e2ace1590a52ed85ac4e53b34558d8c65411b16771a17a38afe5f6e28ba418",
+    "vendor/porter/__init__.py": "3526599c93ca8918114bf8e7769c7a76dd5364664ace125e9f3f80a1b8b51d9e",
+    "vendor/porter/__main__.py": "4fda53a2cd5858a283821ee072296c0803ce53b6bdd71c8fb49762f029710360",
+    "vendor/porter/analyzer.py": "d439aba7b94f454438a54ab773009779b0d743c28ee94f8d396f27a4e72647ea",
+    "vendor/porter/catalog.json": "11bd0d1f7f98ac81fc5dcba8f5273fd8afc81b9172de01ae6788fea4d37da8dd",
+    "vendor/porter/java_identifier.py": "ea8c2d8ca78251cac2ecb48e1e0efce976fdedce7e3b87263a4ee7c3f2010ebc",
+    "vendor/porter/metadata_cli.py": "eb73125f78937e3e7120eb8d26489b2a8e7cbe558be5c39bf98aad231b09b070",
+    "vendor/porter/metadata_port.py": "2b747f1d934416eefded92fcfad2d135c423857138213c586564c3d1d596085b",
+    "vendor/porter/patch_cli.py": "fa9dfe68424e5a504e71b45343260cea355298fe636d2b1b794d2069a24f316e",
+    "vendor/porter/patches.py": "395dc2d4b1ceb833e9c713f03c828f7ce73c56b81ecc32c1d062b697f786c7e6",
+    "vendor/porter/provider_contract.py": "10332c37e151d0c33fecd6ef79cdbdc18157f7d3c90d497bf9369b6089e1f7e2",
+    "vendor/porter/recipes.py": "58cb70cdc07e3c11c5fb0c18adeecd7f2cfa365b8d679e1cb198442b091e7045",
+    "vendor/porter/source_cli.py": "58e05f829b2b0e176bab0ea024d50691395afae1b622377a0df003daf2c85f26"
   }
 }

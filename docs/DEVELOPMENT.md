@@ -247,9 +247,15 @@ Rust 测试不能证明真实桌面选择器、网络授权页面或 Minecraft �
 
 `apps/desktop/src-tauri/src/experimental.rs` 管理一个独占的本地 Node 子进程，固定命令枚举通过有界 JSON 行通信。应用关闭先停止任务和受管 Python 子进程；传输损坏后丢弃会话，避免把旧回复当作下一命令的结果。项目路径来自宿主，实例摘要在 Rust 内投影，第三方声明不能获得完整 `Api` 或 bootstrap。
 
-`experimental/host.mjs` 是接线入口。共享运行时在 `experimental/runtime/src/`，确定性的 Python 工具在 `vendor/maker`、`vendor/porter`。`SOURCES.json` 记录集成版本与工具源码哈希。引擎管理工程任务、产物哈希与修改确认，模型只能提出修改；授权和应用仍由宿主 UI 调用。制作器恢复和模板更新通过宿主选择的工程副本进入源码编辑器；模型的源码编辑工具只接受原有补丁结构，不接受恢复路径。
+`experimental/host.mjs` 是接线入口。共享运行时在 `experimental/runtime/src/`，确定性的 Python 工具在 `vendor/maker`、`vendor/porter`。`SOURCES.json` 记录集成版本与当前发布的工具源码哈希；修改工具后运行 `node experimental/scripts/sync-sources.mjs`，发布前用 `--check` 检查，组件版本须单独同步。引擎管理工程任务、产物哈希与修改确认，模型只能提出修改；授权和应用仍由宿主 UI 调用。制作器恢复和模板更新通过宿主选择的工程副本进入源码编辑器；模型的源码编辑工具只接受原有补丁结构，不接受恢复路径。
 
-`ExperimentalTools` 负责工程配置与任务记录，`ExperimentalMaker` 负责物品表单，`ExperimentalExtensions` 负责授权与纯文本卡片，`ExperimentalAi` 负责预设与共享引擎状态；它们使用现有 CE 控件与中英消息目录。数据型插件宿主在 `experimental/extensions/src/`。存储按声明内容摘要绑定授权；损坏时保留原文件并停用，未实现第三方代码执行或 PCL N / Nex ABI。
+`ExperimentalTools` 分发制作器与搬运工作区，`ExperimentalMaker` 负责物品表单，`ExperimentalProjects` 管理制作器产物登记与项目说明，`ExperimentalProjectFiles` 提供只读文件索引。`ExperimentalPorterWorkspace` 管理持续搬运项目与讨论，`ExperimentalExtensions` 负责授权与纯文本卡片，`ExperimentalAi` 负责预设与共享引擎状态；它们使用现有 CE 控件与中英消息目录。异步结果只更新所属页面和选择；页面退役不撤销已提交的宿主事务。
+
+制作器项目存储在 `vendor/maker/projects.mjs`，搬运项目存储在 `porter-projects.mjs`；两个格式独立，共用运行时、源码产物和 AI 预设。项目版本引用宿主持有的任务产物，不接受界面提供的源码目录权限。`artifact-snapshot.mjs` 统一检查产物收据、输出目录与文件指纹；`vendor/maker/source-index.mjs` 用有界流式读取验证完整清单，再返回文件页、文本片段或搜索页。较大的只读索引不扩大源码编辑与 AI 续作的快照限额。
+
+搬运轮次冻结源码基线、目标和讨论上下文；运行期间的新反馈用于下一轮。`porter.ask_user` 先持久化问题，再结束当前模型循环并释放运行名额。用户答复后另起轮次，模型不能借此审批补丁。`runtime/src/reviews.mjs` 将转换方案的未支持事项和验证限度纳入确认摘要，应用只生成新的文本副本。恢复、损坏记录与外部修改的处理见项目存储及其回归用例。
+
+数据型插件宿主在 `experimental/extensions/src/`。存储按声明内容摘要绑定授权；损坏时保留原文件并停用。外部 N/Nex 清单只产生无安装令牌的诊断报告；`extensions/compat/` 的 N SDK 探针是独立开发验证工具，启动器尚未开放第三方程序集加载。
 
 实验数据位于项目配置目录下的 `experimental/`。`ai-presets.mjs` 持久化预设、密钥和工作限制，保存使用权限 0600、文件快照修订号与原子替换；损坏、未知版本或外部修改保留原文件并拒绝写入。界面只接收模型配置和密钥是否存在，不接收已保存密钥。`pi-selection.mjs` 与 `pi-limits.mjs` 分别处理路由与限制，`pi-live.mjs` 在异步加载 SDK 前捕获每个任务的配置。停止引擎取消活动任务但保留预设；修改预设只影响后续任务。常规安装与游戏目录事务仍使用原有 Rust 服务。实验工具不自动执行生成工程的构建脚本。
 
