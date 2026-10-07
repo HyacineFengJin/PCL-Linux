@@ -217,7 +217,7 @@ const messages = {
   "experimental.compatProbeOnly": "仅接口验证",
   "experimental.compatUnavailable": "尚未提供",
   "experimental.compat.n-probe-only":
-    "目前仅独立验证了 N SDK 0.2.5 的命令与双语设置页描述接口，尚未接入启动器运行。此插件的实际行为未验证。",
+    "目前仅独立验证了 N SDK 0.2.5 的命令、通知服务与双语设置页描述接口，尚未接入启动器运行。此插件的实际行为未验证。",
   "experimental.compat.n-ui-unavailable":
     "声明使用 N UI 服务或页面贡献。RH 尚未适配 Avalonia 页面、DirectInject 与宿主 UI 修改。",
   "experimental.compat.n-native-unavailable":

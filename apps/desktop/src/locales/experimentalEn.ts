@@ -226,7 +226,7 @@ const messages = {
   "experimental.compatProbeOnly": "Interface probe only",
   "experimental.compatUnavailable": "Unavailable",
   "experimental.compat.n-probe-only":
-    "Only N SDK 0.2.5 command and localized settings-page descriptors have been independently probed. Launcher execution is unavailable; this plugin's actual behavior is unverified.",
+    "Only N SDK 0.2.5 command, notification and localized settings-page descriptor interfaces have been independently probed. Launcher execution is unavailable; this plugin's actual behavior is unverified.",
   "experimental.compat.n-ui-unavailable":
     "The declaration uses N UI services or contributions. RH has no adapter for Avalonia pages, DirectInject or host UI modification.",
   "experimental.compat.n-native-unavailable":
