@@ -1,6 +1,7 @@
 import type { Api } from "./types";
 export type ExperimentalPage = "extensions" | "maker" | "porter";
-export type ToolsPage = "toolbox" | ExperimentalPage | "ai" | "marketplace";
+export type ToolsPage =
+  "toolbox" | ExperimentalPage | "ai" | "marketplace" | "projects";
 export type ExperimentalNavigate = (
   target: "launch" | "instances" | "downloads" | "tools" | "settings",
 ) => void;
@@ -175,6 +176,11 @@ export type MakerSpec = {
 };
 export type ExperimentalOperation =
   | "status"
+  | "projects_list"
+  | "project_create"
+  | "project_update"
+  | "project_open"
+  | "project_continue"
   | "catalog"
   | "extensions_list"
   | "extensions_review"

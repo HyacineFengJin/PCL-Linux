@@ -22,6 +22,11 @@ use tauri::State;
 pub enum Operation {
     Status,
     Catalog,
+    ProjectsList,
+    ProjectCreate,
+    ProjectUpdate,
+    ProjectOpen,
+    ProjectContinue,
     ExtensionsList,
     ExtensionsReview,
     ExtensionsConfirm,

@@ -76,6 +76,11 @@ import { ExperimentalCards } from "./ExperimentalExtensions";
 import type { ExperimentalNavigate, ToolsPage } from "./experimentalTypes";
 import { ExperimentalTools, type ExperimentalDraft } from "./ExperimentalTools";
 import { ExperimentalAi } from "./ExperimentalAi";
+import {
+  ExperimentalProjects,
+  createProjectManagerDraft,
+} from "./ExperimentalProjects";
+import type { ProjectSourceSelection } from "./experimentalProjectTypes";
 import { Toolbox } from "./Toolbox";
 import { SettingsPanel } from "./SettingsPanel";
 import {
@@ -840,6 +845,9 @@ function Cube({ forge = false }: { forge?: boolean }) {
   );
 }
 function App() {
+  const projectDraft = React.useRef(createProjectManagerDraft());
+  const [experimentalSource, setExperimentalSource] =
+    useState<ProjectSourceSelection>();
   const experimentalDrafts = React.useRef<
     Partial<Record<"extensions" | "maker" | "porter", ExperimentalDraft>>
   >({});
@@ -2464,8 +2472,13 @@ function App() {
                           icon: Puzzle,
                         },
                         {
-                          id: "maker",
+                          id: "projects",
                           group: t("experimental.betaGroup"),
+                          label: t("experimental.projects"),
+                          icon: WandSparkles,
+                        },
+                        {
+                          id: "maker",
                           label: t("experimental.maker"),
                           icon: WandSparkles,
                         },
@@ -2481,7 +2494,10 @@ function App() {
                         },
                       ],
                       toolsPage,
-                      (id) => setToolsPage(id as ToolsPage),
+                      (id) => {
+                        setExperimentalSource(undefined);
+                        setToolsPage(id as ToolsPage);
+                      },
                       "tools",
                     )}
                   </>
@@ -2909,6 +2925,22 @@ function App() {
                           </p>
                         </section>
                       )}
+                      {tab === "tools" && toolsPage === "projects" && (
+                        <ExperimentalProjects
+                          api={api}
+                          native={native && !tasks.closing}
+                          draft={projectDraft}
+                          onOpen={(source) => {
+                            setExperimentalSource(source);
+                            setToolsPage(source.workflow);
+                          }}
+                          onConfigureAi={
+                            launcher.isHidden("tools.ai")
+                              ? undefined
+                              : () => setToolsPage("ai")
+                          }
+                        />
+                      )}
                       {tab === "tools" && toolsPage === "ai" && (
                         <ExperimentalAi
                           api={api}
@@ -2918,11 +2950,17 @@ function App() {
                       {tab === "tools" &&
                         toolsPage !== "toolbox" &&
                         toolsPage !== "ai" &&
-                        toolsPage !== "marketplace" && (
+                        toolsPage !== "marketplace" &&
+                        toolsPage !== "projects" && (
                           <ExperimentalTools
-                            key={toolsPage}
+                            key={`${toolsPage}:${experimentalSource?.jobId ?? ""}:${experimentalSource?.operationId ?? ""}`}
                             page={toolsPage}
                             drafts={experimentalDrafts}
+                            initialSource={
+                              experimentalSource?.workflow === toolsPage
+                                ? experimentalSource
+                                : undefined
+                            }
                             api={api}
                             native={native && !tasks.closing}
                             onNavigate={navigateExperimental}

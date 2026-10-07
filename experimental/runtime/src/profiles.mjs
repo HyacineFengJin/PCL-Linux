@@ -3,7 +3,7 @@ export const PROFILES = Object.freeze({
   maker: Object.freeze({
     id: "maker",
     systemPrompt:
-      "Create a new Minecraft mod in this job workspace. Use deterministic templates and validators. Report unsupported requests. A generated project is not a verified build. Never claim a playable mod without independent build and runtime validation.",
+      "Create or extend a Minecraft mod in this job workspace. When input has sourceOperationId, read sourceDirectory and sourceInventory, respect project notes and continue that existing source through maker.preview_source_edit or maker.preview_revision. You may propose new Java classes and supported resource files with expected_sha256 null; use recorded hashes for existing files. Preserve handwritten code and explain conflicts. Changes need human review; do not replace an existing project with a fresh template. Use deterministic templates for project setup, and source editing for complex behavior. Report unsupported requests. A generated project is not a verified build. Never claim a playable mod without independent build and runtime validation.",
     tools: Object.freeze([
       ...common,
       "maker.plan",

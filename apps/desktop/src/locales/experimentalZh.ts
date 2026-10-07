@@ -1,4 +1,31 @@
 const messages = {
+  "experimental.porterVersionReadOnly":
+    "已登记的搬运结果以只读方式查看。继续迁移时，请将其源码目录导入新的搬运任务，并重新授权可修改文件。",
+  "experimental.projects": "模组项目",
+  "experimental.projectsHelp":
+    "管理制作器与搬运器的源码版本和项目说明。可打开制作器历史版本，继续编辑新的副本。",
+  "experimental.archived": "已归档",
+  "experimental.noProjects": "在下方登记已完成的源码产物，即可创建项目。",
+  "experimental.projectNotes": "项目说明",
+  "experimental.projectNotesHelp":
+    "记录玩法、设计决定和后续修改的约束。AI 续作时会将说明发给所选预设的提供商。",
+  "experimental.saveProject": "保存说明",
+  "experimental.unarchiveProject": "取消归档",
+  "experimental.archiveProject": "归档",
+  "experimental.retryProjectSave": "下次保存时用当前草稿覆盖最新说明",
+  "experimental.recordVersion": "登记源码版本",
+  "experimental.recordVersionHelp":
+    "选择已结束任务中的源码产物。登记会保存经核对的产物引用，不会构建或测试模组。",
+  "experimental.versionLabel": "版本说明",
+  "experimental.createProject": "从源码创建项目",
+  "experimental.projectHistory": "源码历史与续作",
+  "experimental.projectVerification":
+    "源码版本已登记 · 模组编译未运行 · 游戏验证未运行",
+  "experimental.continueEditing": "打开此源码版本",
+  "experimental.continueProjectHelp":
+    "AI 续作会复制制作器版本到新任务，并使用共享 AI 管理的已保存预设。Java 与资源修改需要审阅确认。先保存项目说明，再将确认后的产物登记为新版本。搬运产物在搬运器中只读查看；当前不提供完整自动移植或游戏测试。",
+  "experimental.continueAI": "AI 续作",
+
   "experimental.componentVersion": "版本 {version}",
   "experimental.pluginGroup": "插件系统 (beta)",
   "experimental.betaGroup": "实验功能 (beta)",

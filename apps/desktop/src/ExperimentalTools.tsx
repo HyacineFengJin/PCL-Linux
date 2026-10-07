@@ -15,6 +15,7 @@ import {
   type Artifact,
   type ReviewView,
 } from "./experimentalTypes";
+import type { ProjectSourceSelection } from "./experimentalProjectTypes";
 import "./experimental.css";
 const pretty = (value: unknown) => JSON.stringify(value, null, 2);
 type ImportedSource = {
@@ -57,6 +58,7 @@ export function ExperimentalTools({
   native,
   page,
   drafts,
+  initialSource,
   onNavigate,
   onConfigureAi,
 }: {
@@ -64,6 +66,7 @@ export function ExperimentalTools({
   native: boolean;
   page: ExperimentalPage;
   drafts: RefObject<Partial<Record<ExperimentalPage, ExperimentalDraft>>>;
+  initialSource?: ProjectSourceSelection;
   onConfigureAi?: () => void;
   onNavigate: ExperimentalNavigate;
 }) {
@@ -73,7 +76,9 @@ export function ExperimentalTools({
     [busy, setBusy] = useState(false),
     [mode, setMode] = useState(draft?.mode ?? "template"),
     [prompt, setPrompt] = useState(draft?.prompt ?? "");
-  const [spec, setSpec] = useState(draft?.spec ?? initialMakerSpec),
+  const [spec, setSpec] = useState(
+      initialSource?.spec ?? draft?.spec ?? initialMakerSpec,
+    ),
     [source, setSource] = useState<ImportedSource | null>(
       draft?.source ?? null,
     ),
@@ -85,7 +90,9 @@ export function ExperimentalTools({
     [rights, setRights] = useState(draft?.rights ?? "unknown"),
     [beta, setBeta] = useState(draft?.beta ?? false),
     [allowed, setAllowed] = useState<string[]>(draft?.allowed ?? []);
-  const [jobId, setJobId] = useState(draft?.jobId ?? ""),
+  const [jobId, setJobId] = useState(
+      initialSource?.jobId ?? draft?.jobId ?? "",
+    ),
     [job, setJob] = useState<JobView | null>(null),
     [report, setReport] = useState<PorterReport | null>(null);
   const [operationId, setOperationId] = useState(""),
@@ -170,7 +177,9 @@ export function ExperimentalTools({
       polling = false;
     setJob(null);
     setReport(null);
-    setOperationId("");
+    setOperationId(
+      initialSource?.jobId === jobId ? initialSource.operationId : "",
+    );
     setPath("");
     setFile(null);
     setText("");
@@ -283,6 +292,10 @@ export function ExperimentalTools({
     noCapacity =
       (status?.jobs.filter((j) => ["queued", "running"].includes(j.status))
         .length || 0) >= 2;
+  // Porter review proposals target the original imported snapshot. A recorded
+  // output opens for inspection only; do not imply a patch continues that copy.
+  const viewingPorterVersion =
+    page === "porter" && initialSource?.jobId === jobId;
   const canEdit = !busy && native && !active && !!file && !file.binary;
   const fileEditable =
     canEdit &&
@@ -628,6 +641,11 @@ export function ExperimentalTools({
                   ))}
                 </CeSelect>
               </label>
+              {viewingPorterVersion && (
+                <p className="experimental-origin">
+                  {t("experimental.porterVersionReadOnly")}
+                </p>
+              )}
               {file?.binary ? (
                 <p>{t("experimental.binary")}</p>
               ) : (
@@ -759,7 +777,7 @@ export function ExperimentalTools({
               )}
             </section>
           ) : null}
-          {page === "porter" && job && !active && (
+          {page === "porter" && job && !active && !viewingPorterVersion && (
             <section className="ce-card">
               <h2 className="ce-card-title">{t("experimental.review")}</h2>
               <div className="ce-actions">

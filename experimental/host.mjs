@@ -29,6 +29,7 @@ import { readManifest } from "./extensions/src/manifest.mjs";
 import { readPackage } from "./extensions/src/package.mjs";
 import { inspectForeignManifest } from "./extensions/src/compatibility.mjs";
 import { AiPresets } from "./ai-presets.mjs";
+import { MakerProjects } from "./runtime/vendor/maker/projects.mjs";
 
 const code = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(process.argv[2]);
@@ -256,6 +257,27 @@ async function artifact(jobId, operationId) {
     directory: path.join(workspace.root, snapshot.directory),
   };
 }
+const projects = await new MakerProjects(root, artifact).init();
+async function startCapturedJob(job, preset) {
+  if (preset) {
+    selection = preset.selection;
+    liveRuns.set(job.id, {
+      selection: preset.selection,
+      limits: preset.limits,
+    });
+  }
+  try {
+    void runtime
+      .start(job.id)
+      .catch(() => {})
+      .finally(() => liveRuns.delete(job.id));
+  } catch (error) {
+    liveRuns.delete(job.id);
+    await runtime.cancel(job.id);
+    throw error;
+  }
+  return { jobId: job.id };
+}
 async function dispatch(operation, a) {
   if (closing && operation !== "shutdown")
     throw new Error("Experimental host is closing");
@@ -264,7 +286,7 @@ async function dispatch(operation, a) {
       return {
         versions: {
           extensions: "0.6.1",
-          maker: "0.4",
+          maker: "0.5",
           porter: "0.5.1",
           runtime: "v7",
           pi: "1.0.4",
@@ -281,6 +303,111 @@ async function dispatch(operation, a) {
       };
     case "catalog":
       return domain("catalog", {});
+    case "projects_list":
+      return { projects: await projects.list() };
+    case "project_create":
+      return projects.create(a);
+    case "project_update":
+      return projects.update(a);
+    case "project_open": {
+      const source = await projects.source(a);
+      return {
+        workflow: source.point.workflow,
+        jobId: source.point.jobId,
+        operationId: source.point.operationId,
+        ...(source.point.workflow === "maker"
+          ? {
+              spec: JSON.parse(
+                source.snapshot.files["creator-spec.json"]?.toString("utf8") ??
+                  "null",
+              ),
+            }
+          : {}),
+      };
+    }
+    case "project_continue": {
+      if (
+        typeof a.prompt !== "string" ||
+        !a.prompt.trim() ||
+        a.prompt.length > 12000
+      )
+        throw new Error("Describe the project change in 1–12000 characters");
+      const preset = presets.selected();
+      if (!preset) throw new Error("Save and select an AI preset first");
+      if (
+        (await listJobs()).filter((j) =>
+          ["queued", "running"].includes(j.status),
+        ).length >= 2
+      )
+        throw new Error("The shared runtime already has two active jobs");
+      const source = await projects.source(a);
+      if (source.project.archived)
+        throw new Error("Unarchive the project before continuing");
+      if (source.point.workflow !== "maker")
+        throw new Error(
+          "Continue migrated source in its original workflow; Maker continuation requires a Maker source project",
+        );
+      const spec = JSON.parse(
+        source.snapshot.files["creator-spec.json"]?.toString("utf8") ?? "null",
+      );
+      if (!spec) throw new Error("Source has no Maker specification");
+      const reviewId = randomUUID(),
+        operationId = `host-${reviewId}`,
+        outputDirectory = `reviewed/${reviewId}`;
+      // Copy only receipt-verified bytes into a fresh job. The model receives
+      // project context and its own source operation, never another job's paths.
+      const job = await runtime.createJob({
+        profile: "maker",
+        provider: live.id,
+        input: {
+          spec,
+          prompt: a.prompt,
+          sourceOperationId: operationId,
+          sourceDirectory: outputDirectory,
+          sourceInventory: source.snapshot.inventory.map((entry) => ({
+            ...entry,
+            expected_sha256: entry.sha256,
+          })),
+          project: {
+            id: source.project.id,
+            name: source.project.name,
+            notes: source.project.notes,
+            checkpointId: source.point.id,
+          },
+        },
+      });
+      try {
+        const workspace = await runtime.store.workspace(job.id),
+          artifacts = [];
+        for (const [name, bytes] of Object.entries(source.snapshot.files)) {
+          const written = await workspace.writeBytes(
+            `${outputDirectory}/${name}`,
+            bytes,
+          );
+          artifacts.push({ ...written, sha256: sha256(bytes) });
+        }
+        job.operations.push({
+          id: operationId,
+          name: "maker.edit_source",
+          status: "completed",
+          result: {
+            status: "reviewed_copy_created",
+            reviewId,
+            outputDirectory,
+            artifacts,
+            originalSourceModified: false,
+            buildValidated: false,
+            verificationState: "not_run",
+            parentFingerprint: source.point.fingerprint,
+          },
+        });
+        await runtime.store.save(job);
+        return { ...(await startCapturedJob(job, preset)), operationId, spec };
+      } catch (error) {
+        await runtime.cancel(job.id);
+        throw error;
+      }
+    }
     case "extensions_list":
       return { entries: extensions.list(), safeMode, warning: storeWarning };
     case "extensions_review": {
@@ -419,26 +546,7 @@ async function dispatch(operation, a) {
           files,
           permittedPaths: a.permittedPaths,
         });
-      if (preset) {
-        selection = preset.selection;
-        liveRuns.set(job.id, {
-          selection: preset.selection,
-          limits: preset.limits,
-        });
-      }
-      try {
-        void runtime
-          .start(job.id)
-          .catch(() => {})
-          .finally(() => liveRuns.delete(job.id));
-      } catch (error) {
-        // Admission can change after the disk read. Do not leave a queued job
-        // or a private credential snapshot behind if runtime admission refuses.
-        liveRuns.delete(job.id);
-        await runtime.cancel(job.id);
-        throw error;
-      }
-      return { jobId: job.id };
+      return startCapturedJob(job, preset);
     }
     case "job_read": {
       const job = await runtime.getJob(a.jobId);

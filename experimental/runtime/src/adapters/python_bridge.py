@@ -44,9 +44,12 @@ def main():
         return {'base64': base64.b64encode(output.getvalue()).decode('ascii')}
     if operation.startswith('maker.'):
         maker = module_at('pcl_maker', ROOT / 'maker' / 'mod_creator.py')
-        if operation in {'maker.preview_source_edit', 'maker.prepare_source_edit'}:
+        if operation in {'maker.preview_source_edit', 'maker.prepare_source_edit', 'maker.preview_revision', 'maker.prepare_revision'}:
+            # Both entry points must use this exact maker/editor pair. Normal
+            # revisions now rebuild ownership instead of copying stale hashes.
             sys.modules['mod_creator'] = maker
-            editor = module_at('pcl_source_editor', ROOT / 'maker' / 'source_editor.py')
+            editor = module_at('source_editor', ROOT / 'maker' / 'source_editor.py')
+        if operation in {'maker.preview_source_edit', 'maker.prepare_source_edit'}:
             request = args['request']
             if request.get('operation') == 'regenerate':
                 preview, files = editor.prepare_regenerate(args['sourceRoot'], request['spec'])

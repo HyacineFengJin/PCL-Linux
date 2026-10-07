@@ -1,4 +1,33 @@
 const messages = {
+  "experimental.porterVersionReadOnly":
+    "Recorded Porter outputs open for inspection. To continue a migration, import its source directory as a new Porter task and grant permitted paths again.",
+  "experimental.projects": "Mod Projects",
+  "experimental.projectsHelp":
+    "Keep source versions and project notes for Maker and Porter. Open an earlier Maker version to continue editing a new copy.",
+  "experimental.archived": "Archived",
+  "experimental.noProjects":
+    "Record a completed source artifact below to create your first project.",
+  "experimental.projectNotes": "Project notes",
+  "experimental.projectNotesHelp":
+    "Record behavior, design decisions and constraints for future changes. Notes are sent to your selected AI provider when continuing with AI.",
+  "experimental.saveProject": "Save notes",
+  "experimental.unarchiveProject": "Unarchive",
+  "experimental.archiveProject": "Archive",
+  "experimental.retryProjectSave":
+    "Use latest revision for the next save of this draft",
+  "experimental.recordVersion": "Record source version",
+  "experimental.recordVersionHelp":
+    "Select a finished task and its source artifact. Recording keeps a verified reference to the artifact; it does not build or test the mod.",
+  "experimental.versionLabel": "Version label",
+  "experimental.createProject": "Create project from source",
+  "experimental.projectHistory": "Source history and continuation",
+  "experimental.projectVerification":
+    "Source version recorded · Compilation not run · Game verification not run",
+  "experimental.continueEditing": "Open this source version",
+  "experimental.continueProjectHelp":
+    "AI continuation copies a Maker version into a new task and uses the saved shared AI preset. Java and resource changes require your review. Save notes first, then record the approved result as another version. Porter artifacts open for inspection in Porter; automatic complete porting and game testing are not available.",
+  "experimental.continueAI": "Continue with AI",
+
   "experimental.componentVersion": "Version {version}",
   "experimental.pluginGroup": "Extensions (beta)",
   "experimental.betaGroup": "Experimental (beta)",
