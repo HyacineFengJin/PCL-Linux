@@ -109,7 +109,7 @@ test(
   "both recipes dispatch, bind diagnostics to approval, and continue from retained copies",
   { timeout: 30000 },
   async (t) => {
-    const { rpc, sourceRoot, authored, create, start } = await fixture(t);
+    const { root, rpc, sourceRoot, authored, create, start } = await fixture(t);
     let p = await create();
     const first = await rpc("porter_project_round", {
       projectId: p.id,
@@ -156,6 +156,32 @@ test(
     });
     const output = await rpc("job_read", { jobId: first.jobId });
     assert.equal(output.artifacts.length, 1);
+    const inputRef = { kind: "input", jobId: first.jobId };
+    const copyRef = {
+      kind: "artifact",
+      jobId: first.jobId,
+      operationId: output.artifacts[0].operationId,
+    };
+    const projectFile = path.join(
+      root,
+      "private-host/porter-projects",
+      p.id,
+      "project.json",
+    );
+    const retainedRecord = await fs.readFile(projectFile, "utf8");
+    const versions = await rpc("porter_project_versions", { projectId: p.id });
+    assert.deepEqual(
+      versions.versions.map((v) => v.ref),
+      [inputRef, copyRef],
+    );
+    const comparison = await rpc("porter_project_compare", {
+      projectId: p.id,
+      left: inputRef,
+      right: copyRef,
+    });
+    assert.equal(comparison.counts.modified, 1);
+    assert.equal(comparison.changes[0].path, templatePath);
+    assert.equal(await fs.readFile(projectFile, "utf8"), retainedRecord);
     p = await rpc("porter_project_source", {
       projectId: p.id,
       revision: p.revision,
@@ -213,6 +239,16 @@ test(
       false,
     );
     assert.equal(crossing.ok, false);
+    assert.equal(
+      (
+        await rpc(
+          "porter_project_compare",
+          { projectId: javaProject.id, left: inputRef, right: copyRef },
+          false,
+        )
+      ).ok,
+      false,
+    );
     for (const [name, text] of Object.entries(authored))
       assert.equal(
         await fs.readFile(path.join(sourceRoot, name), "utf8"),
@@ -223,6 +259,14 @@ test(
     const retained = await restarted("porter_project_read", {
       projectId: p.id,
     });
+    assert.deepEqual(
+      await restarted("porter_project_compare", {
+        projectId: p.id,
+        left: inputRef,
+        right: copyRef,
+      }),
+      comparison,
+    );
     assert.equal(retained.rounds.length, 2);
     assert.equal(retained.snapshot.revision, 2);
     assert.equal(

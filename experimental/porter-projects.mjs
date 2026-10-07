@@ -20,6 +20,14 @@ const validDate = (value) =>
 const boundedText = (value, limit) =>
   typeof value === "string" && value.trim().length > 0 && value.length <= limit;
 const hash = (text) => createHash("sha256").update(text).digest("hex");
+export const porterSnapshotFingerprint = (files) =>
+  hash(
+    JSON.stringify(
+      Object.fromEntries(
+        Object.entries(files).sort(([a], [b]) => a.localeCompare(b)),
+      ),
+    ),
+  );
 const text = (value, max, label) => {
   check(
     typeof value === "string" && value.trim() && value.length <= max,
@@ -80,13 +88,7 @@ function snapshot(input) {
   return {
     files,
     permittedPaths: [...input.permittedPaths],
-    fingerprint: hash(
-      JSON.stringify(
-        Object.fromEntries(
-          Object.entries(files).sort(([a], [b]) => a.localeCompare(b)),
-        ),
-      ),
-    ),
+    fingerprint: porterSnapshotFingerprint(files),
     label: input.label || "imported-source",
     revision: input.revision || 1,
   };
@@ -209,6 +211,11 @@ export class PorterProjects {
             typeof r.responseRecorded === "boolean" &&
             Number.isSafeInteger(r.baselineRevision) &&
             r.baselineRevision >= 1 &&
+            (r.sourceFingerprint === undefined ||
+              (typeof r.sourceFingerprint === "string" &&
+                /^[a-f0-9]{64}$/.test(r.sourceFingerprint))) &&
+            (r.sourceRegistered === undefined ||
+              typeof r.sourceRegistered === "boolean") &&
             boundedText(r.targetId, 100) &&
             validDate(r.createdAt) &&
             [
@@ -382,6 +389,11 @@ export class PorterProjects {
   }
   async read(id) {
     await this.reconcile(id);
+    return (await this.#read(id)).project;
+  }
+  // Comparison never reconciles or rewrites project history. The original
+  // external-edit and baseline checks still arbitrate every retained read.
+  async readRetained(id) {
     return (await this.#read(id)).project;
   }
   async addMessage(
@@ -582,6 +594,8 @@ export class PorterProjects {
           id,
           roundId,
           baselineRevision: p.snapshot.revision,
+          sourceFingerprint: p.snapshot.fingerprint,
+          sourceRegistered: p.snapshot.permittedPaths.length > 0,
           conversationThrough: p.messages.at(-1)?.id || null,
         },
         goal: p.goal,
@@ -599,6 +613,8 @@ export class PorterProjects {
         jobId: job.id,
         mode,
         baselineRevision: p.snapshot.revision,
+        sourceFingerprint: p.snapshot.fingerprint,
+        sourceRegistered: p.snapshot.permittedPaths.length > 0,
         targetId: p.targetId,
         conversationThrough: input.porterProject.conversationThrough,
         createdAt: new Date().toISOString(),

@@ -11,6 +11,7 @@ import { t, formatDate, serviceError, type MessageKey } from "./i18n";
 import type { Api } from "./types";
 import { InstanceOperationDialog } from "./instanceOperationUi";
 import { ExperimentalVersion } from "./ExperimentalVersion";
+import { ExperimentalPorterCompare } from "./ExperimentalPorterCompare";
 import type { ExperimentalDraft } from "./ExperimentalTools";
 import {
   experimentalCall as call,
@@ -1098,6 +1099,14 @@ export function ExperimentalPorterWorkspace({
             </div>
           </section>
         </>
+      )}
+      {project && !newProject && !editing && (
+        <ExperimentalPorterCompare
+          api={api}
+          native={native}
+          projectId={projectId}
+          disabled={busy}
+        />
       )}
       {job && !newProject && !editing && (
         <section className="ce-card">

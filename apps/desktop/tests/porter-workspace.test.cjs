@@ -22,6 +22,7 @@ const output = require("esbuild").buildSync({
   stdin: {
     contents: `export { ExperimentalPorterWorkspace } from './src/ExperimentalPorterWorkspace';
       export { ExperimentalPorter } from './src/ExperimentalPorter';
+      export { ExperimentalPorterCompare } from './src/ExperimentalPorterCompare';
       export { CeSelect } from './src/CeSelect';
       export { InstanceOperationDialog } from './src/instanceOperationUi';
       export { t } from './src/i18n';`,
@@ -49,6 +50,7 @@ fixtureModule._compile(output, fixtureModule.filename);
 const {
   ExperimentalPorterWorkspace,
   ExperimentalPorter,
+  ExperimentalPorterCompare,
   CeSelect,
   InstanceOperationDialog,
   t,
@@ -182,6 +184,8 @@ function server(prefix = "") {
         liveAvailable: false,
       };
     if (op === "porter_projects") return listing();
+    if (op === "porter_project_versions")
+      return { versions: [], omittedCopies: 0 };
     if (op === "porter_project_read")
       return structuredClone(projects[args.projectId]);
     if (op === "catalog")
@@ -760,5 +764,244 @@ test("same round/copy/file selections preserve admission and Strict Mode remains
     assert.equal(strict.root.findAllByType(ExperimentalPorter).length, 1);
   } finally {
     if (strict) await act(async () => strict.unmount());
+  }
+});
+
+function comparisonHost(id = "A") {
+  const calls = [],
+    holds = [];
+  const inputs = [1, 2].map((i) => ({
+    ref: { kind: "input", jobId: `${id}${i}` },
+    round: i,
+    baselineRevision: i,
+    createdAt: "2026-01-01",
+  }));
+  const copy = {
+    ...inputs[0],
+    ref: { kind: "artifact", jobId: `${id}1`, operationId: `host-${id}-copy` },
+  };
+  const listing = { versions: [...inputs, copy], omittedCopies: 3 };
+  const result = (args, label = "Example.java") => ({
+    projectId: args.projectId,
+    left: { ref: args.left, fingerprint: "left-hash" },
+    right: { ref: args.right, fingerprint: "right-hash" },
+    counts: { added: 1, deleted: 1, modified: 1, unchanged: 1 },
+    scope: "retained-project-text-only",
+    changes: ["added", "deleted", "modified"].map((kind, i) => ({
+      path: `${i}/${label}`,
+      kind,
+      beforeBytes: 1,
+      afterBytes: 2,
+      beforeHash: kind === "added" ? null : "before",
+      afterHash: kind === "deleted" ? null : "after",
+      diff: { text: "-old\n+new\n", truncated: i === 1, coarse: i === 2 },
+    })),
+  });
+  const api = (command, { operation: op, args }) => {
+    assert.equal(command, "experimental_call");
+    calls.push({ op, args });
+    const h = holds.find((h) => h.op === op && !h.received);
+    if (h) {
+      h.received = args;
+      return h.promise;
+    }
+    assert.ok(
+      ["porter_project_versions", "porter_project_compare"].includes(op),
+      "comparison has read-only RPCs",
+    );
+    return Promise.resolve(
+      op === "porter_project_versions" ? listing : result(args),
+    );
+  };
+  return {
+    api,
+    calls,
+    listing,
+    result,
+    hold(op) {
+      const h = { op, ...deferred(), received: null };
+      holds.push(h);
+      return h;
+    },
+  };
+}
+async function comparePanel(host = comparisonHost()) {
+  let props = {
+      api: host.api,
+      native: true,
+      projectId: "project-A",
+      disabled: false,
+    },
+    renderer;
+  await act(async () => {
+    renderer = create(React.createElement(ExperimentalPorterCompare, props));
+  });
+  return {
+    host,
+    renderer,
+    async update(next) {
+      props = { ...props, ...next };
+      await act(async () =>
+        renderer.update(React.createElement(ExperimentalPorterCompare, props)),
+      );
+    },
+    async close() {
+      await act(async () => renderer.unmount());
+    },
+  };
+}
+const compareSelect = (h, side) =>
+  h.renderer.root
+    .findAllByType(CeSelect)
+    .find(
+      (n) =>
+        n.props["aria-label"] ===
+        t(
+          side === "left"
+            ? "experimental.porterCompareFrom"
+            : "experimental.porterCompareTo",
+        ),
+    );
+
+test("comparison renders actual version selectors, change classes and bounded-diff notices without writes", async () => {
+  const h = await comparePanel();
+  try {
+    assert.equal(compareSelect(h, "left").props.value, "A1:input");
+    assert.equal(compareSelect(h, "right").props.value, "A1:host-A-copy");
+    await click(button(h, t("experimental.porterCompareRun")).props.onClick);
+    const calls = h.host.calls;
+    assert.deepEqual(
+      calls.map((c) => c.op),
+      ["porter_project_versions", "porter_project_compare"],
+    );
+    assert.deepEqual(calls[1].args, {
+      projectId: "project-A",
+      left: { kind: "input", jobId: "A1" },
+      right: { kind: "artifact", jobId: "A1", operationId: "host-A-copy" },
+    });
+    assert.equal(
+      h.renderer.root.findAll((n) => n.type === "details").length,
+      3,
+    );
+    assert.match(text(h.renderer.root), /新增 1 · 删除 1 · 修改 1 · 未改变 1/);
+    assert.ok(
+      text(h.renderer.root).includes(t("experimental.porterCompareTruncated")),
+    );
+    assert.ok(
+      text(h.renderer.root).includes(t("experimental.porterCompareCoarse")),
+    );
+    assert.ok(text(h.renderer.root).includes("3 个旧副本"));
+  } finally {
+    await h.close();
+  }
+});
+
+test("comparison retained callbacks obey unmount, native/API/project identity and selected versions", async () => {
+  for (const retire of ["unmount", "api", "native", "project", "selection"]) {
+    const h = await comparePanel();
+    let closed = false;
+    try {
+      const compare = button(h, t("experimental.porterCompareRun")).props
+        .onClick;
+      const refresh = button(h, t("experimental.refresh")).props.onClick;
+      if (retire === "unmount") {
+        await h.close();
+        closed = true;
+      }
+      if (retire === "api") await h.update({ api: comparisonHost("B").api });
+      if (retire === "native") {
+        await h.update({ native: false });
+        await h.update({ native: true });
+      }
+      if (retire === "project") await h.update({ projectId: "project-B" });
+      if (retire === "selection")
+        await click(() =>
+          compareSelect(h, "right").props.onChange({
+            target: { value: "A2:input" },
+          }),
+        );
+      const before = h.host.calls.length;
+      await click(() => {
+        compare();
+        refresh();
+      });
+      assert.equal(h.host.calls.length, before, retire);
+    } finally {
+      if (!closed) await h.close();
+    }
+  }
+});
+
+test("comparison selection and duplicate submission cannot bypass current busy admission", async () => {
+  const h = await comparePanel();
+  try {
+    const compare = button(h, t("experimental.porterCompareRun")).props.onClick;
+    const choose = compareSelect(h, "right").props.onChange;
+    await h.update({ disabled: true });
+    await click(() => {
+      compare();
+      choose({ target: { value: "A2:input" } });
+    });
+    assert.equal(h.host.calls.length, 1);
+    assert.equal(compareSelect(h, "right").props.value, "A1:host-A-copy");
+    await h.update({ disabled: false });
+    const read = h.host.hold("porter_project_compare");
+    await click(() => {
+      compare();
+      compare();
+    });
+    await click(() => {
+      choose({ target: { value: "A2:input" } });
+      compareSelect(h, "right").props.onChange({
+        target: { value: "A2:input" },
+      });
+    });
+    assert.equal(h.host.calls.length, 2);
+    assert.equal(compareSelect(h, "right").props.value, "A1:host-A-copy");
+    await click(() => read.resolve(h.host.result(read.received)));
+    await click(() =>
+      compareSelect(h, "right").props.onChange({
+        target: { value: "A2:input" },
+      }),
+    );
+    assert.equal(compareSelect(h, "right").props.value, "A2:input");
+    assert.equal(
+      h.renderer.root.findAll((n) => n.type === "details").length,
+      0,
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+test("late comparison/list replies never overwrite or unlock a newer API request", async () => {
+  const host = comparisonHost(),
+    h = await comparePanel(host);
+  try {
+    const old = host.hold("porter_project_compare");
+    await click(button(h, t("experimental.porterCompareRun")).props.onClick);
+    const next = comparisonHost("B");
+    await h.update({ api: next.api });
+    const newer = next.hold("porter_project_compare");
+    await click(button(h, t("experimental.porterCompareRun")).props.onClick);
+    await click(() => old.resolve(host.result(old.received, "Obsolete.java")));
+    assert.equal(text(h.renderer.root).includes("Obsolete.java"), false);
+    await click(() =>
+      compareSelect(h, "right").props.onChange({
+        target: { value: "B2:input" },
+      }),
+    );
+    assert.equal(compareSelect(h, "right").props.value, "B1:host-B-copy");
+    await click(() =>
+      newer.resolve(next.result(newer.received, "Current.java")),
+    );
+    assert.ok(text(h.renderer.root).includes("Current.java"));
+    const oldList = next.hold("porter_project_versions");
+    await click(button(h, t("experimental.refresh")).props.onClick);
+    await h.update({ api: host.api });
+    await click(() => oldList.resolve(next.listing));
+    assert.equal(compareSelect(h, "left").props.value, "A1:input");
+  } finally {
+    await h.close();
   }
 });
