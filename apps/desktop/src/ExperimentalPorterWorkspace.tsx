@@ -10,7 +10,6 @@ import { CeSelect } from "./CeSelect";
 import { t, formatDate, serviceError, type MessageKey } from "./i18n";
 import type { Api } from "./types";
 import { InstanceOperationDialog } from "./instanceOperationUi";
-import { initialMakerSpec } from "./ExperimentalMaker";
 import { ExperimentalVersion } from "./ExperimentalVersion";
 import type { ExperimentalDraft } from "./ExperimentalTools";
 import {
@@ -161,7 +160,7 @@ export function ExperimentalPorterWorkspace({
   );
   useEffect(() => {
     drafts.current.porter = {
-      spec: draft?.spec || initialMakerSpec,
+      spec: draft?.spec,
       source,
       directory,
       targetId,

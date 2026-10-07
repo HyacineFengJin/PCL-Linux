@@ -36,6 +36,7 @@ import {
   searchIndex,
 } from "./runtime/vendor/maker/source-index.mjs";
 import { MakerProjects } from "./runtime/vendor/maker/projects.mjs";
+import { MakerWorkspace } from "./runtime/vendor/maker/workspace.mjs";
 import { PorterProjects } from "./porter-projects.mjs";
 import { resolvePorterOrigin } from "./porter-origins.mjs";
 import {
@@ -311,6 +312,7 @@ async function indexedArtifact(jobId, operationId) {
   );
 }
 const projects = await new MakerProjects(root, indexedArtifact).init();
+const makerWorkspace = await new MakerWorkspace(root, projects).init();
 async function startCapturedJob(job, preset) {
   if (preset) {
     selection = preset.selection;
@@ -376,7 +378,7 @@ async function dispatch(operation, a) {
       return {
         versions: {
           extensions: "0.6.1",
-          maker: "0.7",
+          maker: "1.0-preview",
           porter: "0.6.0",
           runtime: "v7",
           pi: "1.0.4",
@@ -399,6 +401,12 @@ async function dispatch(operation, a) {
       return projects.create(a);
     case "project_update":
       return projects.update(a);
+    case "project_units":
+      return makerWorkspace.list(a);
+    case "project_unit_read":
+      return makerWorkspace.read(a);
+    case "project_unit_save":
+      return makerWorkspace.save(a);
     case "project_files":
       return indexPage(await projects.source(a), a);
     case "project_file_read":

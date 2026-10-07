@@ -2474,13 +2474,8 @@ function App() {
                           icon: Puzzle,
                         },
                         {
-                          id: "projects",
-                          group: t("experimental.betaGroup"),
-                          label: t("experimental.projects"),
-                          icon: WandSparkles,
-                        },
-                        {
                           id: "maker",
+                          group: t("experimental.betaGroup"),
                           label: t("experimental.maker"),
                           icon: WandSparkles,
                         },
@@ -2941,22 +2936,19 @@ function App() {
                           </p>
                         </section>
                       )}
-                      {tab === "tools" && toolsPage === "projects" && (
-                        <ExperimentalProjects
-                          api={api}
-                          native={native && !tasks.closing}
-                          draft={projectDraft}
-                          onOpen={(source) => {
-                            setExperimentalSource(source);
-                            setToolsPage(source.workflow);
-                          }}
-                          onConfigureAi={
-                            launcher.isHidden("tools.ai")
-                              ? undefined
-                              : () => setToolsPage("ai")
-                          }
-                        />
-                      )}
+                      {tab === "tools" &&
+                        (toolsPage === "maker" || toolsPage === "projects") && (
+                          <ExperimentalProjects
+                            api={api}
+                            native={native && !tasks.closing}
+                            draft={projectDraft}
+                            onConfigureAi={
+                              launcher.isHidden("tools.ai")
+                                ? undefined
+                                : () => setToolsPage("ai")
+                            }
+                          />
+                        )}
                       {tab === "tools" && toolsPage === "ai" && (
                         <ExperimentalAi
                           api={api}
@@ -2967,6 +2959,7 @@ function App() {
                         toolsPage !== "toolbox" &&
                         toolsPage !== "ai" &&
                         toolsPage !== "marketplace" &&
+                        toolsPage !== "maker" &&
                         toolsPage !== "projects" && (
                           <ExperimentalTools
                             key={`${toolsPage}:${experimentalSource?.jobId ?? ""}:${experimentalSource?.operationId ?? ""}`}

@@ -1,4 +1,163 @@
 const messages = {
+  "maker.recordBeforeAi":
+    "Record this output as a source version before continuing from it. AI continuation uses recorded source and excludes unsubmitted source drafts.",
+  "maker.restoreSource": "Restore source copy",
+  "maker.restoreHelp":
+    "Choose current and historical outputs from the same task. Review before creating a restored copy; original sources are retained.",
+  "maker.restoreBase": "Current copy",
+  "maker.restoreTarget": "Historical copy",
+  "maker.previewRestore": "Preview restoration",
+  "experimental.configureAi": "AI management",
+  "maker.libraryEyebrow": "MOD PROJECTS",
+  "maker.libraryIntro":
+    "Develop a complete mod over time. Open a project to explore features, source and iterations.",
+  "maker.newProject": "New project",
+  "maker.searchProjects": "Search projects…",
+  "maker.refresh": "Refresh",
+  "maker.projectGenerating": "AI initialization · source not recorded",
+  "maker.versionCount": "{count} source versions",
+  "maker.openWorkspace": "Open workspace",
+  "maker.libraryEmpty": "Start with an idea",
+  "maker.libraryEmptyHelp":
+    "Describe your mod in natural language, or register an existing Maker or Porter output.",
+  "maker.registerExisting": "Register existing source",
+  "maker.allProjects": "All projects",
+  "maker.creationIntro":
+    "Describe mechanics, systems and long-term goals. AI uses your saved preset to create a project; complex work can continue across rounds.",
+  "maker.registrationIntro":
+    "Choose an existing task output to establish a mod project for continued maintenance.",
+  "maker.projectGoal": "Project goals and constraints",
+  "maker.projectGoalPlaceholder":
+    "What should this mod do? Describe its mechanics, systems, rules and compatibility requirements.",
+  "maker.currentTarget":
+    "Current source target: Fabric 1.21.1. Implement complex features incrementally through source changes.",
+  "maker.createWithAi": "Create project with AI",
+  "maker.choosePreset":
+    "Save and select a preset in AI management first. Submitting a request starts the shared engine automatically.",
+  "maker.sourceTask": "Source task",
+  "maker.selectTask": "Select task",
+  "maker.sourceOutput": "Source output",
+  "maker.selectSource": "Select source output",
+  "maker.registerProject": "Register project",
+  "maker.toggleTree": "Toggle project navigation",
+  "maker.projectNavigation": "Project navigation",
+  "maker.openDocuments": "Open documents",
+  "maker.closeDocument": "Close document",
+  "maker.workspaceEyebrow": "MOD WORKSPACE",
+  "maker.sourceRecorded": "Source version recorded",
+  "maker.sourcePending": "Awaiting source output",
+  "maker.buildNotRun": "Compilation · not run",
+  "maker.gameNotRun": "Game verification · not run",
+  "maker.features": "Features and resources",
+  "maker.featureDocument": "Feature document",
+  "maker.historyHelp":
+    "The selected version is the basis for source browsing and AI continuation. Earlier versions are retained.",
+  "maker.noTasks": "No associated tasks",
+  "maker.saveProject": "Save project",
+  "maker.acceptProjectRevision":
+    "Keep draft and retry against the latest saved state",
+  "maker.projectMissing":
+    "Project not loaded or unavailable. Return to the library and refresh.",
+  "maker.recordSource": "Record source version",
+  "maker.recordSourceHelp":
+    "Save a verified source reference and retain the original files. Recording does not verify compilation or game behavior.",
+  "maker.responseMismatch":
+    "The response does not match the current project or source. Refresh and retry.",
+  "maker.aiAssistant": "AI assistant",
+  "maker.closeAi": "Close AI panel",
+  "maker.currentContext": "CURRENT CONTEXT",
+  "maker.aiIntroTitle": "Continue this mod",
+  "maker.aiIntro":
+    "Describe a new system, complex rules, a fix or an extension. AI starts from the selected version; you review its proposed changes.",
+  "maker.aiTaskTracked":
+    "Your latest request is in the task log. Open it to inspect outputs and proposals.",
+  "maker.aiRequest": "AI development request",
+  "maker.aiPlaceholder":
+    "Describe a feature to implement or behavior to change…",
+  "maker.noPreset": "No AI preset selected",
+  "maker.sendAi": "Send development request",
+  "maker.aiReviewNote":
+    "AI changes require review. Feature requirements and related paths are included. Continuation uses recorded source; unsubmitted source drafts are excluded.",
+  "maker.newFeature": "New feature document",
+  "maker.saveFeature": "Save document",
+  "maker.acceptFeatureRevision":
+    "Keep draft and retry against the latest saved state",
+  "maker.featureName": "Feature name",
+  "maker.category": "Category",
+  "maker.featureState": "Development status",
+  "maker.featureRequirements": "Requirements and behavior",
+  "maker.featurePlaceholder":
+    "Describe behavior, edge cases, dependencies and acceptance criteria in natural language. Include multi-stage systems, rules or complex mechanics.",
+  "maker.relatedFiles": "Related source paths · one per line",
+  "maker.featureNotesHelp":
+    "This document records design and user-declared progress. Related paths grant no permissions; marking ready does not verify generation, compilation or game behavior.",
+  "maker.search": "Search",
+  "maker.searchFeatures": "Search feature names…",
+  "maker.linkedFileCount": "{count} related paths",
+  "maker.noFeatures": "No feature documents in this category",
+  "maker.noFeaturesHelp":
+    "Create separate documents for items, rules or complete systems, then work with AI around each document.",
+  "maker.featureCount": "{count} features",
+  "maker.aiTask": "AI task",
+  "maker.loading": "Loading…",
+  "maker.sourceStatus": "Source generation",
+  "maker.sourceAvailable": "Source output available",
+  "maker.aiResponse": "AI response",
+  "maker.proposedChanges": "Proposed changes",
+  "maker.noProposals": "No proposals yet.",
+  "maker.sourceOutputs": "Source outputs",
+  "maker.outputFileCount": "{count} files",
+  "maker.openSource": "View source",
+  "maker.openFolder": "Open folder",
+  "maker.noSourceOutputs": "No source outputs yet.",
+  "maker.reviewChanges": "Review changes",
+  "maker.applyChanges": "Confirm source copy",
+  "maker.refreshReview": "Refresh review status",
+  "maker.reviewHelp":
+    "Check the diff and handwritten protection notes. Confirmation creates a new copy and retains the original and history.",
+  "maker.explorer": "EXPLORER",
+  "maker.editFile": "Edit this file",
+  "maker.previewFileChanges": "Preview source changes",
+  "maker.sourceEditor": "Source editor",
+  "maker.bufferLimit":
+    "Draft buffers reached 32 files or 2 MB. Organize existing drafts first.",
+  "maker.bufferSourceChanged":
+    "Source changed. Your draft is retained; check the source version.",
+  "maker.editingDraft": "Editing draft",
+  "maker.readOnlySource": "Read-only source",
+  "maker.unsaved": "Unsubmitted changes",
+  "maker.lines": "lines",
+  "maker.fileBeginning": "File beginning",
+  "maker.chooseSource": "Choose a source file",
+  "maker.sourceExplorerHelp":
+    "Open a file from the explorer. The host verifies source versions and handwritten protection.",
+  "maker.copyCreated":
+    "New source copy created. Open its task to inspect and record it.",
+  "maker.promptTooLong":
+    "The request and feature context exceed 12,000 characters. Shorten them and retry.",
+  "maker.section.overview": "Overview",
+  "maker.section.source": "Source",
+  "maker.section.history": "Versions and changes",
+  "maker.section.tasks": "AI tasks",
+  "maker.section.settings": "Project settings",
+  "maker.overview.units":
+    "Open feature documents by category to maintain requirements and progress.",
+  "maker.overview.source":
+    "Browse source, edit drafts and review handwritten changes.",
+  "maker.overview.history":
+    "Retain iterations, choose a source base and compare changes.",
+  "maker.overview.tasks": "Inspect AI responses, proposals and source outputs.",
+  "maker.kind.items": "Items",
+  "maker.kind.blocks": "Blocks",
+  "maker.kind.rules": "Rules",
+  "maker.kind.systems": "Systems",
+  "maker.kind.assets": "Assets",
+  "maker.kind.other": "Other",
+  "maker.state.planned": "Planned",
+  "maker.state.in_progress": "In progress",
+  "maker.state.ready": "Ready · user declared",
+  "experimental.showArchived": "Show archived",
+  "experimental.projectName": "Project name",
   "experimental.compareVersions": "Compare source versions",
   "experimental.compareHelp":
     "Compare two recorded versions by path and content hash. This only displays changes and preserves source and project records. Select a file to view a bounded text-line preview.",
@@ -51,7 +210,7 @@ const messages = {
 
   "experimental.porterVersionReadOnly":
     "Recorded Porter outputs open for inspection. To continue a migration, import its source directory as a new Porter task and grant permitted paths again.",
-  "experimental.projects": "Mod Projects",
+  "experimental.projects": "Mod Maker",
   "experimental.projectsHelp":
     "Keep source versions and project notes for Maker and Porter. Open an earlier Maker version to continue editing a new copy.",
   "experimental.archived": "Archived",
