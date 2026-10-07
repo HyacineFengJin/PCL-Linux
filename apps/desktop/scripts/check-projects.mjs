@@ -35,10 +35,21 @@ function harness(api, retained) {
     useRef(value) {
       return (hooks[cursor++] ??= { current: value });
     },
+    useMemo(factory, deps) {
+      const index = cursor++,
+        old = hooks[index];
+      if (!old || deps.some((value, i) => !Object.is(value, old.deps[i])))
+        hooks[index] = { deps, value: factory() };
+      return hooks[index].value;
+    },
     useEffect(effect, deps) {
       const index = cursor++,
         old = hooks[index];
-      if (!old || deps.some((value, i) => !Object.is(value, old.deps[i]))) {
+      if (
+        !deps ||
+        !old ||
+        deps.some((value, i) => !Object.is(value, old.deps[i]))
+      ) {
         hooks[index] = { deps };
         pending.push(() => {
           old?.cleanup?.();
@@ -107,6 +118,10 @@ function harness(api, retained) {
     i18n,
     draft,
     opened,
+    replaceApi(next) {
+      api = next;
+      render();
+    },
     get tree() {
       return tree;
     },
@@ -311,6 +326,214 @@ test("opening and AI continuation use the host-selected checkpoint and return it
     elements(ui.tree, (node) => node.type?.name === "ExperimentalVersion")[0]
       .props.version,
     "0.5",
+  );
+  ui.close();
+});
+
+function selectProject(ui, name) {
+  const value = elements(
+    ui.tree,
+    (node) =>
+      node.type === "button" &&
+      elements(
+        node.props.children,
+        (child) => child.type === "span" && content(child) === name,
+      ).length,
+  )[0];
+  assert.ok(value, "Missing project: " + name);
+  value.props.onClick();
+}
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+test("callbacks from an earlier render or an unmounted page cannot submit project writes or continuation", async () => {
+  const writes = [],
+    record = project();
+  async function api(_, { operation, args }) {
+    if (operation === "status") return { jobs: [] };
+    if (operation === "projects_list") return { projects: [record] };
+    writes.push({ operation, args });
+    return {};
+  }
+  const ui = harness(api);
+  await ui.flush();
+  selectProject(ui, record.name);
+  await ui.flush();
+  await change(ui, "experimental.prompt", "Continue this mod");
+  const earlierSave = button(ui, "experimental.saveProject").props.onClick;
+  await change(ui, "experimental.projectNotes", "New local notes");
+  earlierSave();
+  await ui.flush();
+  assert.equal(writes.length, 0);
+  const save = button(ui, "experimental.saveProject").props.onClick;
+  const continueAi = button(ui, "experimental.continueAI").props.onClick;
+  ui.close();
+  save();
+  continueAi();
+  await ui.flush();
+  assert.equal(writes.length, 0);
+  assert.equal(ui.draft.current.notes, "New local notes");
+});
+test("a delayed previous-API refresh and its retired callback cannot replace the current project list", async () => {
+  const delayed = deferred(),
+    current = project("current-api-project");
+  let oldCalls = 0;
+  async function oldApi(_, { operation }) {
+    if (operation === "status") return { jobs: [] };
+    if (operation === "projects_list") {
+      oldCalls++;
+      return delayed.promise;
+    }
+    throw new Error("Unexpected old API write");
+  }
+  async function newApi(_, { operation }) {
+    if (operation === "status") return { jobs: [] };
+    if (operation === "projects_list") return { projects: [current] };
+    throw new Error("Unexpected new API write");
+  }
+  const ui = harness(oldApi);
+  await ui.flush();
+  const oldRefresh = button(ui, "experimental.refresh").props.onClick;
+  ui.replaceApi(newApi);
+  await ui.flush();
+  selectProject(ui, current.name);
+  await ui.flush();
+  delayed.resolve({ projects: [project("previous-api-project")] });
+  await ui.flush();
+  oldRefresh();
+  await ui.flush();
+  assert.equal(oldCalls, 1);
+  assert.equal(field(ui, "experimental.name").props.value, current.name);
+  assert.equal(
+    elements(
+      ui.tree,
+      (node) =>
+        node.type === "span" && content(node) === "previous-api-project",
+    ).length,
+    0,
+  );
+  ui.close();
+});
+test("a committed save stays in the host but its delayed result does not replace a newer selection", async () => {
+  const delayed = deferred(),
+    records = [project(), project("next-project")],
+    requests = [];
+  async function api(_, { operation, args }) {
+    if (operation === "status") return { jobs: [] };
+    if (operation === "projects_list")
+      return { projects: structuredClone(records) };
+    if (operation === "project_update") {
+      requests.push(args);
+      await delayed.promise;
+      records[0] = {
+        ...records[0],
+        name: args.name,
+        notes: args.notes,
+        revision: "saved-revision",
+      };
+      return records[0];
+    }
+    throw new Error("Unexpected operation: " + operation);
+  }
+  const ui = harness(api);
+  await ui.flush();
+  selectProject(ui, records[0].name);
+  await ui.flush();
+  await change(ui, "experimental.projectNotes", "Committed design");
+  // Two events can be queued before the busy render. The second selection must
+  // remain selected even though the first event already admitted a host write.
+  button(ui, "experimental.saveProject").props.onClick();
+  selectProject(ui, records[1].name);
+  await ui.flush();
+  delayed.resolve();
+  await ui.flush();
+  assert.equal(requests.length, 1);
+  assert.equal(records[0].notes, "Committed design");
+  assert.equal(field(ui, "experimental.name").props.value, records[1].name);
+  assert.equal(
+    field(ui, "experimental.projectNotes").props.value,
+    records[1].notes,
+  );
+  assert.equal(ui.draft.current.id, records[1].id);
+  ui.close();
+});
+test("a previous-API source-open response cannot navigate the replacement page", async () => {
+  const delayed = deferred(),
+    oldRecord = project(),
+    newRecord = project("replacement-project");
+  let opens = 0;
+  async function oldApi(_, { operation }) {
+    if (operation === "status") return { jobs: [] };
+    if (operation === "projects_list") return { projects: [oldRecord] };
+    if (operation === "project_open") {
+      opens++;
+      return delayed.promise;
+    }
+    throw new Error("Unexpected old API operation");
+  }
+  async function newApi(_, { operation }) {
+    if (operation === "status") return { jobs: [] };
+    if (operation === "projects_list") return { projects: [newRecord] };
+    throw new Error("Unexpected replacement API operation");
+  }
+  const ui = harness(oldApi);
+  await ui.flush();
+  selectProject(ui, oldRecord.name);
+  await ui.flush();
+  button(ui, "experimental.continueEditing").props.onClick();
+  await ui.flush();
+  ui.replaceApi(newApi);
+  await ui.flush();
+  selectProject(ui, newRecord.name);
+  await ui.flush();
+  delayed.resolve({
+    workflow: "maker",
+    jobId: "previous-api-job",
+    operationId: "source",
+    spec: { mod_id: "old_mod" },
+  });
+  await ui.flush();
+  assert.equal(opens, 1);
+  assert.equal(ui.opened.length, 0);
+  assert.equal(ui.draft.current.id, newRecord.id);
+  ui.close();
+});
+
+test("an edit queued after save admission remains a local draft after the host commit returns", async () => {
+  const delayed = deferred();
+  let record = project();
+  async function api(_, { operation, args }) {
+    if (operation === "status") return { jobs: [] };
+    if (operation === "projects_list") return { projects: [record] };
+    if (operation === "project_update") {
+      await delayed.promise;
+      record = { ...record, notes: args.notes, revision: "committed-revision" };
+      return record;
+    }
+    throw new Error("Unexpected operation: " + operation);
+  }
+  const ui = harness(api);
+  await ui.flush();
+  selectProject(ui, record.name);
+  await ui.flush();
+  await change(ui, "experimental.projectNotes", "Committed A");
+  button(ui, "experimental.saveProject").props.onClick();
+  field(ui, "experimental.projectNotes").props.onChange({
+    target: { value: "Draft B" },
+  });
+  await ui.flush();
+  delayed.resolve();
+  await ui.flush();
+  assert.equal(record.notes, "Committed A");
+  assert.equal(field(ui, "experimental.projectNotes").props.value, "Draft B");
+  assert.equal(ui.draft.current.notes, "Draft B");
+  assert.equal(
+    button(ui, "experimental.retryProjectSave").props.disabled,
+    false,
   );
   ui.close();
 });

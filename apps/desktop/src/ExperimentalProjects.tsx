@@ -1,8 +1,9 @@
 /** Persistent project navigation and notes; source approvals and credentials
  * remain owned by the shared host. Local edits survive selection changes and
  * refresh. A stale save retains the draft until the user explicitly retries.
+ * Page scopes retire callbacks/results, without canceling submitted host writes.
  */
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { CeSelect } from "./CeSelect";
 import { t, formatDate, serviceError } from "./i18n";
 import type { Api } from "./types";
@@ -60,8 +61,31 @@ export function ExperimentalProjects({
     [prompt, setPrompt] = useState(draft.current.prompt);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState("");
-  const mounted = useRef(true),
-    working = useRef(false);
+  const page = useRef<{
+    api: Api;
+    native: boolean;
+    active: boolean;
+    working: boolean;
+    refresh: number;
+  } | null>(null);
+  const scope = useMemo(
+    () => ({ api, native, active: false, working: false, refresh: 0 }),
+    [api, native],
+  );
+  const callbacks = useRef<object>({}),
+    selection = useRef(0);
+  const renderCallbacks = {};
+  useEffect(() => {
+    callbacks.current = renderCallbacks;
+  });
+  // A selection or draft edit advances the view generation. An admitted
+  // write may finish, but must not replace newer local intent on completion.
+  const selected = selection.current;
+  const isCurrent = () => scope.active && page.current === scope;
+  const isCallbackCurrent = () =>
+    isCurrent() &&
+    callbacks.current === renderCallbacks &&
+    selection.current === selected;
   const drafts = useRef(draft.current.drafts);
   const project = projects.find((value) => value.id === id),
     point = project?.checkpoints.find((value) => value.id === checkpointId);
@@ -91,6 +115,8 @@ export function ExperimentalProjects({
     prompt,
   ]);
   function choose(next: MakerProject | undefined) {
+    if (!isCallbackCurrent()) return;
+    selection.current++;
     drafts.current.set(id, { name, notes, revision: loadedRevision });
     const draft = drafts.current.get(next?.id ?? "");
     setId(next?.id ?? "");
@@ -101,23 +127,31 @@ export function ExperimentalProjects({
     setError("");
   }
   async function refresh() {
-    const [saved, status] = await Promise.all([
-      call<{ projects: MakerProject[] }>(api, "projects_list"),
-      call<EngineStatus>(api, "status"),
-    ]);
-    if (mounted.current) {
-      setProjects(saved.projects);
-      setJobs(status.jobs);
+    const request = ++scope.refresh;
+    try {
+      const [saved, status] = await Promise.all([
+        call<{ projects: MakerProject[] }>(api, "projects_list"),
+        call<EngineStatus>(api, "status"),
+      ]);
+      if (isCurrent() && request === scope.refresh) {
+        setProjects(saved.projects);
+        setJobs(status.jobs);
+      }
+    } catch (error) {
+      if (isCurrent() && request === scope.refresh) throw error;
     }
   }
   useEffect(() => {
-    mounted.current = true;
+    page.current = scope;
+    scope.active = true;
+    setBusy(false);
     if (native)
       void refresh().catch((e) => {
-        if (mounted.current) setError(serviceError(e));
+        if (isCurrent()) setError(serviceError(e));
       });
     return () => {
-      mounted.current = false;
+      scope.active = false;
+      if (page.current === scope) page.current = null;
     };
   }, [api, native]);
   useEffect(() => {
@@ -127,34 +161,43 @@ export function ExperimentalProjects({
     if (native && jobId)
       void call<JobView>(api, "job_read", { jobId })
         .then((value) => {
-          if (valid) {
+          if (valid && isCurrent()) {
             setJob(value);
             setOperationId(value.artifacts.at(-1)?.operationId ?? "");
           }
         })
         .catch((e) => {
-          if (valid) setError(serviceError(e));
+          if (valid && isCurrent()) setError(serviceError(e));
         });
     return () => {
       valid = false;
     };
   }, [api, native, jobId]);
   async function perform(action: () => Promise<void>) {
-    if (!native || working.current) return;
-    working.current = true;
+    // Only the currently rendered page can admit a request. Once admitted,
+    // its host transaction finishes independently; scope/selection checks only
+    // decide whether its response may update this view.
+    if (!native || !isCallbackCurrent() || scope.working) return;
+    scope.working = true;
     setBusy(true);
     setError("");
     try {
       await action();
     } catch (e) {
-      if (mounted.current) setError(serviceError(e));
+      if (isCurrent() && selection.current === selected)
+        setError(serviceError(e));
     } finally {
-      working.current = false;
-      if (mounted.current) setBusy(false);
+      scope.working = false;
+      if (isCurrent()) setBusy(false);
     }
   }
   async function saved(value: MakerProject) {
-    if (!mounted.current) return;
+    if (!isCurrent()) return;
+    if (selection.current !== selected) {
+      await refresh();
+      return;
+    }
+    if (value.id !== id) selection.current++;
     drafts.current.delete(value.id);
     if (!id) drafts.current.delete("");
     setLoadedRevision(value.revision);
@@ -183,7 +226,7 @@ export function ExperimentalProjects({
       expectedRevision: project?.revision,
       checkpointId: source.id,
     });
-    if (mounted.current) onOpen(value);
+    if (isCurrent() && selection.current === selected) onOpen(value);
   }
   const unavailable = !native || busy;
   return (
@@ -233,7 +276,12 @@ export function ExperimentalProjects({
             maxLength={120}
             value={name}
             disabled={unavailable}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => {
+              if (isCallbackCurrent()) {
+                selection.current++;
+                setName(e.target.value);
+              }
+            }}
           />
         </label>
         <label className="ce-row">
@@ -243,7 +291,12 @@ export function ExperimentalProjects({
             maxLength={8192}
             value={notes}
             disabled={unavailable}
-            onChange={(e) => setNotes(e.target.value)}
+            onChange={(e) => {
+              if (isCallbackCurrent()) {
+                selection.current++;
+                setNotes(e.target.value);
+              }
+            }}
           />
         </label>
         <p className="experimental-origin">
@@ -274,6 +327,8 @@ export function ExperimentalProjects({
                 className="ce-button"
                 disabled={unavailable}
                 onClick={() => {
+                  if (!isCallbackCurrent()) return;
+                  selection.current++;
                   setLoadedRevision(project.revision);
                   drafts.current.delete(id);
                   setError("");
@@ -295,6 +350,8 @@ export function ExperimentalProjects({
             value={jobId}
             disabled={unavailable}
             onChange={(e) => {
+              if (!isCallbackCurrent()) return;
+              selection.current++;
               setJob(null);
               setOperationId("");
               setJobId(e.target.value);
@@ -317,7 +374,12 @@ export function ExperimentalProjects({
             className="ce-field"
             value={operationId}
             disabled={unavailable}
-            onChange={(e) => setOperationId(e.target.value)}
+            onChange={(e) => {
+              if (isCallbackCurrent()) {
+                selection.current++;
+                setOperationId(e.target.value);
+              }
+            }}
           >
             <option value="">{t("common.none")}</option>
             {job?.artifacts.map((value) => (
@@ -334,7 +396,12 @@ export function ExperimentalProjects({
             value={label}
             maxLength={120}
             disabled={unavailable}
-            onChange={(e) => setLabel(e.target.value)}
+            onChange={(e) => {
+              if (isCallbackCurrent()) {
+                selection.current++;
+                setLabel(e.target.value);
+              }
+            }}
           />
         </label>
         <button
@@ -374,7 +441,12 @@ export function ExperimentalProjects({
               className="ce-field"
               value={checkpointId}
               disabled={unavailable}
-              onChange={(e) => setCheckpointId(e.target.value)}
+              onChange={(e) => {
+                if (isCallbackCurrent()) {
+                  selection.current++;
+                  setCheckpointId(e.target.value);
+                }
+              }}
             >
               {project.checkpoints.map((value) => (
                 <option key={value.id} value={value.id}>
@@ -400,7 +472,12 @@ export function ExperimentalProjects({
               value={prompt}
               maxLength={12000}
               disabled={unavailable}
-              onChange={(e) => setPrompt(e.target.value)}
+              onChange={(e) => {
+                if (isCallbackCurrent()) {
+                  selection.current++;
+                  setPrompt(e.target.value);
+                }
+              }}
             />
           </label>
           <p className="experimental-origin">
@@ -410,7 +487,9 @@ export function ExperimentalProjects({
             <button
               className="ce-button"
               disabled={busy || !onConfigureAi}
-              onClick={onConfigureAi}
+              onClick={() => {
+                if (isCallbackCurrent()) onConfigureAi?.();
+              }}
             >
               {t("experimental.ai")}
             </button>
@@ -436,7 +515,7 @@ export function ExperimentalProjects({
                     checkpointId,
                     prompt,
                   });
-                  if (mounted.current)
+                  if (isCurrent() && selection.current === selected)
                     onOpen({
                       workflow: "maker",
                       jobId: value.jobId,
