@@ -4,7 +4,7 @@ use serde_json::json;
 use std::{
     collections::BTreeMap,
     io::{Read, Write},
-    net::{SocketAddr, TcpListener},
+    net::{SocketAddr, TcpListener, TcpStream},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -20,7 +20,7 @@ struct Server {
     worker: Option<thread::JoinHandle<()>>,
 }
 impl Server {
-    fn new(handler: impl Fn(&str) -> (u16, String) + Send + 'static) -> Self {
+    fn new(handler: impl Fn(&str) -> (u16, String) + Send + Sync + 'static) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
@@ -28,9 +28,34 @@ impl Server {
         let stop = Arc::new(AtomicBool::new(false));
         let captured = requests.clone();
         let done = stop.clone();
+        let handler = Arc::new(handler);
         let worker = thread::spawn(move || {
+            let mut connections: Vec<thread::JoinHandle<()>> = Vec::new();
+            let mut failure = None;
             while !done.load(Ordering::Acquire) {
-                let (mut socket, _) = match listener.accept() {
+                let mut index = 0;
+                while index < connections.len() {
+                    if connections[index].is_finished() {
+                        if let Err(error) = connections.swap_remove(index).join() {
+                            failure = Some(error);
+                            break;
+                        }
+                    } else {
+                        index += 1;
+                    }
+                }
+                if failure.is_some() {
+                    break;
+                }
+                // DNS asks for A/AAAA concurrently and HTTP pools can open an
+                // idle connection. A serial reader makes that idle socket block
+                // valid requests behind it until their 300 ms deadline expires.
+                // Bound the fixture workers as well as each socket's read time.
+                if connections.len() == 8 {
+                    thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                let (socket, _) = match listener.accept() {
                     Ok(connection) => connection,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(1));
@@ -38,39 +63,21 @@ impl Server {
                     }
                     Err(_) => break,
                 };
-                socket
-                    .set_read_timeout(Some(Duration::from_secs(1)))
-                    .unwrap();
-                socket
-                    .set_write_timeout(Some(Duration::from_secs(1)))
-                    .unwrap();
-                let mut request = Vec::new();
-                let mut buffer = [0; 1024];
-                while request.len() < 8192 && !request.windows(4).any(|value| value == b"\r\n\r\n")
-                {
-                    match socket.read(&mut buffer) {
-                        Ok(0) | Err(_) => break,
-                        Ok(size) => request.extend_from_slice(&buffer[..size]),
-                    }
+                let handler = handler.clone();
+                let captured = captured.clone();
+                connections.push(thread::spawn(move || {
+                    serve_fixture_connection(socket, &captured, handler.as_ref());
+                }));
+            }
+            // Joining every worker retains socket ownership even if a handler
+            // panicked; report its panic only after the other sockets finish.
+            for connection in connections {
+                if let Err(error) = connection.join() {
+                    failure.get_or_insert(error);
                 }
-                // A pooled HTTP client can abandon a connection before sending
-                // headers. EOF is not a query: dispatching it as "/" poisons
-                // the DNS fixture and turns a transport race into a panic.
-                if !request.windows(4).any(|value| value == b"\r\n\r\n") {
-                    continue;
-                }
-                let request = String::from_utf8_lossy(&request).into_owned();
-                captured.lock().unwrap().push(request.clone());
-                let target = request
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("/");
-                let (status, body) = handler(target);
-                let response = format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/dns-json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-                let _ = socket.write_all(response.as_bytes());
+            }
+            if let Some(error) = failure {
+                std::panic::resume_unwind(error);
             }
         });
         Self {
@@ -87,6 +94,44 @@ impl Server {
         self.requests.lock().unwrap().len()
     }
 }
+fn serve_fixture_connection(
+    mut socket: TcpStream,
+    captured: &Mutex<Vec<String>>,
+    handler: &impl Fn(&str) -> (u16, String),
+) {
+    socket
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    socket
+        .set_write_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let mut request = Vec::new();
+    let mut buffer = [0; 1024];
+    while request.len() < 8192 && !request.windows(4).any(|value| value == b"\r\n\r\n") {
+        match socket.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(size) => request.extend_from_slice(&buffer[..size]),
+        }
+    }
+    // A pooled HTTP client can abandon a connection before sending headers.
+    // EOF is not a query: dispatching it as "/" poisons the DNS fixture.
+    if !request.windows(4).any(|value| value == b"\r\n\r\n") {
+        return;
+    }
+    let request = String::from_utf8_lossy(&request).into_owned();
+    captured.lock().unwrap().push(request.clone());
+    let target = request
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("/");
+    let (status, body) = handler(target);
+    let response = format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/dns-json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    let _ = socket.write_all(response.as_bytes());
+}
+
 impl Drop for Server {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
@@ -133,21 +178,23 @@ fn resolver(server: &Server, fallback: DnsFallback) -> doh::DohResolver {
 }
 
 #[tokio::test]
-async fn fixture_ignores_abandoned_and_incomplete_http_connections() {
+async fn fixture_idle_and_incomplete_connections_do_not_block_real_queries() {
     let server = Server::new(|target| (200, reply(target, 120)));
     drop(std::net::TcpStream::connect(server.address).unwrap());
-    let mut partial = std::net::TcpStream::connect(server.address).unwrap();
+    let idle = TcpStream::connect(server.address).unwrap();
+    let mut partial = TcpStream::connect(server.address).unwrap();
     partial.write_all(b"GET /dns-query").unwrap();
-    drop(partial);
 
-    // The real queries queued behind the abandoned sockets must still succeed;
-    // the request count deliberately excludes connections with no HTTP request.
+    // Keep the idle and incomplete sockets open while the valid requests run.
+    // Counting only complete requests must not serialize the connections.
     let resolver = resolver(&server, DnsFallback::FailClosed);
     assert!(resolver
         .resolve("fixture.invalid".parse().unwrap())
         .await
         .is_ok());
     assert_eq!(server.count(), 2);
+    drop(idle);
+    drop(partial);
 }
 
 #[test]
