@@ -83,10 +83,10 @@ impl Desktop {
                 "launcher-settings.json",
             ),
             "extension_manifest" => (
-                "选择数据型插件声明",
+                "选择插件声明或兼容包",
                 false,
                 "json",
-                vec!["json", "pclext"],
+                vec!["json", "pclext", "pnp", "pclx"],
                 "",
             ),
             "import_settings" => ("导入启动器设置", false, "json", vec!["json"], ""),

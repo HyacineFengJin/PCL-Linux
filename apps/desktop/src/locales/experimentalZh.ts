@@ -276,7 +276,7 @@ const messages = {
   "experimental.maker": "模组制作",
   "experimental.porter": "一键搬运",
   "experimental.extensionsHelp":
-    "数据型插件支持功能卡片、页面导航与只读实例摘要。导入 PCL N / Nex 的 plugin.json 可查看兼容报告，目前不能安装或运行。",
+    "数据型插件支持功能卡片、页面导航与只读实例摘要。导入 PCL N / Nex 的 plugin.json 或 .pnp / .pclx 包可查看只读兼容报告（包上限 32 MiB、128 条目），目前不能安装或运行。",
   "experimental.makerHelp":
     "生成 Fabric 1.21.1 源码工程，修改源码、保护手写内容并恢复历史副本。",
   "experimental.porterHelp":
@@ -376,12 +376,19 @@ const messages = {
   "experimental.prompt": "需求描述",
   "experimental.workspace": "工程工作区",
   "experimental.refresh": "刷新",
-  "experimental.importExtension": "导入插件声明",
+  "experimental.importExtension": "导入声明或检查插件包",
   "experimental.compatTitle": "插件兼容报告",
   "experimental.compatCannotInstall": "暂不支持安装",
   "experimental.compatClose": "关闭",
   "experimental.compatReadOnly":
-    "仅检查这份 JSON 声明；未安装、未执行插件代码，发布者身份与签名未经验证。",
+    "仅检查清单及受支持的包目录；未安装、未执行插件代码，发布者身份、签名与其他载荷内容未经验证。",
+  "experimental.compatArchive": "只读包检查",
+  "experimental.compatArchiveSize": "包大小（字节）",
+  "experimental.compatArchiveEntries": "目录条目数",
+  "experimental.compatArchiveDeclaredSize": "声明的展开大小（字节）",
+  "experimental.compatManifestDigest": "清单 SHA-256",
+  "experimental.compatArchiveUnverified":
+    "这里只检查目录和固定 JSON 元数据。程序集、Mixin、签名与公钥数据流未读取；不验证其他载荷的大小、哈希或实际行为。",
   "experimental.compatEcosystem": "插件体系",
   "experimental.compatUndeclared": "未声明",
   "experimental.compatEntry": "程序集入口",

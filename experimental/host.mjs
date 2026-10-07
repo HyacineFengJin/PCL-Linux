@@ -28,6 +28,10 @@ import { ExtensionHost } from "./extensions/src/host.mjs";
 import { readManifest } from "./extensions/src/manifest.mjs";
 import { readPackage } from "./extensions/src/package.mjs";
 import { inspectForeignManifest } from "./extensions/src/compatibility.mjs";
+import {
+  foreignPackageFormat,
+  inspectForeignPackageFile,
+} from "./extensions/src/foreign-package.mjs";
 import { AiPresets } from "./ai-presets.mjs";
 import {
   captureIndexedSource,
@@ -377,7 +381,7 @@ async function dispatch(operation, a) {
     case "status":
       return {
         versions: {
-          extensions: "0.6.1",
+          extensions: "0.6.2",
           maker: "1.0-preview",
           porter: "0.6.0",
           runtime: "v7",
@@ -519,6 +523,10 @@ async function dispatch(operation, a) {
     case "extensions_list":
       return { entries: extensions.list(), safeMode, warning: storeWarning };
     case "extensions_review": {
+      // A foreign archive can only produce a read-only report. It never reaches
+      // the native consent map, even if its plugin.json resembles an RH package.
+      if (foreignPackageFormat(a.path))
+        return inspectForeignPackageFile(a.path);
       const source = a.path ? await boundedRead(a.path) : a.source;
       // Foreign metadata never enters the install store or pending consent map.
       // Inspection remains available even when the declarative store is damaged.

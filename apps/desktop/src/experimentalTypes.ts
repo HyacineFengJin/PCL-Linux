@@ -32,7 +32,7 @@ export type ExtensionReview = {
     currentlyGranted: boolean;
   }[];
 };
-/** Read-only foreign manifest projection. It deliberately has no review token. */
+/** Read-only foreign manifest/package projection, with no review token. */
 export type ExtensionCompatibilityReport = {
   kind: "compatibility-report";
   ecosystem: "pcl-n" | "pcl-nex";
@@ -59,6 +59,14 @@ export type ExtensionCompatibilityReport = {
   platformDeclarations: string[];
   mixinConfigs: string[];
   experimentalFeatures?: string[];
+  /** Package directory claims; no payload or signature verification. */
+  archive?: {
+    format: "pnp" | "pclx";
+    bytes: number;
+    entryCount: number;
+    declaredUncompressedBytes: number;
+    payloadVerified: false;
+  };
   findings: (
     | "n-probe-only"
     | "n-ui-unavailable"

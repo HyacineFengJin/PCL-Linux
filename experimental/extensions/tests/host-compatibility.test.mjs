@@ -5,6 +5,7 @@ import { createInterface } from 'node:readline';
 import { mkdir, mkdtemp, readFile, writeFile, rm, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { makeArchive, nexEntries, nEntries } from './fixtures/foreign-archives.mjs';
 
 const hostPath = fileURLToPath(new URL('../../host.mjs', import.meta.url));
 const scratch = fileURLToPath(new URL('../../../work/extension-compatibility-tests/', import.meta.url));
@@ -47,6 +48,9 @@ test('foreign file inspection never loads code, changes install state or issues 
   const nativeSource = await readFile(new URL('../examples/instance-compass.json', import.meta.url), 'utf8');
   const nativeReview = await rpc('extensions_review', { source: nativeSource });
   assert.equal(nativeReview.ok, true);
+  for (const [suffix, entries] of [['pclx', nexEntries()], ['pnp', nEntries()]])
+    await writeFile(path.join(root, `input.${suffix}`), makeArchive(entries));
+  await writeFile(path.join(root, 'mismatched.pnp'), makeArchive(nexEntries()));
   const filesBefore = await readdir(root);
   const reply = await rpc('extensions_review', { path: file });
   assert.equal(reply.ok, true);
@@ -56,6 +60,21 @@ test('foreign file inspection never loads code, changes install state or issues 
   assert.equal(reply.result.signatureVerified, false);
   assert.equal(Object.hasOwn(reply.result, 'token'), false);
   assert.deepEqual(await rpc('extensions_list'), before);
+  assert.deepEqual(await readdir(root), filesBefore);
+  for (const suffix of ['pnp', 'pclx']) {
+    const packaged = await rpc('extensions_review', { path: path.join(root, `input.${suffix}`) });
+    assert.equal(packaged.ok, true);
+    assert.equal(packaged.result.archive.format, suffix);
+    assert.equal(packaged.result.archive.payloadVerified, false);
+    assert.equal(packaged.result.signatureVerified, false);
+    assert.equal(packaged.result.codeExecuted, false);
+    assert.equal('token' in packaged.result, false);
+    assert.deepEqual(await rpc('extensions_list'), before);
+  }
+  const mismatch = await rpc('extensions_review', { path: path.join(root, 'mismatched.pnp') });
+  assert.equal(mismatch.ok, false);
+  assert.match(mismatch.error, /ecosystem do not match/);
+  assert.doesNotMatch(mismatch.error, /mismatched|\/|input\./);
   assert.deepEqual(await readdir(root), filesBefore);
   const confirm = await rpc('extensions_confirm', { token: foreign.id, grants: ['ui.inject'] });
   assert.equal(confirm.ok, false);
@@ -74,5 +93,8 @@ test('damaged native store does not prevent read-only diagnosis or get overwritt
   const { root, rpc } = await start(t, true);
   assert.ok((await rpc('extensions_list')).result.warning);
   assert.equal((await rpc('extensions_review', { source: JSON.stringify(foreign) })).ok, true);
+  const file = path.join(root, 'inspect.pclx');
+  await writeFile(file, makeArchive(nexEntries()));
+  assert.equal((await rpc('extensions_review', { path: file })).ok, true);
   assert.equal(await readFile(path.join(root, 'extensions.json'), 'utf8'), 'not-json');
 });

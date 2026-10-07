@@ -293,7 +293,7 @@ const messages = {
   "experimental.maker": "Mod Maker",
   "experimental.porter": "Mod Porter",
   "experimental.extensionsHelp":
-    "Declarative extensions provide cards, navigation and read-only instance summaries. Import PCL N / Nex plugin.json files for compatibility reports; installation and execution are unavailable.",
+    "Declarative extensions provide cards, navigation and read-only instance summaries. Import PCL N / Nex plugin.json files or .pnp / .pclx packages for read-only compatibility reports (up to 32 MiB and 128 entries); installation and execution are unavailable.",
   "experimental.makerHelp":
     "Generate Fabric 1.21.1 source projects, edit source, protect handwritten code and restore earlier copies.",
   "experimental.porterHelp":
@@ -398,12 +398,19 @@ const messages = {
   "experimental.prompt": "Describe your request",
   "experimental.workspace": "Project workspace",
   "experimental.refresh": "Refresh",
-  "experimental.importExtension": "Import extension manifest",
+  "experimental.importExtension": "Import manifest or inspect plugin package",
   "experimental.compatTitle": "Plugin compatibility report",
   "experimental.compatCannotInstall": "Installation unavailable",
   "experimental.compatClose": "Close",
   "experimental.compatReadOnly":
-    "Only this JSON declaration was inspected. No plugin was installed or executed; publisher identity and signatures are unverified.",
+    "Only the manifest and supported package directory were inspected. No plugin was installed or executed; publisher identity, signatures and other payload contents are unverified.",
+  "experimental.compatArchive": "Read-only package inspection",
+  "experimental.compatArchiveSize": "Package size (bytes)",
+  "experimental.compatArchiveEntries": "Directory entries",
+  "experimental.compatArchiveDeclaredSize": "Declared expanded size (bytes)",
+  "experimental.compatManifestDigest": "Manifest SHA-256",
+  "experimental.compatArchiveUnverified":
+    "Only directory metadata and fixed JSON metadata are checked. Assembly, Mixin, signature and public-key streams are unread; other payload sizes, hashes and behavior are unverified.",
   "experimental.compatEcosystem": "Plugin ecosystem",
   "experimental.compatUndeclared": "Not declared",
   "experimental.compatEntry": "Assembly entry",
