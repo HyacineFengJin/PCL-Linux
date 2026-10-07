@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import difflib
 import hashlib
 import json
 import os
@@ -349,48 +348,17 @@ def snapshot_project(root):
 
 
 def prepare_revision(root, new_spec):
-    """Prepare an immutable byte snapshot, never evaluate project scripts."""
-    validate(new_spec)
-    files = snapshot_project(root)
-    require("creator-spec.json" in files, "not a generated project: creator-spec.json missing")
-    old_spec = parse(files["creator-spec.json"])
-    require(new_spec["mod_id"] == old_spec["mod_id"], "mod_id changes require a separate migration workflow")
-    old_expected = render(old_spec)
-    drift = sorted(name for name, data in old_expected.items() if files.get(name) != data)
-    require(not drift, "generator-owned files changed or missing: " + ", ".join(drift))
-    generated = render(new_spec)
-    unrelated = {name: data for name, data in files.items() if name not in old_expected}
-    for extra in unrelated:
-        require(not any(extra == name or extra.startswith(name + "/") or name.startswith(extra + "/") for name in generated),
-                "new generated path conflicts with unrelated file: " + extra)
-    added = sorted(set(generated) - set(old_expected))
-    removed = sorted(set(old_expected) - set(generated))
-    modified = sorted(name for name in set(generated) & set(old_expected) if generated[name] != old_expected[name])
-    before_ids = {item["id"] for item in old_spec["items"]}
-    after_ids = {item["id"] for item in new_spec["items"]}
-    diffs = []
-    for name in sorted(set(added + removed + modified)):
-        before, after = old_expected.get(name, b""), generated.get(name, b"")
-        item = {"path": name, "before_sha256": hashlib.sha256(before).hexdigest() if name in old_expected else None,
-                "after_sha256": hashlib.sha256(after).hexdigest() if name in generated else None}
-        try:
-            a, b = before.decode("utf-8"), after.decode("utf-8")
-            item["kind"] = "text"
-            item["diff"] = "".join(difflib.unified_diff(a.splitlines(True), b.splitlines(True), fromfile="before/" + name, tofile="after/" + name))
-        except UnicodeError:
-            item["kind"] = "binary"
-            item["before_bytes"], item["after_bytes"] = len(before), len(after)
-        diffs.append(item)
-    # Bind the preview to the selected source path, every current file, and the new specification.
-    fingerprint = {"source": str(safe_path(root)), "spec": new_spec,
-        "files": {name: hashlib.sha256(data).hexdigest() for name, data in sorted(files.items())}}
-    token = hashlib.sha256(encode(fingerprint)).hexdigest()
-    preview = {"status": "revision_preview", "revision": token, "target": TARGET, "mode": "new_snapshot_only",
-        "added": added, "modified": modified, "removed": removed, "preserved_unrelated": sorted(unrelated),
-        "removed_item_ids": sorted(before_ids - after_ids), "added_item_ids": sorted(after_ids - before_ids),
-        "warnings": ["Removed item IDs can lose content in existing worlds; use a disposable world until migration is reviewed."] if before_ids - after_ids else [],
-        "diffs": diffs, "java_compilation": "not_run", "gradle_build": "not_run", "minecraft_smoke_test": "not_run"}
-    return preview, {**generated, **unrelated}
+    """All revision entry points share one ownership-aware snapshot builder.
+
+    The lazy sibling import also supports standalone CLI use. The fixed domain
+    bridge registers that same sibling before invoking this compatibility API.
+    Copying old ownership metadata as an unrelated file would leave stale hashes
+    and make an otherwise successful revision impossible to edit or restore.
+    """
+    from source_editor import prepare_regenerate
+    preview, files = prepare_regenerate(root, new_spec)
+    return {**preview, "status": "revision_preview", "target": TARGET,
+        "mode": "new_snapshot_only"}, files
 
 
 def preview_revision(root, new_spec):
@@ -409,8 +377,14 @@ def revise(root, new_spec, expected_revision, output=None):
     destination = write_new_project(files, output)
     written = snapshot_project(destination)
     require(written == files, "post-write snapshot verification failed")
+    from source_editor import inspect
+    inspect(destination)  # Validate refreshed ownership as well as the copied bytes.
     result = {"status": "revised_source_snapshot", "output": str(destination), "revision": expected_revision,
-        "source_unchanged_by_tool": True, "generated_files_verified": True, "preserved_unrelated": preview["preserved_unrelated"],
+        "source_unchanged_by_tool": True,
+        "generated_files_verified": all(written.get(name) == data for name, data in render(new_spec).items()),
+        "preserved_unrelated": preview["preserved_unrelated"],
+        "preserved_locked_files": preview["preserved_locked_files"],
+        "suppressed_template_changes": preview["suppressed_template_changes"],
         "added": preview["added"], "modified": preview["modified"], "removed": preview["removed"],
         "warnings": preview["warnings"], "file_count": len(written),
         "java_compilation": "not_run", "gradle_build": "not_run", "minecraft_smoke_test": "not_run"}

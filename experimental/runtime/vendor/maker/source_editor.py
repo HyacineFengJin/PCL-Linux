@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Original, offline source ownership + reviewed new-copy editing. Never builds code."""
+"""Offline ownership and reviewed new-copy editing; never builds code.
+
+Audit binds a bounded snapshot to its template and protected-file hashes.
+Patch/regenerate/restore prepare bytes and a digest only; apply rechecks that
+digest before creating a new copy. Ordinary template revisions use this same
+regeneration path so protection records cannot become stale across workflows.
+External edits are refused, never silently adopted or overwritten.
+"""
 from __future__ import annotations
 import argparse
 import difflib
@@ -182,16 +189,35 @@ def prepare_regenerate(root, new_spec):
             if record["owner"] == "locked":
                 skipped.append({"path": name, "preserved_sha256": sha(before[name]), "proposed_template_sha256": None, "reason": "locked_file_retained"})
     after = owned_snapshot(after, owners, generated)
+    changes = item_changes(old_spec, new_spec)
     warnings = ["Locked files are kept byte-for-byte. Template changes affecting them require manual reconciliation; this result is not a compiled or game-validated mod."]
+    warnings.extend(item_removal_warnings(changes))
     return preview(root, "regenerate", before, after, {"preserved_locked_files": sorted(name for name, owner in owners.items() if owner == "locked"),
-        "suppressed_template_changes": skipped, "warnings": warnings}, extra_binding=new_spec)
+        "preserved_unrelated": sorted(name for name, owner in owners.items() if owner == "user"),
+        "suppressed_template_changes": skipped, **changes, "warnings": warnings}, extra_binding=new_spec)
+
+
+def item_changes(before_spec, after_spec):
+    before_ids = {item["id"] for item in before_spec["items"]}
+    after_ids = {item["id"] for item in after_spec["items"]}
+    return {"removed_item_ids": sorted(before_ids - after_ids), "added_item_ids": sorted(after_ids - before_ids)}
+
+
+def item_removal_warnings(changes):
+    if not changes["removed_item_ids"]:
+        return []
+    return ["Removed item IDs can lose content in existing worlds: " + ", ".join(changes["removed_item_ids"]) +
+            ". Retained locked files do not prove these items still work; review migration before using an existing world."]
 
 
 def prepare_restore(root, checkpoint_root):
     before, current_spec, _, _ = audit(root)
     checkpoint, prior_spec, _, _ = audit(checkpoint_root)
     m.require(current_spec["mod_id"] == prior_spec["mod_id"], "checkpoint belongs to a different mod namespace")
-    return preview(root, "restore", before, checkpoint, {"warnings": ["Restores a checkpoint into a new copy only. Original and current copies are retained; no game world is rolled back."]},
+    changes = item_changes(current_spec, prior_spec)
+    return preview(root, "restore", before, checkpoint, {**changes,
+        "warnings": ["Restores a checkpoint into a new copy only. Original and current copies are retained; no game world is rolled back.",
+                     *item_removal_warnings(changes)]},
         extra_binding={"checkpoint_path": str(m.safe_path(checkpoint_root)), "checkpoint_inventory": inventory(checkpoint)})
 
 
