@@ -41,6 +41,7 @@ pub enum TaskKind {
     Install,
     ModpackInstall,
     ModpackPrepare,
+    JavaInstall,
     InstanceReset,
     InstanceExport,
     InstanceRename,
@@ -413,6 +414,7 @@ impl Tasks {
             TaskKind::Install
                 | TaskKind::ModpackInstall
                 | TaskKind::ModpackPrepare
+                | TaskKind::JavaInstall
                 | TaskKind::ResourceDownload
                 | TaskKind::ResourceSave
                 | TaskKind::ToolboxDownload
@@ -470,6 +472,7 @@ impl Tasks {
                     TaskKind::Install => "metadata",
                     TaskKind::ModpackInstall => "pack-prepare",
                     TaskKind::ModpackPrepare => "pack-input-metadata",
+                    TaskKind::JavaInstall => "java-metadata",
                     TaskKind::InstanceReset => "reset_prepare",
                     TaskKind::InstanceExport => "export-scan",
                     TaskKind::InstanceRename => "rename_prepare",
@@ -489,6 +492,7 @@ impl Tasks {
                     TaskKind::Install => "正在获取版本信息…",
                     TaskKind::ModpackInstall => "正在准备整合包安装…",
                     TaskKind::ModpackPrepare => "正在获取整合包文件信息…",
+                    TaskKind::JavaInstall => "正在获取 Java 版本信息…",
                     TaskKind::InstanceReset => "正在检查重置方案…",
                     TaskKind::InstanceExport => "正在检查导出文件…",
                     TaskKind::InstanceRename => "正在检查实例名称与引用…",
@@ -568,6 +572,7 @@ impl Tasks {
                     TaskKind::Install => "正在取消安装…",
                     TaskKind::ModpackInstall => "正在取消整合包安装并清理未完成文件…",
                     TaskKind::ModpackPrepare => "正在取消整合包下载并清理暂存文件…",
+                    TaskKind::JavaInstall => "正在取消 Java 下载并清理未完成文件…",
                     TaskKind::InstanceReset => "正在取消重置并恢复原核心文件…",
                     TaskKind::InstanceExport => "正在取消导出并清理临时文件…",
                     TaskKind::InstanceRename => "正在取消改名并清理临时文件…",
@@ -841,6 +846,7 @@ impl Tasks {
                             TaskKind::Install => "安装已取消，未完成文件已清理",
                             TaskKind::ModpackInstall => "整合包安装已取消，未完成文件已清理",
                             TaskKind::ModpackPrepare => "整合包下载已取消，暂存文件已清理",
+                            TaskKind::JavaInstall => "Java 下载已取消，未完成文件已清理",
                             TaskKind::InstanceReset => "重置已取消，原实例已保留",
                             TaskKind::InstanceExport => "导出已取消，未完成 ZIP 已清理",
                             TaskKind::InstanceRename => "改名已取消，原实例已保留",
@@ -908,9 +914,9 @@ impl TaskHandle {
         self.tasks.update(&self.id, progress)
     }
 
-    /// The resource worker supplies the root project's title only after its
-    /// official plan matches the confirmed revision. A finished worker cannot
-    /// rename a newer task, and a dependency cannot replace this one-time name.
+    /// Resource and runtime workers supply a title only after resolving an
+    /// official identity. A finished worker cannot rename a newer task, and a
+    /// dependency cannot replace this one-time name.
     pub fn set_resource_name(&self, name: &str) {
         if name.is_empty() || name.len() > 2048 {
             return;
@@ -926,7 +932,10 @@ impl TaskHandle {
             };
             if !matches!(
                 record.snapshot.kind,
-                TaskKind::ResourceDownload | TaskKind::ModpackInstall | TaskKind::ModpackPrepare
+                TaskKind::ResourceDownload
+                    | TaskKind::ModpackInstall
+                    | TaskKind::ModpackPrepare
+                    | TaskKind::JavaInstall
             ) || record.snapshot.display_name.is_some()
                 || record.snapshot.stage.is_terminal()
             {

@@ -37,6 +37,7 @@ export function taskNeedsBootstrap(
   )
     return false;
   const globalRecovery = [
+    "java_install",
     "instance_rename",
     "instance_import",
     "modpack_install",

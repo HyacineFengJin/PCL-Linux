@@ -109,6 +109,10 @@ button:not(:disabled):active {
   height: 20px;
   flex: none;
   object-fit: contain;
+  transform: translateY(2px);
+}
+.pcl-wordmark {
+  font-weight: 600;
 }
 .titlebar nav {
   position: absolute;

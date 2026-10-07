@@ -1,4 +1,4 @@
-import { t, formatNumber } from "./i18n";
+import { t, formatNumber, type MessageKey } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import {
   Check,
@@ -17,34 +17,41 @@ import {
   taskAggregate,
 } from "./taskLifecycle";
 import "./task-manager.css";
+function taskStepLabel(kind: DownloadStatus["kind"], step: DownloadStep) {
+  if (kind === "java_install") {
+    switch (step.id) {
+      case "java-metadata":
+        return t("java.stepMetadata");
+      case "java-files":
+        return t("java.stepFiles");
+      case "java-probe":
+        return t("java.stepProbe");
+      case "java-publish":
+        return t("java.stepPublish");
+    }
+  }
+  return step.label;
+}
+const taskActionMessages: Partial<
+  Record<NonNullable<DownloadStatus["kind"]>, MessageKey>
+> = {
+  resource_operation: "task.resourceOperation",
+  java_install: "java.download",
+  toolbox_download: "task.toolboxDownload",
+  resource_save: "task.resourceSave",
+  launcher_logs: "task.launcherLogs",
+  instance_reset: "ui.reset",
+  instance_export: "nav.export",
+  instance_rename: "ui.rename",
+  instance_import: "ui.import",
+  instance_delete: "ui.delete",
+  instance_restore: "ui.restore",
+  resource_update_restore: "task.modRestore",
+  resource_update: "nav.modUpdates",
+  resource_download: "task.resourceInstall",
+};
 export function instanceTaskAction(kind: DownloadStatus["kind"]) {
-  return kind === "resource_operation"
-    ? t("task.resourceOperation")
-    : kind === "toolbox_download"
-      ? t("task.toolboxDownload")
-      : kind === "resource_save"
-        ? t("task.resourceSave")
-        : kind === "launcher_logs"
-          ? t("task.launcherLogs")
-          : kind === "instance_reset"
-            ? t("ui.reset")
-            : kind === "instance_export"
-              ? t("nav.export")
-              : kind === "instance_rename"
-                ? t("ui.rename")
-                : kind === "instance_import"
-                  ? t("ui.import")
-                  : kind === "instance_delete"
-                    ? t("ui.delete")
-                    : kind === "instance_restore"
-                      ? t("ui.restore")
-                      : kind === "resource_update_restore"
-                        ? t("task.modRestore")
-                        : kind === "resource_update"
-                          ? t("nav.modUpdates")
-                          : kind === "resource_download"
-                            ? t("task.resourceInstall")
-                            : t("ui.install");
+  return t((kind && taskActionMessages[kind]) || "ui.install");
 }
 export function useDownloadSpeed(status: DownloadStatus) {
   const sample = useRef<{
@@ -472,7 +479,7 @@ function TaskCard({
                 <MoreHorizontal size={24} />
               )}
             </span>
-            <span>{step.label}</span>
+            <span>{taskStepLabel(status.kind, step)}</span>
           </div>
         ))}
       </div>

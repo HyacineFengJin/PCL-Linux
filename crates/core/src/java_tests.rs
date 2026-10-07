@@ -36,6 +36,44 @@ fn candidates(extras: &[String], discovered: Vec<PathBuf>) -> JavaCatalog {
 }
 
 #[test]
+fn managed_discovery_excludes_stages_unmarked_folders_and_links() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    let name = format!("java-runtime-delta-{}", "a".repeat(40));
+    let runtime = f.runtime(&format!(".pcl-rust/java/{name}/bin/java"), "21");
+    let owner = runtime
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join(".pcl-java-owner.json");
+    assert!(managed_runtime_paths(f.path()).is_empty());
+    fs::write(&owner, b"{}").unwrap();
+    f.runtime(".pcl-rust/java/.stage-unfinished/bin/java", "25");
+    fs::write(
+        f.path()
+            .join(".pcl-rust/java/.stage-unfinished/.pcl-java-owner.json"),
+        b"{}",
+    )
+    .unwrap();
+    let alias = f.path().join(format!(
+        ".pcl-rust/java/java-runtime-epsilon-{}",
+        "b".repeat(40)
+    ));
+    symlink(runtime.parent().unwrap().parent().unwrap(), alias).unwrap();
+    assert_eq!(managed_runtime_paths(f.path()), [runtime.clone()]);
+    assert!(discovery_paths(f.path(), None).contains(&runtime));
+    let discovered = candidates(&[], managed_runtime_paths(f.path()));
+    assert!(discovered
+        .runtimes
+        .iter()
+        .any(|j| j.path == runtime.to_str().unwrap() && j.major == 21));
+    fs::remove_file(&owner).unwrap();
+    symlink("bin/java", owner).unwrap();
+    assert!(managed_runtime_paths(f.path()).is_empty());
+}
+
+#[test]
 fn strict_selection_schema_has_auto_default() {
     assert_eq!(JavaSelection::default(), JavaSelection::Auto);
     assert_eq!(

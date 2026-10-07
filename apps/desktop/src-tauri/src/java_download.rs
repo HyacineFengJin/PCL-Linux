@@ -1,0 +1,222 @@
+//! Official Java runtime installation, independent of any selected game root.
+//! Catalog authority -> bounded manifest -> anonymous checked files -> probe ->
+//! no-replacement directory publication. Config registration only appends the
+//! resulting canonical executable; it never changes a manual/automatic choice.
+mod catalog;
+mod files;
+mod network;
+#[cfg(test)]
+mod tests;
+use crate::tasks::{TaskHandle, TaskProgress, TaskStage};
+pub use catalog::Package;
+use catalog::{Entry, Manifest};
+pub use files::Store;
+use pcl_install::InstallStep;
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
+type Result<T> = std::result::Result<T, String>;
+pub const CANCELLED: &str = "Java 下载已取消";
+fn check(cancel: &AtomicBool) -> Result<()> {
+    if cancel.load(Ordering::SeqCst) {
+        Err(CANCELLED.into())
+    } else {
+        Ok(())
+    }
+}
+pub async fn list() -> Result<Vec<Package>> {
+    let http = network::Http::new(pcl_network::snapshot(), pcl_network::download_snapshot())?;
+    catalog::list(&http, &AtomicBool::new(false)).await
+}
+pub fn validate_request(component: &str, hash: &str) -> Result<()> {
+    catalog::component(component)?;
+    catalog::sha1(hash)
+}
+pub struct Installed {
+    pub path: PathBuf,
+    pub runtime: pcl_core::java::JavaRuntime,
+}
+fn report(
+    task: &TaskHandle,
+    index: usize,
+    completed: u64,
+    total: u64,
+    bytes: u64,
+    byte_total: u64,
+    message: String,
+) {
+    let phases = ["java-metadata", "java-files", "java-probe", "java-publish"];
+    let labels = [
+        "获取 Java 版本信息",
+        "下载并校验 Java 文件",
+        "检查 Java 运行环境",
+        "安装 Java",
+    ];
+    task.update(TaskProgress {
+        stage: if index == 1 {
+            TaskStage::Downloading
+        } else {
+            TaskStage::Processing
+        },
+        phase: phases[index].into(),
+        message,
+        completed,
+        total,
+        bytes_done: bytes,
+        bytes_total: byte_total,
+        network_bytes: bytes,
+        steps: phases
+            .iter()
+            .enumerate()
+            .map(|(i, id)| InstallStep {
+                id: (*id).into(),
+                label: labels[i].into(),
+                state: if i < index {
+                    "complete"
+                } else if i == index {
+                    "running"
+                } else {
+                    "pending"
+                }
+                .into(),
+                progress: None,
+            })
+            .collect(),
+    });
+}
+pub async fn install(
+    store: &Store,
+    component: &str,
+    hash: &str,
+    http: network::Http,
+    task: &TaskHandle,
+) -> Result<Installed> {
+    let cancel = task.cancellation_token();
+    check(&cancel)?;
+    let lock = store.dir.lock(".java-install.lock")?;
+    store.recover(&lock)?;
+    let package = catalog::selected(&http, component, hash, &cancel).await?;
+    task.set_resource_name(&format!("Java {}", package.version));
+    let body = http
+        .metadata(
+            &package.manifest.url,
+            Some((&package.manifest.sha1, package.manifest.size)),
+            &cancel,
+        )
+        .await?;
+    let manifest: Manifest =
+        serde_json::from_slice(&body).map_err(|e| format!("Java 清单无效：{e}"))?;
+    let total_bytes = manifest.validate()?;
+    check(&cancel)?;
+    let mut stage = store.create(&package, &manifest, task.id(), &lock)?;
+    let result = async {
+        stage.prepare_directories()?;
+        let total = manifest
+            .files
+            .values()
+            .filter(|entry| matches!(entry, Entry::File { .. }))
+            .count() as u64;
+        let mut bytes = 0;
+        let mut complete = 0;
+        for (path, entry) in &manifest.files {
+            if let Entry::File {
+                executable,
+                downloads,
+            } = entry
+            {
+                check(&cancel)?;
+                let source = &downloads["raw"];
+                let mut file = stage.anonymous(path)?;
+                report(
+                    task,
+                    1,
+                    complete,
+                    total,
+                    bytes,
+                    total_bytes,
+                    format!("正在下载 Java：{path}"),
+                );
+                http.file(source, &mut file, &cancel, |current| {
+                    report(
+                        task,
+                        1,
+                        complete,
+                        total,
+                        bytes + current,
+                        total_bytes,
+                        format!("正在下载 Java：{path}"),
+                    )
+                })
+                .await?;
+                stage.publish_file(path, &file, *executable)?;
+                bytes += source.size;
+                complete += 1;
+            }
+        }
+        check(&cancel)?;
+        stage.links()?;
+        // Re-fetch only small provider metadata. An identity change cannot
+        // convert files selected for one runtime into a different installation.
+        let fresh = catalog::selected(&http, component, hash, &cancel).await?;
+        if fresh != package {
+            return Err("Java 官方版本信息已改变，请重新下载".into());
+        }
+        report(
+            task,
+            2,
+            complete,
+            total,
+            bytes,
+            total_bytes,
+            "正在检查 Java 版本与架构".into(),
+        );
+        stage.verify_complete()?;
+        let runtime = pcl_core::java::inspect(&stage.java_path()?)?;
+        if runtime.major != package.major {
+            return Err(format!(
+                "Java 实际主版本 {} 与官方清单 {} 不符",
+                runtime.major, package.major
+            ));
+        }
+        check(&cancel)?;
+        task.begin_finishing();
+        check(&cancel)?;
+        report(
+            task,
+            3,
+            complete,
+            total,
+            bytes,
+            total_bytes,
+            "正在安装 Java".into(),
+        );
+        let path = stage.publish()?;
+        let runtime = pcl_core::java::JavaRuntime {
+            path: path.to_str().ok_or("Java 路径不是 UTF-8")?.into(),
+            ..runtime
+        };
+        Ok(Installed { path, runtime })
+    }
+    .await;
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            if let Err(cleanup) = stage.cleanup() {
+                return Err(format!(
+                    "Java 清理失败，已保留暂存目录：{cleanup}；原错误：{error}"
+                ));
+            }
+            Err(error)
+        }
+    }
+}
+pub fn http(
+    factory: Arc<pcl_network::ClientFactory>,
+    scheduler: Arc<pcl_network::DownloadScheduler>,
+) -> Result<network::Http> {
+    network::Http::new(factory, scheduler)
+}

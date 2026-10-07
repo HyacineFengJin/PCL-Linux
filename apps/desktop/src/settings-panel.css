@@ -168,7 +168,8 @@
   padding: 10.5px 22.5px;
   font-size: 15.75px;
 }
-.ce-java-add button {
+.ce-java-add button,
+.ce-java-download-heading {
   display: flex;
   align-items: center;
   gap: 7.5px;
@@ -178,6 +179,25 @@
   font: inherit;
   font-size: 13.5px;
   opacity: 1;
+}
+.ce-java-download-heading {
+  width: 100%;
+  text-align: left;
+}
+.ce-java-download-heading span {
+  flex: 1;
+}
+.ce-java-download-heading > svg:last-child {
+  transition: transform 0.16s;
+}
+.ce-java-download-heading > svg.is-open {
+  transform: rotate(180deg);
+}
+.ce-java-download-body {
+  padding: 2px 16px 16px;
+}
+.ce-java-download-body .ce-actions {
+  flex-wrap: wrap;
 }
 .ce-java-list {
   padding: 19.5px 27px !important;

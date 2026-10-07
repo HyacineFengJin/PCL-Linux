@@ -11,6 +11,7 @@ export type DownloadStatus = {
     | "install"
     | "modpack_install"
     | "modpack_prepare"
+    | "java_install"
     | "instance_reset"
     | "instance_export"
     | "instance_rename"

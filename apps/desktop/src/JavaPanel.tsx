@@ -2,6 +2,7 @@ import { t, formatNumber } from "./i18n";
 import { PlusCircle } from "lucide-react";
 import type { Api, JavaAddResult, JavaSelection, Settings } from "./types";
 import { useJavaAction, useJavaCatalog } from "./javaManagement";
+import { JavaDownloads } from "./JavaDownloads";
 
 export function JavaPanel({
   settings,
@@ -11,6 +12,8 @@ export function JavaPanel({
   onSave,
   onRefresh,
   onNotify,
+  downloadDisabled = disabled,
+  onJavaTask = () => {},
 }: {
   settings: Settings;
   api: Api;
@@ -19,6 +22,8 @@ export function JavaPanel({
   onSave: (settings: Settings) => Promise<void>;
   onRefresh: () => Promise<void>;
   onNotify: (message: string) => void;
+  downloadDisabled?: boolean;
+  onJavaTask?: (id: string, reveal: boolean) => void;
 }) {
   const { catalog, loading, error } = useJavaCatalog(api, settings);
   const action = useJavaAction({ api, settings, native, disabled, onNotify });
@@ -65,6 +70,14 @@ export function JavaPanel({
           {t("ui.add")}
         </button>
       </div>
+      <JavaDownloads
+        api={api}
+        settings={settings}
+        native={native}
+        disabled={downloadDisabled}
+        onNotify={onNotify}
+        onTask={onJavaTask}
+      />
       <section className="ce-card ce-java-list" aria-label={t("java.runtimes")}>
         <button
           className={`ce-java-auto ce-java-row ${selected.mode === "auto" ? "is-selected" : ""}`}

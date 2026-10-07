@@ -113,6 +113,27 @@ fn auto_java_still_discovers_the_compatible_project_runtime() {
 }
 
 #[test]
+fn auto_java_discovers_published_managed_runtime_without_changing_explicit_policy() {
+    let f = Fixture::new();
+    let folder = f.root.path().join(format!(
+        ".pcl-rust/java/java-runtime-delta-{}",
+        "a".repeat(40)
+    ));
+    let java = folder.join("bin/java");
+    let marker = f.root.path().join("managed-probed");
+    write_script(&java, &version_script(21, &marker), true);
+    fs::write(folder.join(".pcl-java-owner.json"), b"{}").unwrap();
+    assert_eq!(
+        f.installer()
+            .installer_java(21, &f.workspace, &AtomicBool::new(false))
+            .unwrap(),
+        fs::canonicalize(java).unwrap()
+    );
+    assert!(marker.exists());
+    assert!(!f.fallback_marker.exists());
+}
+
+#[test]
 fn repeated_fixed_selection_reprobes_a_replaced_or_removed_path() {
     let f = Fixture::new();
     let selected = f.selected();

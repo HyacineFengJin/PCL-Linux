@@ -14,6 +14,8 @@ mod instance_rename_refs;
 mod instance_rename_service;
 mod instance_reset;
 mod java_commands;
+mod java_download;
+mod java_download_commands;
 mod java_service;
 mod launcher_asset_commands;
 mod launcher_assets;
@@ -2073,6 +2075,8 @@ fn main() {
             ui_data::system_info,
             java_commands::java_catalog,
             java_commands::java_add,
+            java_download_commands::java_download_catalog,
+            java_download_commands::java_download_start,
             ui_data::instance_resources,
             ui_data::modrinth_search,
             save_settings,

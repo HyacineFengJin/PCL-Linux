@@ -214,6 +214,7 @@ const resourceWrites = new Set([
 const rootCommands = new Set([
   "java_catalog",
   "java_add",
+  "java_download_start",
   "launch_game",
   "inspect_instance",
   "open_folder",
@@ -2028,7 +2029,7 @@ function App() {
                     />
                   ) : (
                     <>
-                      <span className="wordmark">PCL</span>
+                      <span className="wordmark pcl-wordmark">PCL</span>
                       <img className="rh-mark" src={rhMark} alt="RH" />
                     </>
                   )}
@@ -2625,7 +2626,9 @@ function App() {
                       key={`${rootKey}:${resource.source}:${resource.project_id || resource.local_path}`}
                       api={rootApi}
                       resource={resource}
-                      occupiedNames={data?.instances.map((instance) => instance.id) || []}
+                      occupiedNames={
+                        data?.instances.map((instance) => instance.id) || []
+                      }
                       onNotify={notify}
                       scopeKey={rootId || ""}
                       selectedInstance={selected || null}
@@ -2833,6 +2836,21 @@ function App() {
                             native={native}
                             onSave={save}
                             onRefresh={load}
+                            onJavaTask={(id, reveal) => {
+                              if (reveal) void showInstanceTask(id);
+                              else {
+                                tasks.track(id);
+                                void tasks.refresh();
+                              }
+                            }}
+                            downloadDisabled={
+                              !!busy ||
+                              queueFull ||
+                              resourceBusy ||
+                              rootWorking ||
+                              instanceRecoveryBlocked ||
+                              tasks.closing
+                            }
                             disabled={
                               !!busy ||
                               downloadBusy ||

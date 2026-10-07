@@ -31,6 +31,8 @@ type Props = {
   exitAfterLaunchAvailable?: boolean;
   onNotify: (message: string) => void;
   onRefresh: () => Promise<void>;
+  downloadDisabled?: boolean;
+  onJavaTask?: (id: string, reveal: boolean) => void;
 };
 const unavailable = () => t("settings.unavailable");
 const jvm =
@@ -87,6 +89,8 @@ export function SettingsPanel({
   exitAfterLaunchAvailable = false,
   onNotify,
   onRefresh,
+  downloadDisabled,
+  onJavaTask,
 }: Props) {
   const [memory, setMemory] = useState(settings.memory_gib);
   const [advanced, setAdvanced] = useState(false);
@@ -123,6 +127,8 @@ export function SettingsPanel({
         onSave={onSave}
         onRefresh={onRefresh}
         onNotify={onNotify}
+        downloadDisabled={downloadDisabled}
+        onJavaTask={onJavaTask}
       />
     );
   if (!["launch", "启动", "game"].includes(section))

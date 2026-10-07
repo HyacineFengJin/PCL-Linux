@@ -1153,6 +1153,7 @@ impl Installer {
             .clone()
             .or_else(|| std::env::current_dir().ok());
         if let Some(project) = project {
+            paths.extend(pcl_core::java::managed_runtime_paths(&project));
             for base in [project.clone(), project.join("PCL-Linux")] {
                 if let Ok(entries) = fs::read_dir(base) {
                     for entry in entries.flatten() {
@@ -1187,7 +1188,7 @@ impl Installer {
             }
         }
         Err(format!(
-            "安装此组件需要 Java {required}，请配置兼容的 Java 或放入项目 runtime 目录后重试"
+            "安装此组件需要 Java {required}，请在 Java 设置中下载或添加兼容版本后重试"
         ))
     }
 }

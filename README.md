@@ -23,7 +23,7 @@ RH 中的 R 代表 Rust，H 来自维护者的 GitHub 名称；RH 也呼应黎�
 - 实例删除移入可恢复区域，保留实例资料，并支持恢复原目录。
 - 本地模组单个／批量启禁，模组、资源包与光影包导入，以及可撤销的删除。
 - 多游戏目录登记、切换、排序与显示名称管理，使用系统文件夹选择器。
-- Java 自动匹配、手动添加与全局／单实例选择，以及全局和单实例内存设置。
+- Mojang 官方 Java 运行时下载、校验与任务取消，Java 自动匹配、手动添加与全局／单实例选择，以及全局和单实例内存设置。
 - 版本继承、依赖库与 Linux 原生库解析。
 - 游戏进程管理、退出状态与日志查看。
 - PCL CE 风格导航、账号侧栏、实例修改／导出、资源详情及任务管理界面。
@@ -80,7 +80,7 @@ npm run dev --prefix apps/desktop
 
 ## English
 
-PCL RH is a Rust-based launcher for Minecraft: Java Edition, currently available for Linux and built with Rust, Tauri 2, React, and TypeScript. It installs vanilla, Fabric, and modern Forge/NeoForge versions with custom instance names, launches existing game installations, and displays game logs. Java can be selected automatically or registered manually, with global and per-instance choices. Tasks support cancellation and incomplete-file cleanup.
+PCL RH is a Rust-based launcher for Minecraft: Java Edition, currently available for Linux and built with Rust, Tauri 2, React, and TypeScript. It installs vanilla, Fabric, and modern Forge/NeoForge versions with custom instance names, launches existing game installations, and displays game logs. Mojang Java runtimes can be downloaded and verified from Settings. Java can be selected automatically or registered manually, with global and per-instance choices. Tasks support cancellation and incomplete-file cleanup.
 
 Local management includes multiple game directories, instance display preferences, physical renaming with reference migration and recovery, mod toggling, resource imports, and recoverable removal. Supported existing instances can reset their loader components with core backups and interruption recovery, or export selected content to a local ZIP. The launcher can import its own local ZIP exports under a custom name and restore recoverably deleted instances.
 

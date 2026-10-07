@@ -1,6 +1,58 @@
 use super::*;
 use serde_json::json;
 
+#[test]
+fn downloaded_java_registration_merges_current_root_and_manual_choices() {
+    let fixture = Fixture::new();
+    let (store, warning) = ConfigStore::load(&fixture.0);
+    assert!(warning.is_none());
+    let captured = store.snapshot();
+    let second = store
+        .register(fixture.root("second"), Some("Second".into()))
+        .unwrap();
+    store.select(&second.id).unwrap();
+    let mut current = store.snapshot();
+    current.memory_gib = 14;
+    current.java = JavaSelection::Manual {
+        path: fixture.0.join("manual/bin/java").display().to_string(),
+    };
+    current
+        .java_overrides
+        .insert("Example".into(), JavaSelection::Auto);
+    store.save(current).unwrap();
+    let before = store.snapshot();
+    let path = fixture.0.join("managed/bin/java").display().to_string();
+    let added = store.register_downloaded_java(path.clone()).unwrap();
+    assert_ne!(added.root_id, captured.root_id);
+    let mut expected = before.clone();
+    expected.java_paths.push(path.clone());
+    expected.revision = added.revision.clone();
+    assert_eq!(added, expected);
+    assert_eq!(
+        store.register_downloaded_java(path).unwrap().java_paths,
+        added.java_paths
+    );
+}
+
+#[test]
+fn downloaded_java_registration_limit_failure_preserves_config_and_runtime() {
+    let fixture = Fixture::new();
+    let (store, _) = ConfigStore::load(&fixture.0);
+    for n in 0..MAX_JAVA_PATHS {
+        store
+            .register_downloaded_java(fixture.0.join(format!("java-{n}")).display().to_string())
+            .unwrap();
+    }
+    let runtime = fixture.0.join("published-java");
+    fs::write(&runtime, b"published runtime").unwrap();
+    let before = fs::read(fixture.file()).unwrap();
+    assert!(store
+        .register_downloaded_java(runtime.display().to_string())
+        .is_err());
+    assert_eq!(fs::read(fixture.file()).unwrap(), before);
+    assert_eq!(fs::read(runtime).unwrap(), b"published runtime");
+}
+
 fn projection(mut settings: Settings) -> Settings {
     settings.revision.clear();
     settings

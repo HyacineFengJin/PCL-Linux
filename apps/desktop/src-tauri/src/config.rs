@@ -816,6 +816,17 @@ impl ConfigStore {
         Ok(project_settings(&current.config, &current.revision))
     }
 
+    /// A verified managed runtime is a global registry addition, independent of
+    /// the root/revision captured before a queued download. Merge under the
+    /// config lock; never replay that older projection or change Java choices.
+    pub(crate) fn register_downloaded_java(&self, path: String) -> Result<Settings, String> {
+        let mut current = self.lock();
+        let mut next = current.config.clone();
+        add_java_path(&mut next, &path)?;
+        self.commit(&mut current, next)?;
+        Ok(project_settings(&current.config, &current.revision))
+    }
+
     /// Updates the operation's bound root even if another root is now active.
     pub fn select_installed(&self, root_id: &str, id: &str) -> Result<(), String> {
         pcl_core::identifier(id)?;

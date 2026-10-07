@@ -192,6 +192,7 @@ fn discovery_paths(project: &Path, root: Option<&Path>) -> Vec<PathBuf> {
             paths.push(base.join(runtime).join("bin/java"));
         }
     }
+    paths.extend(managed_runtime_paths(project));
     if let Some(home) = std::env::var_os("JAVA_HOME") {
         paths.push(PathBuf::from(home).join("bin/java"));
     }
@@ -212,6 +213,45 @@ fn discovery_paths(project: &Path, root: Option<&Path>) -> Vec<PathBuf> {
         paths.extend(system);
     }
     paths.truncate(MAX_DISCOVERY_PATHS);
+    paths
+}
+
+/// Published managed runtimes also remain discoverable if a crash happened
+/// after the directory commit but before the registry addition was saved.
+/// Private stages and unrelated folders never become automatic candidates.
+pub fn managed_runtime_paths(project: &Path) -> Vec<PathBuf> {
+    let directory = project.join(".pcl-rust/java");
+    if !fs::symlink_metadata(&directory).is_ok_and(|m| m.file_type().is_dir()) {
+        return Vec::new();
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<_> = entries
+        .take(MAX_DISCOVERY_PATHS)
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            if !entry.file_type().ok()?.is_dir() {
+                return None;
+            }
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            let (component, hash) = name.rsplit_once('-')?;
+            if !(component.starts_with("java-runtime-") || component == "jre-legacy")
+                || hash.len() != 40
+                || !hash
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+                || !fs::symlink_metadata(entry.path().join(".pcl-java-owner.json"))
+                    .is_ok_and(|m| m.file_type().is_file())
+            {
+                return None;
+            }
+            Some(entry.path().join("bin/java"))
+        })
+        .collect();
+    paths.sort();
+    paths.truncate(MAX_CANDIDATES);
     paths
 }
 

@@ -60,6 +60,12 @@
 
 添加流程从 `JavaPanel` 经 `java_commands::java_add`、`platform::pick_java` 到 `java_service::register`。目录 ID 和 transport revision 在弹窗前捕获，在执行探测前和提交登记前各检查一次。探测运行在阻塞工作线程中，期间不持有操作互斥锁。添加成功的设置由前端应用入口接纳；原页面卸载后仍需更新已提交的登记表和 revision。
 
+官方下载入口是 `JavaDownloads` 和 `java_download_commands.rs`。提交只携带组件与 manifest SHA-1，不接受渲染端 URL。`java_download/catalog.rs` 解析 Mojang 平台目录并验证完整文件计划；`network.rs` 捕获网络和下载调度快照，限制元数据、文件大小、等待时间与来源；`files.rs` 使用私有目录描述符、匿名文件、持久所有权记录和不覆盖的整目录发布。内部链接只能引用清单内项目，不能成为写入或清理的父目录。
+
+下载在全局任务队列内占用托管 Java 目录。探测主版本与架构之后关闭取消接纳，再读已接纳的取消 token，随后发布目录。校验或清理错误优先于取消；被修改的暂存保留。下次下载持有过程锁后清理可识别的中断暂存。完整目录一旦发布就不能因后续登记或同步失败而删除；核心发现也扫描完整目录，覆盖发布到登记之间的崩溃窗口。
+
+登记通过 `ConfigStore::register_downloaded_java` 合并到最新配置，只追加路径，不重放提交时的目录、revision 或 Java 选择。任务完成或保留安装的错误会刷新当前 bootstrap；晚到的提交响应仍登记任务，但不能重新打开旧页面。故障回归集中在 `java_download/tests.rs`，使用 loopback 官方响应和脚本运行时，不需要下载或执行真实 JVM。
+
 `crates/core/src/java.rs` 统一列表与启动选择。每次探测限制时长和输出，自动发现限制候选数量及总时长。程序使用独立进程组，超时或退出后清理组内子进程，并等待直接子进程；不要改成持锁执行或无界管道读取。手动选择在启动时重新探测，错误不会退回自动选择。Forge/NeoForge 的主版本策略也在核心执行，前端禁用不兼容选项只是提前提示。
 
 加载器处理器的 Java 由 `crates/install/src/components.rs::installer_java` 选择，与上述游戏启动选择分开。`Installer::with_java(path)` 是严格指定：路径失效、探测失败或主版本不符时直接报错，不继续寻找其他 Java；没有调用该方法时保留自动发现。不要把显式路径作为自动候选的优先提示，否则调用者确认的运行环境会被静默替换。当前桌面安装和组件重置使用处理器自动发现，游戏 Java 选项不改变它们的处理器选择。
