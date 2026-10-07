@@ -1,4 +1,23 @@
 const messages = {
+  "experimental.sourceIndex": "Source browser",
+  "experimental.sourceIndexHelp":
+    "Read-only access to the selected source version. The host verifies file inventory and hashes; text arrives in bounded chunks. Files and literal text search results are paginated.",
+  "experimental.sourceIndexSize": "{count} files · {bytes} bytes",
+  "experimental.sourceIndexReadOnly":
+    "This version exceeds the editing snapshot limit. Browse and search are available; opening the editor and AI continuation remain disabled.",
+  "experimental.pathFilter": "Path filter",
+  "experimental.previousPage": "Previous page",
+  "experimental.nextPage": "Next page",
+  "experimental.previousChunk": "Previous text chunk",
+  "experimental.nextChunk": "Next text chunk",
+  "experimental.sourceSearch": "Search source text",
+  "experimental.searchPageSize":
+    "This page scanned {count} files · {bytes} bytes",
+  "experimental.noSearchMatches":
+    "No matches on this page. Continue to the next page if available.",
+  "experimental.searchTruncated":
+    "Result limit reached inside {path}; more matches in that file may be omitted. Open the file to inspect its text.",
+
   "experimental.porterVersionReadOnly":
     "Recorded Porter outputs open for inspection. To continue a migration, import its source directory as a new Porter task and grant permitted paths again.",
   "experimental.projects": "Mod Projects",

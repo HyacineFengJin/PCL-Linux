@@ -7,8 +7,10 @@ import { check } from './errors.mjs';
 export const sha256 = value => createHash('sha256').update(value).digest('hex');
 export function recordDigest(value) { return sha256(JSON.stringify(value)); }
 
-/** Verify a host receipt and capture bounded immutable bytes; never execute source. */
-export async function captureSourceArtifact(store, job, operationId) {
+/** One receipt policy for bounded snapshots and indexed read-only access.
+ * The caller chooses a finite file limit; output roots and receipt ownership
+ * never come from the model or the renderer. */
+export function sourceReceipt(job, operationId, { maxFiles = 300 } = {}) {
   check(typeof operationId === 'string' && /^[a-zA-Z0-9_-]{1,120}(?![\s\S])/.test(operationId), 'INVALID_SOURCE', 'Expected a source operation ID');
   const receipt = job.operations.find(op => op.id === operationId && op.status === 'completed');
   const kindAllowed = job.profile === 'maker' ? ['maker.generate', 'maker.revise', 'maker.edit_source'] : ['porter.apply_patch'];
@@ -19,10 +21,16 @@ export async function captureSourceArtifact(store, job, operationId) {
     : receipt.result.status === 'reviewed_copy_created' && /^[a-f0-9-]{36}(?![\s\S])/.test(receipt.result.reviewId)
       && operationId === `host-${receipt.result.reviewId}`, 'INVALID_SOURCE', 'Source receipt is not a host-owned source artifact');
   check(receipt.result.outputDirectory === expected && Array.isArray(receipt.result.artifacts)
-    && receipt.result.artifacts.length > 0 && receipt.result.artifacts.length <= 300, 'INVALID_SOURCE', 'Invalid source inventory');
+    && receipt.result.artifacts.length > 0 && receipt.result.artifacts.length <= maxFiles, 'INVALID_SOURCE', 'Invalid source inventory');
+  return { expected, entries: receipt.result.artifacts };
+}
+
+/** Verify a host receipt and capture bounded immutable bytes; never execute source. */
+export async function captureSourceArtifact(store, job, operationId) {
+  const { expected, entries } = sourceReceipt(job, operationId);
   const workspace = await store.workspace(job.id); const files = {}; const inventory = []; let total = 0;
   const expectedPaths = new Set();
-  for (const entry of receipt.result.artifacts) {
+  for (const entry of entries) {
     check(typeof entry.path === 'string' && entry.path.startsWith(expected + '/') && !expectedPaths.has(entry.path), 'INVALID_SOURCE', 'Invalid source inventory path');
     expectedPaths.add(entry.path);
     const handle = await fs.open(await workspace.resolve(entry.path), constants.O_RDONLY | constants.O_NOFOLLOW);

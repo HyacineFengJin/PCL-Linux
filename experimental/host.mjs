@@ -29,6 +29,12 @@ import { readManifest } from "./extensions/src/manifest.mjs";
 import { readPackage } from "./extensions/src/package.mjs";
 import { inspectForeignManifest } from "./extensions/src/compatibility.mjs";
 import { AiPresets } from "./ai-presets.mjs";
+import {
+  captureIndexedSource,
+  indexPage,
+  readIndexFile,
+  searchIndex,
+} from "./runtime/vendor/maker/source-index.mjs";
 import { MakerProjects } from "./runtime/vendor/maker/projects.mjs";
 import { PorterProjects } from "./porter-projects.mjs";
 import { resolvePorterOrigin } from "./porter-origins.mjs";
@@ -293,7 +299,14 @@ async function artifact(jobId, operationId) {
     directory: path.join(workspace.root, snapshot.directory),
   };
 }
-const projects = await new MakerProjects(root, artifact).init();
+async function indexedArtifact(jobId, operationId) {
+  return captureIndexedSource(
+    runtime.store,
+    await runtime.getJob(jobId),
+    operationId,
+  );
+}
+const projects = await new MakerProjects(root, indexedArtifact).init();
 async function startCapturedJob(job, preset) {
   if (preset) {
     selection = preset.selection;
@@ -359,7 +372,7 @@ async function dispatch(operation, a) {
       return {
         versions: {
           extensions: "0.6.1",
-          maker: "0.5",
+          maker: "0.6",
           porter: "0.6.0",
           runtime: "v7",
           pi: "1.0.4",
@@ -382,8 +395,14 @@ async function dispatch(operation, a) {
       return projects.create(a);
     case "project_update":
       return projects.update(a);
+    case "project_files":
+      return indexPage(await projects.source(a), a);
+    case "project_file_read":
+      return readIndexFile(await projects.source(a), a);
+    case "project_search":
+      return searchIndex(await projects.source(a), a);
     case "project_open": {
-      const source = await projects.source(a);
+      const source = await projects.source(a, artifact);
       return {
         workflow: source.point.workflow,
         jobId: source.point.jobId,
@@ -413,7 +432,7 @@ async function dispatch(operation, a) {
         ).length >= 2
       )
         throw new Error("The shared runtime already has two active jobs");
-      const source = await projects.source(a);
+      const source = await projects.source(a, artifact);
       if (source.project.archived)
         throw new Error("Unarchive the project before continuing");
       if (source.point.workflow !== "maker")

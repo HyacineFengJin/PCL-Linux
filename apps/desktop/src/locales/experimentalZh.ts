@@ -1,4 +1,22 @@
 const messages = {
+  "experimental.sourceIndex": "源码浏览",
+  "experimental.sourceIndexHelp":
+    "只读浏览所选源码版本。宿主核对文件清单和内容哈希，按片段返回文本；文件列表和字面文本搜索结果均分页显示。",
+  "experimental.sourceIndexSize": "{count} 个文件 · {bytes} 字节",
+  "experimental.sourceIndexReadOnly":
+    "此版本超过编辑快照限制。可以浏览和检索；打开编辑器与 AI 续作暂不可用。",
+  "experimental.pathFilter": "筛选文件路径",
+  "experimental.previousPage": "上一页",
+  "experimental.nextPage": "下一页",
+  "experimental.previousChunk": "上一段文本",
+  "experimental.nextChunk": "下一段文本",
+  "experimental.sourceSearch": "检索源码文本",
+  "experimental.searchPageSize": "本页扫描 {count} 个文件 · {bytes} 字节",
+  "experimental.noSearchMatches":
+    "本页未匹配到文本。若还有下一页，可继续检索。",
+  "experimental.searchTruncated":
+    "在 {path} 中已达到结果上限，该文件可能还有匹配未列出。可打开文件分段查看。",
+
   "experimental.porterVersionReadOnly":
     "已登记的搬运结果以只读方式查看。继续迁移时，请将其源码目录导入新的搬运任务，并重新授权可修改文件。",
   "experimental.projects": "模组项目",
