@@ -5,6 +5,7 @@ import { ArrowRight, ChevronDown } from "lucide-react";
 import "./settings-panel.css";
 import { Collapse } from "./Collapse";
 import { JavaPanel } from "./JavaPanel";
+import { GameLaunchFields } from "./GameLaunchFields";
 import type {
   LauncherPreferenceView,
   LauncherPreferencePatch,
@@ -199,20 +200,28 @@ export function SettingsPanel({
             label={t("settings.priority")}
             value={t("settings.balanced")}
           />
-          <Field
-            dropdown
-            label={t("settings.windowSize")}
-            value={t("common.default")}
+          <GameLaunchFields
+            field="window"
+            view={launcherPreferences}
+            native={native}
+            disabled={disabled}
+            busy={launcherBusy}
+            onPatch={onLauncherPatch}
+            onNotify={onNotify}
           />
           <Field
             dropdown
             label={t("settings.authentication")}
             value={t("settings.deviceFlow")}
           />
-          <Field
-            dropdown
-            label={t("settings.ip")}
-            value={t("settings.javaDefault")}
+          <GameLaunchFields
+            field="ip"
+            view={launcherPreferences}
+            native={native}
+            disabled={disabled}
+            busy={launcherBusy}
+            onPatch={onLauncherPatch}
+            onNotify={onNotify}
           />
         </div>
       </section>

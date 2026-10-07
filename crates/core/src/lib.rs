@@ -1,5 +1,7 @@
 //! Native launch planning for installed Mojang-format instances.
 pub mod java;
+pub mod launch_options;
+use launch_options::{LaunchOptions, WindowSize};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -367,6 +369,7 @@ fn scan_instance(root: &Path, id: &str) -> Result<Option<Instance>> {
 struct RuleContext {
     arch: &'static str,
     release: String,
+    custom_resolution: bool,
 }
 impl RuleContext {
     fn current() -> Self {
@@ -376,6 +379,7 @@ impl RuleContext {
                 .unwrap_or_default()
                 .trim()
                 .into(),
+            custom_resolution: false,
         }
     }
     fn matches(&self, rule: &Value) -> Result<bool> {
@@ -392,12 +396,16 @@ impl RuleContext {
                 }
             }
         }
-        // All feature flags are false for the ordinary offline launch mode.
+        // Only custom resolution is currently supported. Demo and quick-play
+        // remain false in both online and offline launch modes.
         Ok(!rule["features"]
             .as_object()
             .into_iter()
             .flatten()
-            .any(|(_, v)| v.as_bool().unwrap_or(true)))
+            .any(|(name, v)| {
+                let actual = name == "has_custom_resolution" && self.custom_resolution;
+                v.as_bool().is_none_or(|expected| expected != actual)
+            }))
     }
     fn allowed(&self, entry: &Value) -> Result<bool> {
         let Some(rules) = entry.get("rules").and_then(Value::as_array) else {
@@ -574,6 +582,31 @@ pub fn build_launch_plan_with_java(
     java: &java::JavaSelection,
     extra_java_paths: &[String],
 ) -> Result<LaunchPlan> {
+    build_launch_plan_with_options(
+        root,
+        project,
+        id,
+        player,
+        memory_gib,
+        java,
+        extra_java_paths,
+        &LaunchOptions::default(),
+    )
+}
+
+/// Existing callers keep default argv; the desktop captures these options once
+/// before handing preparation to its worker so later preference edits cannot
+/// change a submitted game's plan.
+pub fn build_launch_plan_with_options(
+    root: &Path,
+    project: &Path,
+    id: &str,
+    player: &str,
+    memory_gib: u32,
+    java: &java::JavaSelection,
+    extra_java_paths: &[String],
+    options: &LaunchOptions,
+) -> Result<LaunchPlan> {
     build_launch_plan_inner(
         root,
         project,
@@ -583,6 +616,7 @@ pub fn build_launch_plan_with_java(
         None,
         java,
         extra_java_paths,
+        options,
     )
 }
 
@@ -614,6 +648,28 @@ pub fn build_launch_plan_authenticated_with_java(
     java: &java::JavaSelection,
     extra_java_paths: &[String],
 ) -> Result<LaunchPlan> {
+    build_launch_plan_authenticated_with_options(
+        root,
+        project,
+        id,
+        identity,
+        memory_gib,
+        java,
+        extra_java_paths,
+        &LaunchOptions::default(),
+    )
+}
+
+pub fn build_launch_plan_authenticated_with_options(
+    root: &Path,
+    project: &Path,
+    id: &str,
+    identity: &OnlineIdentity,
+    memory_gib: u32,
+    java: &java::JavaSelection,
+    extra_java_paths: &[String],
+    options: &LaunchOptions,
+) -> Result<LaunchPlan> {
     if identity.uuid.len() != 32
         || !identity.uuid.chars().all(|c| c.is_ascii_hexdigit())
         || identity.access_token.is_empty()
@@ -631,6 +687,7 @@ pub fn build_launch_plan_authenticated_with_java(
         Some(identity),
         java,
         extra_java_paths,
+        options,
     )
     .map_err(|error| error.replace(&identity.access_token, "<redacted>"))
 }
@@ -643,7 +700,9 @@ fn build_launch_plan_inner(
     online: Option<&OnlineIdentity>,
     java: &java::JavaSelection,
     extra_java_paths: &[String],
+    options: &LaunchOptions,
 ) -> Result<LaunchPlan> {
+    options.validate()?;
     identifier(id)?;
     if !Regex::new(r"^[A-Za-z0-9_]{3,16}$")
         .unwrap()
@@ -863,17 +922,26 @@ fn build_launch_plan_inner(
                 "${classpath}".into(),
             ]
         });
+    let mut argument_context = RuleContext::current();
+    argument_context.custom_resolution = options.custom_resolution();
+    if let WindowSize::Custom { width, height } = options.window {
+        replacements.insert("resolution_width", width.to_string());
+        replacements.insert("resolution_height", height.to_string());
+    }
     let mut args = vec![format!("-Xmx{memory_gib}G")];
-    args.extend(expand(&raw_jvm, &replacements, &context)?);
+    args.extend(expand(&raw_jvm, &replacements, &argument_context)?);
     if let Some(path) = log_config {
         args.push(text(logging, "argument").replace("${path}", &path.display().to_string()));
     }
+    options.apply_jvm(&mut args);
     let main = text(&data, "mainClass");
     if main.is_empty() {
         return Err("Version has no mainClass".into());
     }
     args.push(main.into());
-    args.extend(expand(&raw_game, &replacements, &context)?);
+    let mut game_args = expand(&raw_game, &replacements, &argument_context)?;
+    options.apply_game(&mut game_args);
+    args.extend(game_args);
     let log_path = safe_join(&root, format!(".pcl-linux/logs/{id}.log"))?;
     Ok(LaunchPlan {
         java,
@@ -1061,6 +1129,7 @@ mod tests {
         let context = RuleContext {
             arch: "x86_64",
             release: "6.8.0".into(),
+            custom_resolution: false,
         };
         assert!(context.allowed(&json!({})).unwrap());
         assert!(!context.allowed(&json!({"rules":[]})).unwrap());
@@ -1256,6 +1325,10 @@ mod tests {
         assert!(!error.contains(&identity.access_token));
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "launch_options_tests.rs"]
+mod launch_options_tests;
 
 /// Apply the same Linux library rules used by launch planning.
 pub fn library_allowed(lib: &Value) -> Result<bool> {

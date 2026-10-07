@@ -1577,7 +1577,8 @@ async fn inspect_instance(
         resource_ops::ensure_ready(Path::new(&root.path))?;
         instance_reset::ensure_ready(Path::new(&root.path))?;
         ensure_instance_files_ready(&s, &root)?;
-        let plan = pcl_core::build_launch_plan_with_java(
+        let launcher_policy = captured_launch_preferences(&s)?;
+        let plan = pcl_core::build_launch_plan_with_options(
             Path::new(&root.path),
             &s.project,
             &id,
@@ -1585,6 +1586,7 @@ async fn inspect_instance(
             *root.overrides.get(&id).unwrap_or(&cfg.memory_gib),
             java_service::effective_choice(&cfg, &root, &id),
             &cfg.java_paths,
+            &launcher_policy.game_launch,
         )?;
         Ok(Inspection {
             java: plan.java.display().to_string(),
@@ -1606,6 +1608,19 @@ fn instance_context(
     let root = config.resolve(Some(root_id.unwrap_or(&settings.root_id)))?;
     instance_delete::ensure_name_available(Path::new(&root.path), id)?;
     Ok((settings, root))
+}
+/// Preference warnings represent retained, unverified bytes. A launch must not
+/// silently substitute window/network defaults for such a policy. Capture the
+/// complete valid policy before preparing, alongside the root and Java choice.
+fn captured_launch_preferences(
+    shared: &Shared,
+) -> Result<launcher_prefs::LauncherPreferences, String> {
+    let view = shared.launcher_preferences.snapshot();
+    if let Some(warning) = view.warning {
+        return Err(warning);
+    }
+    view.preferences.validate()?;
+    Ok(view.preferences)
 }
 #[cfg(test)]
 fn update(s: &Shared, stage: &str, message: String, pid: Option<u32>, exit_code: Option<i32>) {
@@ -1629,6 +1644,7 @@ fn launch_game(
     launcher_monitor_runtime::require_idle(&state)?;
     state.config.ensure_writable()?;
     let (cfg, root) = instance_context(&state.config, root_id.as_deref(), &id)?;
+    let launcher_policy = captured_launch_preferences(&state)?;
     resource_ops::ensure_ready(Path::new(&root.path))?;
     instance_reset::ensure_ready(Path::new(&root.path))?;
     ensure_instance_files_ready(&state, &root)?;
@@ -1643,7 +1659,6 @@ fn launch_game(
             ..Default::default()
         },
     )?;
-    let launcher_policy = state.launcher_preferences.snapshot().preferences;
     let visibility_policy = launcher_policy.launch_visibility;
     let preparation_delay = launcher_policy.advanced.artificial_delay_ms;
     let s = state.inner().clone();
@@ -1668,7 +1683,7 @@ fn launch_game(
             }
             let memory = *root.overrides.get(&id).unwrap_or(&cfg.memory_gib);
             let plan = match s.accounts.identity()? {
-                Some(identity) => pcl_core::build_launch_plan_authenticated_with_java(
+                Some(identity) => pcl_core::build_launch_plan_authenticated_with_options(
                     Path::new(&root.path),
                     &s.project,
                     &id,
@@ -1682,8 +1697,9 @@ fn launch_game(
                     memory,
                     java_service::effective_choice(&cfg, &root, &id),
                     &cfg.java_paths,
+                    &launcher_policy.game_launch,
                 )?,
-                None => pcl_core::build_launch_plan_with_java(
+                None => pcl_core::build_launch_plan_with_options(
                     Path::new(&root.path),
                     &s.project,
                     &id,
@@ -1691,6 +1707,7 @@ fn launch_game(
                     memory,
                     java_service::effective_choice(&cfg, &root, &id),
                     &cfg.java_paths,
+                    &launcher_policy.game_launch,
                 )?,
             };
             if s.stop.load(Ordering::SeqCst) {
@@ -2136,6 +2153,52 @@ mod integration_tests {
 
     #[path = "resource_updates.rs"]
     mod resource_updates;
+
+    #[test]
+    fn game_preparation_uses_a_captured_policy_and_refuses_unverified_preferences() {
+        use pcl_core::launch_options::{IpPreference, WindowSize};
+        let fixture = Fixture::new();
+        let shared = fixture.shared();
+        let view = shared.launcher_preferences.snapshot();
+        let patch = |value| serde_json::from_value(value).unwrap();
+        let first = shared
+            .launcher_preferences
+            .update(
+                &view.revision,
+                patch(serde_json::json!({
+                    "game_launch": {
+                        "window": {"mode": "custom", "width": 1280, "height": 720},
+                        "ip": "ipv6"
+                    }
+                })),
+            )
+            .unwrap();
+        let captured = captured_launch_preferences(&shared).unwrap();
+        shared
+            .launcher_preferences
+            .update(
+                &first.revision,
+                patch(serde_json::json!({"game_launch":{"ip":"ipv4"}})),
+            )
+            .unwrap();
+        assert_eq!(captured.game_launch.ip, IpPreference::Ipv6);
+        assert_eq!(
+            captured.game_launch.window,
+            WindowSize::Custom {
+                width: 1280,
+                height: 720
+            }
+        );
+        assert_eq!(
+            captured_launch_preferences(&shared).unwrap().game_launch.ip,
+            IpPreference::Ipv4
+        );
+        let path = fixture.0.join(".pcl-rust/launcher-preferences.json");
+        let bytes = b"{\"schema_version\":200}";
+        fs::write(&path, bytes).unwrap();
+        assert!(captured_launch_preferences(&shared).is_err());
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
 
     pub(crate) struct Fixture(pub(crate) PathBuf);
     impl Fixture {

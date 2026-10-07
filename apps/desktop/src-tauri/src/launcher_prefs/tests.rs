@@ -43,6 +43,106 @@ mod fixtures {
     fn patch(value: serde_json::Value) -> LauncherPreferencesPatch {
         serde_json::from_value(value).unwrap()
     }
+    #[test]
+    fn game_defaults_older_documents_partial_edits_stale_revisions_and_transfer() {
+        use pcl_core::launch_options::{IpPreference, WindowSize};
+        let fixture = Fixture::new();
+        let mut old = serde_json::to_value(Persisted::default()).unwrap();
+        old["preferences"]
+            .as_object_mut()
+            .unwrap()
+            .remove("game_launch");
+        let bytes = serde_json::to_vec(&old).unwrap();
+        fixture.seed(&bytes);
+        let store = fixture.store();
+        let before = store.snapshot();
+        assert_eq!(before.preferences.game_launch, Default::default());
+        assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+        let sized = store
+            .update(
+                &before.revision,
+                patch(serde_json::json!({
+                    "game_launch": {
+                        "window": {"mode": "custom", "width": 1920, "height": 1080}
+                    }
+                })),
+            )
+            .unwrap();
+        assert!(store
+            .update(
+                &before.revision,
+                patch(serde_json::json!({"game_launch":{"ip":"ipv6"}}))
+            )
+            .is_err());
+        let after = store
+            .update(
+                &sized.revision,
+                patch(serde_json::json!({"game_launch":{"ip":"ipv6"}})),
+            )
+            .unwrap();
+        assert_eq!(
+            after.preferences.game_launch.window,
+            WindowSize::Custom {
+                width: 1920,
+                height: 1080
+            }
+        );
+        assert_eq!(after.preferences.game_launch.ip, IpPreference::Ipv6);
+        assert_eq!(after.preferences.appearance, before.preferences.appearance);
+        let export = store.export_settings(&after.revision).unwrap();
+        let mut old_export: serde_json::Value = serde_json::from_slice(&export).unwrap();
+        old_export["preferences"]
+            .as_object_mut()
+            .unwrap()
+            .remove("game_launch");
+        assert_eq!(
+            super::super::transfer::parse_import(&serde_json::to_vec(&old_export).unwrap())
+                .unwrap()
+                .game_launch,
+            Default::default()
+        );
+        let target = Fixture::new();
+        let target_store = target.store();
+        let imported = target_store
+            .import_settings(&target_store.snapshot().revision, &export)
+            .unwrap();
+        assert_eq!(
+            imported.preferences.game_launch,
+            after.preferences.game_launch
+        );
+    }
+    #[test]
+    fn invalid_game_defaults_leave_disk_intact_and_invalid_external_data_blocks() {
+        let fixture = Fixture::new();
+        fixture.seed(&serde_json::to_vec(&Persisted::default()).unwrap());
+        let store = fixture.store();
+        let before = store.snapshot();
+        let bytes = fs::read(fixture.file()).unwrap();
+        assert!(store
+            .update(
+                &before.revision,
+                patch(serde_json::json!({
+                    "game_launch": {
+                        "window": {"mode": "custom", "width": 319, "height": 720}
+                    }
+                }))
+            )
+            .is_err());
+        assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+        let mut invalid: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        invalid["preferences"]["game_launch"]["window"] =
+            serde_json::json!({"mode":"custom","width":0,"height":720});
+        let unknown = serde_json::to_vec(&invalid).unwrap();
+        fixture.seed(&unknown);
+        assert!(store.reload().warning.is_some());
+        assert!(store
+            .update(
+                &store.snapshot().revision,
+                patch(serde_json::json!({"game_launch":{"ip":"ipv4"}}))
+            )
+            .is_err());
+        assert_eq!(fs::read(fixture.file()).unwrap(), unknown);
+    }
     fn changed(store: &LauncherPreferencesStore) -> LauncherPreferencesView {
         let view = store.snapshot();
         store

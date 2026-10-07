@@ -49,6 +49,21 @@
   min-height: 99px;
   resize: none;
 }
+.ce-game-size {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 7.5px;
+  min-width: 0;
+}
+.ce-game-size input {
+  width: 100%;
+  min-width: 0;
+}
+.ce-game-size .ce-button {
+  width: auto;
+  white-space: nowrap;
+}
 .ce-memory-card {
   padding-bottom: 16.5px;
 }

@@ -108,6 +108,11 @@ export type LauncherPreferences = {
     quick_download: "ask" | "last_folder";
   };
   launch_visibility: "always" | "hide_while_game" | "exit_after_launch";
+  game_launch: {
+    window:
+      { mode: "default" } | { mode: "custom"; width: number; height: number };
+    ip: "default" | "ipv4" | "ipv6";
+  };
 };
 
 export type LauncherPreferenceView = {
@@ -243,6 +248,7 @@ export function defaultLauncherPreferenceView(): LauncherPreferenceView {
       },
       auto_select_installed: true,
       launch_visibility: "always",
+      game_launch: { window: { mode: "default" }, ip: "default" },
     },
   };
 }

@@ -1,5 +1,6 @@
-//! Launcher preference admission and native interaction. Game configuration and
-//! accounts are deliberately absent from the settings transfer protocol.
+//! Launcher preference admission and native interaction. Global game argv
+//! defaults travel with preferences; root/instance bindings and accounts are
+//! deliberately absent from the settings transfer protocol.
 //!
 //! A chooser owns no game lock. Imports retain one bounded, expiring byte
 //! snapshot until the user confirms; apply rechecks the preference revision.

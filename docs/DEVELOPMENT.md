@@ -21,6 +21,7 @@
 | 任务协调 | `tasks.rs`、`tasks/schedule.rs`、`tasks/scope.rs`、`downloads.rs` | 并发/队列、物理路径互斥、取消与结束、带修订号的集合投影 |
 | Minecraft 核心 | `crates/core/src/lib.rs` | 版本识别、继承、依赖和启动参数 |
 | Java 核心 | `crates/core/src/java.rs` | 有限时探测、发现、架构与版本策略、启动选择 |
+| 游戏启动选项 | `GameLaunchFields.tsx`、`crates/core/src/launch_options.rs` | 全局窗口尺寸、Java 地址偏好、类型校验和参数替换 |
 | 下载与安装 | `crates/install/src/`、`resolved.rs` | 网络请求、校验缓存、原版与加载器安装、固定提供者证据 |
 | 本地整合包 | `instance_import/mrpack/`、`instance_import/build.rs`、`publication.rs` | 格式适配、原生一次性确认、私有构建和可恢复提交 |
 | Modrinth 安装 | `modrinth_install/` | 官方元数据、兼容与必需依赖规划、实例快照、匿名网络暂存 |
@@ -71,6 +72,16 @@
 加载器处理器的 Java 由 `crates/install/src/components.rs::installer_java` 选择，与上述游戏启动选择分开。`Installer::with_java(path)` 是严格指定：路径失效、探测失败或主版本不符时直接报错，不继续寻找其他 Java；没有调用该方法时保留自动发现。不要把显式路径作为自动候选的优先提示，否则调用者确认的运行环境会被静默替换。当前桌面安装和组件重置使用处理器自动发现，游戏 Java 选项不改变它们的处理器选择。
 
 v2 设置在普通启动时备份并迁移。已有改名 journal 的引用载荷必须按原 v2 字段顺序重放；存在项目待恢复标记时，只在内存中规范化，保留磁盘字节。完成恢复后的首次合法设置写入再备份恢复后的原始 v2 字节并升级。排查升级与改名交叉问题时，先读 `VersionTwo`、`rename_bytes` 和 `pending_migration`，不要让新字段提前改变 journal 的预期快照。
+
+## 游戏窗口与地址偏好
+
+全局选项保存在 `LauncherPreferences::game_launch`，沿用启动器偏好修订号和部分更新；旧文件与旧设置备份缺少该字段时使用默认值。窗口字段的反序列化使用空结构体变体，避免 Serde 的带标签空枚举变体忽略未知字段。无效或未来格式保留原文件，准备游戏时返回偏好存储的警告。
+
+`main.rs::captured_launch_preferences` 在接纳启动准备前捕获已验证的完整偏好，与游戏目录、内存和 Java 选择一起交给工作线程。检查实例也使用相同选项。`build_launch_plan_*_with_options` 接收这份快照，旧核心 API 继续使用默认值；命令行不会读取桌面偏好文件。
+
+窗口尺寸只影响游戏参数规则中的 `has_custom_resolution`，不改变库选择或内容目录。核心展开新版条件参数或旧版参数后统一替换 `--width` / `--height`，防止重复尺寸；默认模式保留原参数。地址偏好在主类之前替换冲突的 JVM 属性，使用 `preferIPv6Addresses` 决定地址顺序，并保持 `preferIPv4Stack=false` 以允许双协议连接。属性含义见 [Java 网络属性说明](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/net/doc-files/net-properties.html)。
+
+前端自定义尺寸是未提交的本地草稿；只有明确保存才更新窗口字段。IP 或其他偏好修订变化不能重置尺寸草稿，旧修订或卸载页面的事件不能重新提交。对应回归覆盖偏好读写、备份导入、启动快照，以及新旧版本参数和账号令牌脱敏。
 
 ## ZIP 导入与实例删除
 

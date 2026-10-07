@@ -3,6 +3,7 @@
 //! Exported paths and URLs are references, never file contents or executable
 //! home page markup. Import only validates and persists these preferences.
 use super::model::*;
+use pcl_core::launch_options::LaunchOptions;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -42,6 +43,8 @@ pub struct ExportPreferences {
     pub updates: UpdatePreferences,
     pub auto_select_installed: bool,
     pub launch_visibility: LaunchVisibility,
+    #[serde(default)]
+    pub game_launch: LaunchOptions,
 }
 
 impl LauncherSettingsExport {
@@ -67,6 +70,7 @@ impl LauncherSettingsExport {
                 updates: value.updates.clone(),
                 auto_select_installed: value.auto_select_installed,
                 launch_visibility: value.launch_visibility,
+                game_launch: value.game_launch.clone(),
             },
         }
     }
@@ -93,6 +97,7 @@ impl LauncherSettingsExport {
             updates: value.updates,
             auto_select_installed: value.auto_select_installed,
             launch_visibility: value.launch_visibility,
+            game_launch: value.game_launch,
         };
         preferences.validate()?;
         Ok(preferences)

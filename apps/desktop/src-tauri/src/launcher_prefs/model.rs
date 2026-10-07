@@ -1,5 +1,6 @@
 //! Typed launcher preferences and validation. These values are application
 //! policy; storing a value does not imply its runtime feature is implemented.
+use pcl_core::launch_options::{IpPreference, LaunchOptions, WindowSize};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
@@ -382,6 +383,8 @@ pub struct LauncherPreferences {
     pub management: ManagementPreferences,
     pub auto_select_installed: bool,
     pub launch_visibility: LaunchVisibility,
+    /// Global game argv defaults. They never change content-directory isolation.
+    pub game_launch: LaunchOptions,
 }
 impl Default for LauncherPreferences {
     fn default() -> Self {
@@ -406,6 +409,7 @@ impl Default for LauncherPreferences {
             management: ManagementPreferences::default(),
             auto_select_installed: true,
             launch_visibility: LaunchVisibility::Always,
+            game_launch: LaunchOptions::default(),
         }
     }
 }
@@ -424,6 +428,7 @@ macro_rules! patch {
         }
     }
 }
+patch!(GameLaunchPatch => LaunchOptions { window: WindowSize, ip: IpPreference });
 patch!(AppearancePatch => AppearancePreferences {
     opacity_percent: u8, theme: Theme, light_palette: Palette, dark_palette: Palette,
     show_logo: bool, lock_window_size: bool, launch_tips: bool,
@@ -477,6 +482,7 @@ pub struct LauncherPreferencesPatch {
     pub management: Option<ManagementPatch>,
     pub auto_select_installed: Option<bool>,
     pub launch_visibility: Option<LaunchVisibility>,
+    pub game_launch: Option<GameLaunchPatch>,
 }
 impl LauncherPreferencesPatch {
     pub(crate) fn apply(self, value: &mut LauncherPreferences) {
@@ -530,6 +536,9 @@ impl LauncherPreferencesPatch {
         }
         if let Some(visibility) = self.launch_visibility {
             value.launch_visibility = visibility;
+        }
+        if let Some(patch) = self.game_launch {
+            patch.apply(&mut value.game_launch);
         }
     }
 }
@@ -594,6 +603,7 @@ fn url(value: &str, label: &str, proxy: bool) -> Result<(), String> {
 
 impl LauncherPreferences {
     pub fn validate(&self) -> Result<(), String> {
+        self.game_launch.validate()?;
         if !(1..=64).contains(&self.management.max_concurrent_transfers)
             || self.management.total_rate_limit_mib_per_second > 1024
         {
