@@ -19,14 +19,16 @@ internal sealed class ProbeContext : IPluginContext, IPluginServiceProvider,
     private readonly List<object> _tracked = [];
     private readonly List<object> _logs = [];
     private readonly string _culture;
+    private readonly ProbeNotifications _notifications;
     private bool _disposed;
 
-    public ProbeContext(PluginDescriptor plugin, IEnumerable<string> grants, string culture, string locales)
+    public ProbeContext(PluginDescriptor plugin, IEnumerable<string> grants, string culture, string locales, string sessionId)
     {
         Plugin = plugin;
         _grants = grants.ToHashSet(StringComparer.Ordinal);
-        if (_grants.Except(["pcl.commands", "pcl.settings-pages"]).Any())
-            throw new NotSupportedException("The probe only supports explicit command and settings-page grants.");
+        if (_grants.Except(["pcl.commands", "pcl.settings-pages", "pcl.notifications"]).Any())
+            throw new NotSupportedException("Unsupported probe grant.");
+        _notifications = new ProbeNotifications(() => RequireGrant("pcl.notifications"), sessionId);
         _culture = culture is "zh-CN" or "en-US" ? culture : throw new NotSupportedException("Unsupported probe locale.");
         _translations = JsonSerializer.Deserialize<Dictionary<string, string>>(
             File.ReadAllText(Path.Combine(locales, culture + ".json"))) ?? [];
@@ -49,16 +51,22 @@ internal sealed class ProbeContext : IPluginContext, IPluginServiceProvider,
 
     public bool TryGet<TService>(out TService? service) where TService : class, IPluginService
     {
-        service = !_disposed && typeof(TService) == typeof(IPluginCommandService) && _grants.Contains("pcl.commands") ? this as TService : null;
+        service = null;
+        if (!_disposed && !Stopping.IsCancellationRequested)
+        {
+            if (typeof(TService) == typeof(IPluginCommandService) && _grants.Contains("pcl.commands")) service = this as TService;
+            if (typeof(TService) == typeof(IPluginNotificationService) && _grants.Contains("pcl.notifications")) service = _notifications as TService;
+        }
         return service is not null;
     }
     public TService Require<TService>() where TService : class, IPluginService => TryGet<TService>(out var service) ? service! :
         throw new NotSupportedException("Service is unavailable or permission was denied.");
-    public bool Supports(PluginServiceId serviceId, PluginApiVersionRange range) => !_disposed &&
-        serviceId == PluginServiceIds.Commands && _grants.Contains("pcl.commands") && range.Contains(ApiVersion);
+    public bool Supports(PluginServiceId serviceId, PluginApiVersionRange range) => !_disposed && !Stopping.IsCancellationRequested &&
+        ((serviceId == PluginServiceIds.Commands && _grants.Contains("pcl.commands")) ||
+        (serviceId == PluginServiceIds.Notifications && _grants.Contains("pcl.notifications"))) && range.Contains(ApiVersion);
     bool IPluginCapabilityProvider.TryGet<TCapability>(out TCapability? capability) where TCapability : class
     {
-        capability = !_disposed && typeof(TCapability) == typeof(IPluginLocalizedSettingsPageCapability) && _grants.Contains("pcl.settings-pages") ? this as TCapability : null;
+        capability = !_disposed && !Stopping.IsCancellationRequested && typeof(TCapability) == typeof(IPluginLocalizedSettingsPageCapability) && _grants.Contains("pcl.settings-pages") ? this as TCapability : null;
         return capability is not null;
     }
 
@@ -103,6 +111,7 @@ internal sealed class ProbeContext : IPluginContext, IPluginServiceProvider,
     public object Snapshot() => new { pluginId = Plugin.Id.Value, culture = _culture,
         commands = _commands.Values.Select(c => new { id = c.Id, title = Text(c.Title), description = c.Description is null ? null : Text(c.Description) }).ToArray(),
         settingsPages = _pages.Values.ToArray(), logs = _logs.ToArray(), stopping = Stopping.IsCancellationRequested };
+    public object DrainNotifications() => _notifications.Drain();
 
     private void TrackOwned(object registration)
     {
@@ -138,7 +147,7 @@ internal sealed class ProbeContext : IPluginContext, IPluginServiceProvider,
         finally
         {
             // Owner registries are cleared even if a plugin forgot Lifetime.Track.
-            _commands.Clear(); _pages.Clear(); _tracked.Clear(); _grants.Clear();
+            _commands.Clear(); _pages.Clear(); _notifications.Clear(); _tracked.Clear(); _grants.Clear();
         }
     }
     private void Log(string level, string message)

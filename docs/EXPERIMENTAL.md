@@ -20,7 +20,7 @@
 
 同一导入入口可选择 PCL N 或 Nex 插件的 **`plugin.json`**，打开只读兼容报告，查看声明的程序集入口、服务、权限、插件依赖及 Mixin 配置。报告不会安装或执行插件，不授予权限，也不验证签名、完整上游格式、依赖是否已安装或程序集实际行为。N 的 Avalonia/DirectInject 页面以及 Nex 的 PCL.Core/Mixin 环境尚未适配；`.pnp`、`.pclx` 包不能直接导入。
 
-提供独立的 [开发验证工具](../experimental/extensions/compat/README.md)：用 N SDK 0.2.5 原始 Hello 源码验证命令及双语设置页描述接口。该工具不随启动器启动，不表示完整 N 插件已兼容。
+提供独立的 [开发验证工具](../experimental/extensions/compat/README.md)：用 N SDK 0.2.5 原始 Hello 源码验证命令及双语设置页描述接口，另用 RH 自写夹具验证通知服务到纯文本卡片模型的映射。该工具不随启动器启动；通知卡片尚未接入桌面运行，也不表示完整 N 插件已兼容。
 
 ## AI 模组制作器 · 0.6
 

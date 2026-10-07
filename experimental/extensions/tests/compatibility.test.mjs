@@ -46,6 +46,16 @@ test('N declared native, dependency and platform requirements remain unverified'
   assert.deepEqual(report.platformDeclarations, ['operatingSystems: windows', 'architectures: x64', 'runtimeIdentifiers: win-x64']);
 });
 
+test('notification service reports probe coverage without granting or enabling it', () => {
+  const m = n(); m.services.optional['pcl.notifications'] = '>=0.2 <1.0';
+  const report = inspect(m);
+  const service = report.requirements.find(v => v.id === 'pcl.notifications');
+  assert.equal(service.coverage, 'probe-only');
+  assert.equal(service.required, false);
+  assert.equal(report.loadable, false);
+  assert.equal(Object.hasOwn(report, 'token'), false);
+});
+
 test('Nex base and opt-in Mixins and bridge dependencies are reported without loading', () => {
   const m = nex();
   m.experimentalFeatures = [{ id: 'optional-feature', mixinConfig: 'mixins/optional.json' }];

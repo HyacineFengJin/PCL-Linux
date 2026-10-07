@@ -8,6 +8,7 @@
     <AssemblyName>PclRh.NCompatibilityProbe</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="fixtures/**/*.cs" />
     <ProjectReference Include="$(PclNSdkRoot)/src/PCL.N.Plugin.Abstractions/PCL.N.Plugin.Abstractions.csproj" />
     <ProjectReference Include="$(PclNSdkRoot)/src/PCL.N.Plugin.i18n/PCL.N.Plugin.i18n.csproj" />
   </ItemGroup>

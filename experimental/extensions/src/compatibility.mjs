@@ -5,6 +5,7 @@ export const N_SDK_PROBE = freeze({
   version: '0.2.5',
   commit: 'abc4c0a4bec9c1ece28eba17bff2c5eba5b7fe52',
 });
+const PROBED_SERVICES = new Set(['pcl.commands', 'pcl.notifications']);
 
 const unsafe = /[\p{Cc}\p{Cf}\p{Cs}]/u;
 function object(value) {
@@ -74,7 +75,7 @@ function inspectN(m, common) {
   for (const kind of ['required', 'optional']) {
     for (const [id, range] of Object.entries(object(services[kind] ?? {}))) {
       requirements.push({ id: text(id, 128), range: text(range), required: kind === 'required',
-        coverage: id === 'pcl.commands' ? 'probe-only' : 'unavailable' });
+        coverage: PROBED_SERVICES.has(id) ? 'probe-only' : 'unavailable' });
     }
   }
   if (requirements.length > 32) fail('COMPAT_LIST', 'Too many service declarations.');

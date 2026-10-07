@@ -2,11 +2,12 @@
  * Nothing calls this from the launcher. There is no unsandboxed fallback. */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile, readdir, copyFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { N_SDK_PROBE } from '../src/compatibility.mjs';
+import { RuntimeNoticeHost } from '../src/runtime-notices.mjs';
 
 if (process.platform !== 'linux' || process.argv.length !== 5)
   throw new Error('Usage on Linux: node verify-n.mjs <dotnet-10> <trusted-pinned-sdk-source> <private-work-root>');
@@ -33,6 +34,17 @@ await writeFile(path.join(work, 'HelloSample.csproj'), `<Project Sdk="Microsoft.
 </PropertyGroup><ItemGroup><Compile Include="${xml(path.join(sample, 'HelloHostModule.cs'))}" />
 <ProjectReference Include="${xml(path.join(sdk, 'src/PCL.N.Plugin.Sdk/PCL.N.Plugin.Sdk.csproj'))}" />
 </ItemGroup></Project>\n`);
+await writeFile(path.join(work, 'NotificationSample.csproj'), `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>
+<TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings>
+<LangVersion>14.0</LangVersion><AssemblyName>NotificationFixture</AssemblyName><EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+</PropertyGroup><ItemGroup><Compile Include="${xml(path.join(here, 'n-probe/fixtures/NotificationFixture.cs'))}" />
+<ProjectReference Include="${xml(path.join(sdk, 'src/PCL.N.Plugin.Abstractions/PCL.N.Plugin.Abstractions.csproj'))}" />
+</ItemGroup></Project>\n`);
+await mkdir(path.join(work, 'fixture'));
+await writeFile(path.join(work, 'fixture/plugin.json'), JSON.stringify({ id: 'rh.notification-fixture', name: 'RH notification fixture',
+  version: '1.0.0', entryPoint: { type: 'PclRh.NProbeFixtures.NotificationFixture' } }));
+await writeFile(path.join(work, 'fixture/failure.json'), JSON.stringify({ id: 'rh.notification-fixture', name: 'RH notification fixture',
+  version: '1.0.0', entryPoint: { type: 'PclRh.NProbeFixtures.FailedNotificationFixture' } }));
 const buildEnv = { ...process.env, DOTNET_CLI_HOME: path.join(work, 'cli'),
   NUGET_PACKAGES: path.join(work, 'nuget'), DOTNET_CLI_TELEMETRY_OPTOUT: '1',
   DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false', DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1',
@@ -61,12 +73,12 @@ const buildArgs = ['-c', 'Release', '-m:1', '-nr:false', '--artifacts-path', art
   '--configfile', path.join(work, 'NuGet.Config'), '-p:UseSharedCompilation=false',
   `-p:PclNSdkRoot=${sdk}`, `-p:DirectoryBuildPropsPath=${path.join(work, 'Build.props')}`,
   '-p:IsAotCompatible=false', '-p:IsTrimmable=false', '-p:EnableTrimAnalyzer=false', '-p:NuGetAudit=false'];
-for (const project of [path.join(here, 'n-probe/NProbe.csproj'), path.join(work, 'HelloSample.csproj')]) {
+for (const project of [path.join(here, 'n-probe/NProbe.csproj'), path.join(work, 'HelloSample.csproj'), path.join(work, 'NotificationSample.csproj')]) {
   const log = await run(dotnet, ['build', project, ...buildArgs]);
   await writeFile(path.join(work, path.basename(project) + '.log'), log);
 }
 await mkdir(app);
-for (const name of ['NProbe', 'HelloSample']) {
+for (const name of ['NProbe', 'HelloSample', 'NotificationSample']) {
   const directory = path.join(artifacts, 'bin', name, 'release');
   for (const file of await readdir(directory))
     if (/\.(dll|json)$/.test(file)) await copyFile(path.join(directory, file), path.join(app, file));
@@ -74,6 +86,7 @@ for (const name of ['NProbe', 'HelloSample']) {
 const sandbox = ['--unshare-all', '--die-with-parent', '--new-session', '--clearenv',
   '--ro-bind', '/usr', '/usr', '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib', '/lib64',
   '--ro-bind', path.dirname(dotnet), '/dotnet', '--ro-bind', app, '/app', '--ro-bind', sample, '/sample',
+  '--ro-bind', path.join(work, 'fixture'), '/fixture',
   '--tmpfs', '/tmp', '--tmpfs', '/fixture-data', '--proc', '/proc', '--dev', '/dev',
   '--setenv', 'DOTNET_CLI_HOME', '/tmp', '--setenv', 'DOTNET_GENERATE_ASPNET_CERTIFICATE', 'false',
   '--setenv', 'DOTNET_CLI_TELEMETRY_OPTOUT', '1', '--chdir', '/tmp', '--'];
@@ -92,9 +105,11 @@ try:
 except OSError: pass
 `], { env: {}, timeout: 10000 });
 const command = 'dev.muxue.hello.say-hello';
-async function probe(requests) {
+async function probe(requests, { fixture = false, sessionId = randomUUID() } = {}) {
+  requests = requests.map(request => request.operation === 'initialize' ? { ...request, sessionId } : request);
   const output = await run('bwrap', [...sandbox, '/dotnet/dotnet', '/app/PclRh.NCompatibilityProbe.dll',
-    '/app/HelloPlugin.dll', '/sample/plugin.json', '/sample/locales'], {
+    fixture ? '/app/NotificationFixture.dll' : '/app/HelloPlugin.dll',
+    fixture === 'failure' ? '/fixture/failure.json' : fixture ? '/fixture/plugin.json' : '/sample/plugin.json', '/sample/locales'], {
     input: requests.map(v => JSON.stringify(v) + '\n').join(''), env: {}, timeout: 10000, limit: 128 * 1024,
   });
   const replies = output.trim().split('\n').map(line => JSON.parse(line));
@@ -133,6 +148,69 @@ for (const grants of [[], ['pcl.commands'], ['pcl.settings-pages']]) {
   assert.equal(replies[1].ok, false);
   results.push({ grants, replies });
 }
+// This fixture is RH-authored and compiled against the real SDK. It proves a
+// service mapping, not original-package compatibility. Source attribution and
+// localized card titles are always chosen by RH outside the .NET process.
+const noticeOwner = new RuntimeNoticeHost({ extensionId: 'rh.notification-fixture', extensionName: 'RH notification fixture', granted: true });
+const noticeReplies = await probe([
+  { operation: 'initialize', culture: 'en-US', grants: ['pcl.commands', 'pcl.notifications'] },
+  { operation: 'invoke', command: 'probe.notice.send' },
+  { operation: 'invoke', command: 'probe.notice.invalid' },
+  { operation: 'invoke', command: 'probe.notice.send' },
+  { operation: 'revoke' }, { operation: 'invoke', command: 'probe.notice.send' },
+], { fixture: true, sessionId: noticeOwner.sessionId });
+assert.equal(noticeReplies[0].ok, true);
+assert.equal(noticeReplies[1].ok, true);
+assert.equal(noticeReplies[2].ok, false);
+assert.equal(noticeReplies[3].ok, true);
+noticeOwner.acceptBatch(JSON.stringify(noticeReplies[1].result.notificationBatch));
+noticeOwner.acceptBatch(JSON.stringify(noticeReplies[2].result.notificationBatch));
+noticeOwner.acceptBatch(JSON.stringify(noticeReplies[3].result.notificationBatch));
+const labels = { informationTitle: 'Plugin information', warningTitle: 'Plugin warning' };
+const noticeCards = noticeOwner.cards(labels);
+assert.equal(noticeCards.length, 4);
+assert.equal(noticeCards[0].text, '<b>Fixture information</b> 🧩');
+assert.equal(noticeCards[0].extensionId, 'rh.notification-fixture');
+assert.deepEqual(noticeCards[0].actions, []);
+assert.equal(noticeReplies[4].result.state, 'stopped');
+assert.deepEqual(noticeReplies[4].result.notificationBatch.notices, []);
+assert.deepEqual(noticeReplies[4].result.projection.commands, []);
+assert.ok(noticeReplies[4].result.projection.logs.some(v => v.message === 'Cached notification service denied after stop.'));
+assert.ok(noticeReplies[4].result.projection.logs.some(v => v.message === 'Plugin cancellation callback failed.'));
+assert.ok(noticeReplies[4].result.projection.logs.some(v => v.message === 'Registration cleanup failed.'));
+assert.equal(noticeReplies[5].ok, false);
+noticeOwner.stop();
+assert.deepEqual(noticeOwner.cards(labels), []);
+assert.throws(() => noticeOwner.acceptBatch(JSON.stringify(noticeReplies[3].result.notificationBatch)), { code: 'NOTICE_STOPPED' });
+results.push({ fixture: 'rh-authored-notification-abi', replies: noticeReplies, noticeCards });
+const deniedReplies = await probe([
+  { operation: 'initialize', culture: 'zh-CN', grants: ['pcl.commands'] },
+  { operation: 'invoke', command: 'probe.notice.send' }, { operation: 'shutdown' },
+], { fixture: true });
+assert.equal(deniedReplies[0].ok, true);
+assert.equal(deniedReplies[1].ok, false);
+assert.deepEqual(deniedReplies[1].result.notificationBatch.notices, []);
+assert.equal(deniedReplies[2].result.state, 'stopped');
+results.push({ fixture: 'notification-grant-denied', replies: deniedReplies });
+const quotaReplies = await probe([
+  { operation: 'initialize', culture: 'en-US', grants: ['pcl.commands', 'pcl.notifications'] },
+  { operation: 'invoke', command: 'probe.notice.burst' }, { operation: 'shutdown' },
+], { fixture: true });
+assert.equal(quotaReplies[1].ok, false);
+assert.equal(quotaReplies[1].result.notificationBatch.notices.length, 16);
+assert.deepEqual(quotaReplies[2].result.notificationBatch.notices, []);
+results.push({ fixture: 'notification-quota', replies: quotaReplies });
+const failedOwner = new RuntimeNoticeHost({ extensionId: 'rh.notification-fixture', extensionName: 'RH notification fixture', granted: true });
+const failedReplies = await probe([
+  { operation: 'initialize', culture: 'en-US', grants: ['pcl.commands', 'pcl.notifications'] },
+], { fixture: 'failure', sessionId: failedOwner.sessionId });
+assert.equal(failedReplies[0].ok, false);
+assert.equal(failedReplies[0].result.state, 'failed');
+assert.deepEqual(failedReplies[0].result.notificationBatch.notices, []);
+assert.deepEqual(failedReplies[0].result.projection.commands, []);
+failedOwner.stop();
+assert.deepEqual(failedOwner.cards(labels), []);
+results.push({ fixture: 'notification-initialize-failed', replies: failedReplies });
 assert.equal(sha(await readFile(path.join(sample, 'HelloHostModule.cs'))), sampleHash);
 await writeFile(path.join(work, 'results.json'), JSON.stringify({ sdk: N_SDK_PROBE, sampleHash, results }, null, 2) + '\n');
-console.log('PASS: original N Hello ABI, command execution, zh-CN/en-US descriptors, denied grants, cleanup and namespace isolation.');
+console.log('PASS: original N Hello ABI plus RH-authored notification service/card mapping, denied grants, quotas, cached-handle cleanup and namespace isolation.');
