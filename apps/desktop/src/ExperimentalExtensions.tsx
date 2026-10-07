@@ -1,9 +1,14 @@
 import { ExperimentalVersion } from "./ExperimentalVersion";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { Api } from "./types";
 import { t, serviceError, type MessageKey } from "./i18n";
 import { InstanceOperationDialog } from "./instanceOperationUi";
 import "./extensionCompatibility.css";
+import {
+  useExtensionRequestScope,
+  useExtensionView,
+  type ExtensionRequest,
+} from "./extensionRequestScope";
 import {
   experimentalCall as call,
   type ExtensionEntry,
@@ -23,6 +28,14 @@ const capabilityLabel = (id: string) =>
     )[id],
   );
 
+// Retirement does not depend on a successful cleanup RPC. The host's review
+// TTL is the fallback if an old API is already unavailable.
+function cancelReview(api: Api, token: string) {
+  try {
+    void call(api, "extensions_cancel", { token }).catch(() => {});
+  } catch {}
+}
+
 /** Manifest titles and bodies are React text only. No plugin receives our Api,
  * DOM, settings or runtime object; card actions consume a native typed intent. */
 export function ExperimentalCards({
@@ -36,54 +49,66 @@ export function ExperimentalCards({
   slot: "tools.cards" | "home.secondary";
   onNavigate: ExperimentalNavigate;
 }) {
-  const [cards, setCards] = useState<ExtensionCard[]>([]);
-  const [summary, setSummary] = useState<{
+  type Summary = {
     minecraftVersion: string;
     loader: string;
     modCount: number;
     isolated: boolean;
-  } | null>(null);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const live = useRef(true);
+  };
+  const scope = useExtensionRequestScope(api, native, slot);
+  const view = useExtensionView<{
+    cards: ExtensionCard[];
+    summary: Summary | null;
+    error: string;
+    busy: boolean;
+  }>(scope.owner, { cards: [], summary: null, error: "", busy: false });
+  const { cards, summary, error, busy } = view.value;
+  const navigate = useRef(onNavigate);
+  navigate.current = onNavigate;
   useEffect(() => {
-    live.current = true;
-    let valid = true;
-    if (native)
+    const request = scope.beginRead();
+    if (request) {
+      view.update({ cards: [], summary: null, error: "", busy: false });
       void call<ExtensionCard[]>(api, "extensions_cards", { slot })
         .then((v) => {
-          if (valid) setCards(v);
+          if (request.current()) view.update({ cards: v });
         })
         .catch((e) => {
-          if (valid) setError(serviceError(e));
-        });
-    return () => {
-      valid = false;
-      live.current = false;
-    };
-  }, [api, native, slot]);
+          if (request.current()) view.update({ error: serviceError(e) });
+        })
+        .finally(request.finish);
+    }
+    return () => request?.finish();
+  }, [scope.owner]);
   async function act(card: ExtensionCard, actionId: string) {
-    if (busy || !native) return;
-    setBusy(true);
-    setError("");
+    if (
+      !scope.current() ||
+      !view.current()?.cards.includes(card) ||
+      !card.actions.some((a) => a.id === actionId && a.enabled)
+    )
+      return;
+    const request = scope.beginOperation();
+    if (!request) return;
+    view.update({ busy: true, error: "" });
     try {
       const intent = await call<{
         kind: string;
         target: Parameters<ExperimentalNavigate>[0];
-        summary: NonNullable<typeof summary>;
+        summary: Summary;
       }>(api, "extensions_action", {
         extensionId: card.extensionId,
         cardId: card.id,
         actionId,
       });
-      if (!live.current) return;
-      if (intent.kind === "navigate") onNavigate(intent.target);
+      if (!request.current() || !view.current()?.cards.includes(card)) return;
+      if (intent.kind === "navigate") navigate.current(intent.target);
       else if (intent.kind === "show-instance-summary")
-        setSummary(intent.summary);
+        view.update({ summary: intent.summary });
     } catch (e) {
-      if (live.current) setError(serviceError(e));
+      if (request.current()) view.update({ error: serviceError(e) });
     } finally {
-      if (live.current) setBusy(false);
+      if (request.current()) view.update({ busy: false });
+      request.finish();
     }
   }
   return (
@@ -130,7 +155,13 @@ export function ExperimentalCards({
               {t(summary.isolated ? "experimental.yes" : "experimental.no")}
             </dd>
           </dl>
-          <button className="ce-button" onClick={() => setSummary(null)}>
+          <button
+            className="ce-button"
+            onClick={() => {
+              if (scope.current() && view.current()?.summary === summary)
+                view.update({ summary: null });
+            }}
+          >
             {t("common.cancel")}
           </button>
         </section>
@@ -148,71 +179,200 @@ export function ExperimentalExtensions({
   native: boolean;
   onNavigate: ExperimentalNavigate;
 }) {
-  const [entries, setEntries] = useState<ExtensionEntry[]>([]),
-    [review, setReview] = useState<ExtensionReview | null>(null),
-    [compatibility, setCompatibility] =
-      useState<ExtensionCompatibilityReport | null>(null),
-    [grants, setGrants] = useState<string[]>([]);
-  const [safeMode, setSafeMode] = useState(false),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState(""),
-    [revision, setRevision] = useState(0);
-  const live = useRef(true);
-  async function refresh() {
-    const result = await call<{
-      entries: ExtensionEntry[];
-      safeMode: boolean;
-      warning: string | null;
-    }>(api, "extensions_list");
-    if (live.current) {
-      setEntries(result.entries);
-      setSafeMode(result.safeMode);
-      setError(result.warning || "");
-      setRevision((v) => v + 1);
+  type Dialog = {
+    owner: object;
+    lifetime: object;
+    api: Api;
+    value: ExtensionReview | ExtensionCompatibilityReport;
+    grants: string[];
+    valid: boolean;
+    released: boolean;
+    committing: boolean;
+  };
+  const scope = useExtensionRequestScope(api, native, "extensions-manager");
+  const view = useExtensionView<{
+    entries: ExtensionEntry[];
+    dialog: Dialog | null;
+    safeMode: boolean;
+    busy: boolean;
+    error: string;
+    revision: number;
+  }>(scope.owner, {
+    entries: [],
+    dialog: null,
+    safeMode: false,
+    busy: false,
+    error: "",
+    revision: 0,
+  });
+  const { entries, dialog, safeMode, busy, error, revision } = view.value;
+  const review = dialog && !("kind" in dialog.value) ? dialog.value : null;
+  const compatibility = dialog && "kind" in dialog.value ? dialog.value : null;
+  const grants = dialog?.grants ?? [];
+  const activeDialog = useRef<Dialog | null>(null);
+
+  const ownsDialog = (value: Dialog) =>
+    value.valid &&
+    activeDialog.current === value &&
+    value.owner === scope.owner &&
+    scope.ownsLifetime(value.lifetime);
+  function retireDialog(value: Dialog, release = true) {
+    value.valid = false;
+    if (activeDialog.current === value) activeDialog.current = null;
+    // Only pending consent is cancelled. Once confirm was submitted, the host
+    // owns its transaction; renderer retirement is not an uninstall or rollback.
+    if (
+      release &&
+      !value.released &&
+      !value.committing &&
+      !("kind" in value.value)
+    ) {
+      value.released = true;
+      cancelReview(value.api, value.value.token);
+    }
+  }
+  async function refresh(parent?: ExtensionRequest) {
+    if (parent && !parent.current()) return;
+    const request = scope.beginRead();
+    if (!request) return;
+    try {
+      const result = await call<{
+        entries: ExtensionEntry[];
+        safeMode: boolean;
+        warning: string | null;
+      }>(api, "extensions_list");
+      if (request.current() && (!parent || parent.current()))
+        view.update({
+          entries: result.entries,
+          safeMode: result.safeMode,
+          error: result.warning || "",
+          revision: (view.current()?.revision ?? 0) + 1,
+        });
+    } catch (e) {
+      if (request.current() && (!parent || parent.current()))
+        view.update({ error: serviceError(e) });
+    } finally {
+      request.finish();
     }
   }
   useEffect(() => {
-    live.current = true;
-    if (native) void refresh().catch((e) => setError(serviceError(e)));
+    if (scope.current()) {
+      view.update({ dialog: null, busy: false });
+      void refresh();
+    }
     return () => {
-      live.current = false;
+      const pending = activeDialog.current;
+      if (pending?.owner === scope.owner) retireDialog(pending);
     };
-  }, [api, native]);
-  async function perform(operation: () => Promise<unknown>) {
-    if (busy || !native) return;
-    setBusy(true);
-    setError("");
+  }, [scope.owner]);
+  async function perform(
+    operation: (request: ExtensionRequest) => Promise<unknown>,
+    refreshAfter = true,
+  ) {
+    // Ref admission closes the same-render double-click window before awaiting
+    // or relying on React's rendered busy flag.
+    const request = scope.beginOperation();
+    if (!request) return;
+    view.update({ busy: true, error: "" });
     try {
-      await operation();
-      if (live.current) await refresh();
+      await operation(request);
+      if (request.current() && refreshAfter) await refresh(request);
     } catch (e) {
-      if (live.current) setError(serviceError(e));
+      if (request.current()) view.update({ error: serviceError(e) });
     } finally {
-      if (live.current) setBusy(false);
+      if (request.current()) view.update({ busy: false });
+      request.finish();
     }
   }
-  function acceptReview(value: ExtensionReview | ExtensionCompatibilityReport) {
-    if (live.current) {
-      if ("kind" in value) {
-        setReview(null);
-        setGrants([]);
-        setCompatibility(value);
-        return;
-      }
-      setCompatibility(null);
-      setReview(value);
-      setGrants(
-        value.capabilities.filter((c) => c.currentlyGranted).map((c) => c.id),
+  function acceptReview(
+    value: ExtensionReview | ExtensionCompatibilityReport,
+    request: ExtensionRequest,
+  ) {
+    if (!request.current()) {
+      // The submitted read may already have created a token. Release it through
+      // its captured API, even though no follow-up workflow may use that API.
+      if (!("kind" in value)) cancelReview(api, value.token);
+      return;
+    }
+    if (activeDialog.current) retireDialog(activeDialog.current);
+    const next: Dialog = {
+      owner: scope.owner,
+      lifetime: request.lifetime,
+      api,
+      value,
+      grants:
+        "kind" in value
+          ? []
+          : value.capabilities
+              .filter((c) => c.currentlyGranted)
+              .map((c) => c.id),
+      valid: true,
+      released: false,
+      committing: false,
+    };
+    activeDialog.current = next;
+    view.update({ dialog: next });
+  }
+  function dismiss(value: Dialog) {
+    if (!ownsDialog(value) || value.committing) return;
+    scope.retireOperation();
+    retireDialog(value);
+    view.update({ dialog: null, busy: false });
+  }
+  async function importReview(request: ExtensionRequest) {
+    const picked = await api<{
+      status: string;
+      path?: string;
+      message?: string;
+    }>("experimental_choose", { kind: "extension" });
+    if (!request.current()) return;
+    if (picked.status === "selected")
+      acceptReview(
+        await call<ExtensionReview | ExtensionCompatibilityReport>(
+          api,
+          "extensions_review",
+          { path: picked.path },
+        ),
+        request,
       );
-    }
+    else if (picked.status === "unavailable") throw new Error(picked.message);
   }
-  const dismiss = () => {
-    if (!review || busy) return;
-    void call(api, "extensions_cancel", { token: review.token }).catch(
-      () => {},
-    );
-    setReview(null);
-  };
+  function performForEntry(
+    entry: ExtensionEntry,
+    operation: (request: ExtensionRequest) => Promise<unknown>,
+    refreshAfter = true,
+  ) {
+    if (scope.current() && view.current()?.entries.includes(entry))
+      void perform(operation, refreshAfter);
+  }
+  function confirm(value: Dialog) {
+    if (
+      !ownsDialog(value) ||
+      value.committing ||
+      "kind" in value.value ||
+      value.value.capabilities.some(
+        (c) => c.required && !value.grants.includes(c.id),
+      )
+    )
+      return;
+    const token = value.value.token;
+    void perform(async (request) => {
+      if (!request.current() || !ownsDialog(value)) return;
+      value.committing = true;
+      view.update({ dialog: value });
+      try {
+        await call(api, "extensions_confirm", {
+          token,
+          grants: [...value.grants],
+        });
+      } finally {
+        // A consumed confirmation cannot be revived by saved callbacks, even
+        // on failure. A fresh review is required for another consent attempt.
+        retireDialog(value, false);
+        if (request.current()) view.update({ dialog: null });
+      }
+    });
+  }
   return (
     <>
       <section className="ce-card">
@@ -222,34 +382,14 @@ export function ExperimentalExtensions({
           <button
             className="ce-button"
             disabled={busy || !native}
-            onClick={() =>
-              void perform(async () => {
-                const picked = await api<{
-                  status: string;
-                  path?: string;
-                  message?: string;
-                }>("experimental_choose", { kind: "extension" });
-                if (picked.status === "selected")
-                  acceptReview(
-                    await call<ExtensionReview | ExtensionCompatibilityReport>(
-                      api,
-                      "extensions_review",
-                      {
-                        path: picked.path,
-                      },
-                    ),
-                  );
-                else if (picked.status === "unavailable")
-                  throw new Error(picked.message);
-              })
-            }
+            onClick={() => void perform(importReview, false)}
           >
             {t("experimental.importExtension")}
           </button>
           <button
             className="ce-button"
             disabled={busy || !native}
-            onClick={() => void perform(refresh)}
+            onClick={() => void perform(refresh, false)}
           >
             {t("experimental.refresh")}
           </button>
@@ -259,13 +399,12 @@ export function ExperimentalExtensions({
             type="checkbox"
             checked={safeMode}
             disabled={busy || !native}
-            onChange={(e) =>
+            onChange={(e) => {
+              const enabled = e.target.checked;
               void perform(() =>
-                call(api, "extensions_safe_mode", {
-                  enabled: e.target.checked,
-                }),
-              )
-            }
+                call(api, "extensions_safe_mode", { enabled }),
+              );
+            }}
           />
           <span>{t("experimental.safeMode")}</span>
         </label>
@@ -298,12 +437,16 @@ export function ExperimentalExtensions({
               className="ce-button"
               disabled={busy || !native}
               onClick={() =>
-                void perform(async () =>
-                  acceptReview(
-                    await call<ExtensionReview>(api, "extensions_rereview", {
-                      id: entry.id,
-                    }),
-                  ),
+                performForEntry(
+                  entry,
+                  async (request) =>
+                    acceptReview(
+                      await call<ExtensionReview>(api, "extensions_rereview", {
+                        id: entry.id,
+                      }),
+                      request,
+                    ),
+                  false,
                 )
               }
             >
@@ -313,7 +456,7 @@ export function ExperimentalExtensions({
               className="ce-button"
               disabled={busy || !native || entry.state === "disabled"}
               onClick={() =>
-                void perform(() =>
+                performForEntry(entry, () =>
                   call(api, "extensions_disable", { id: entry.id }),
                 )
               }
@@ -331,7 +474,7 @@ export function ExperimentalExtensions({
                 className="ce-button"
                 disabled={busy || !native}
                 onClick={() =>
-                  void perform(() =>
+                  performForEntry(entry, () =>
                     call(api, "extensions_revoke", {
                       id: entry.id,
                       capability: cap,
@@ -352,18 +495,18 @@ export function ExperimentalExtensions({
         slot="tools.cards"
         onNavigate={onNavigate}
       />
-      {compatibility && (
+      {compatibility && dialog && (
         <ExtensionCompatibilityDialog
           report={compatibility}
-          onClose={() => setCompatibility(null)}
+          onClose={() => dismiss(dialog)}
         />
       )}
-      {review && (
+      {review && dialog && (
         <InstanceOperationDialog
           title={t("experimental.permissions")}
           titleId="experimental-permission-title"
           busy={busy}
-          committing={busy}
+          committing={dialog.committing}
           confirmLabel={t("experimental.grant")}
           confirmDisabled={
             !native ||
@@ -371,16 +514,8 @@ export function ExperimentalExtensions({
               (c) => c.required && !grants.includes(c.id),
             )
           }
-          onClose={dismiss}
-          onConfirm={() =>
-            void perform(async () => {
-              await call(api, "extensions_confirm", {
-                token: review.token,
-                grants,
-              });
-              if (live.current) setReview(null);
-            })
-          }
+          onClose={() => dismiss(dialog)}
+          onConfirm={() => confirm(dialog)}
         >
           <h3>
             {review.name} · {review.version}
@@ -394,13 +529,14 @@ export function ExperimentalExtensions({
                 type="checkbox"
                 checked={grants.includes(cap.id)}
                 disabled={busy}
-                onChange={(e) =>
-                  setGrants(
-                    e.target.checked
-                      ? [...grants, cap.id]
-                      : grants.filter((v) => v !== cap.id),
-                  )
-                }
+                onChange={(e) => {
+                  if (!ownsDialog(dialog) || dialog.committing || scope.busy())
+                    return;
+                  dialog.grants = e.target.checked
+                    ? [...new Set([...dialog.grants, cap.id])]
+                    : dialog.grants.filter((v) => v !== cap.id);
+                  view.update({ dialog });
+                }}
               />
               <span>
                 <strong>
