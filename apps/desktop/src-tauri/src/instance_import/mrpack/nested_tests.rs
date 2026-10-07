@@ -113,7 +113,7 @@ fn nested_root_wrapper_and_exact_hmcl_layouts_keep_inner_overlay_and_outer_bindi
             let checked = fixture.prepare(&outer, Some(&optional)).unwrap();
             assert_eq!(checked.plan.format, "modrinth");
             assert_eq!(checked.plan.pack_name, "Inner Fixture");
-            assert_eq!(checked.plan.binding.source, fixture.source);
+            assert!(checked.plan.binding.source == super::Source::Local(fixture.source.clone()));
             assert_eq!(
                 checked.plan.binding.source_snapshot.hash,
                 format!("{:x}", Sha256::digest(&outer))

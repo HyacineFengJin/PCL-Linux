@@ -294,7 +294,7 @@ fn review_nested_outer_authority_and_inner_fd_are_both_checked_after_prepare() {
             .unwrap();
         assert_eq!(checked.retained_source_fds(), 2);
         assert_eq!(checked.retained_inner_bytes(), content.len() as u64);
-        assert_eq!(checked.plan.binding.source, fixture.source);
+        assert!(checked.plan.binding.source == super::Source::Local(fixture.source.clone()));
         assert_eq!(checked.plan.pack_name, "Inner Facts");
         let mut payload = checked.content_file().unwrap();
         let mut actual = Vec::new();

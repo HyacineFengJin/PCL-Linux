@@ -312,6 +312,83 @@ fn pack_ready(shared: &Shared, root: &GameRoot) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn instance_pack_download(
+    root_id: Option<String>,
+    request: crate::resource_save::SaveRequest,
+    state: State<'_, Arc<Shared>>,
+) -> Result<Value, String> {
+    let shared = state.inner().clone();
+    let _operation = shared.operations.lock().unwrap();
+    crate::require_network_submission(&shared)?;
+    let root = shared.config.resolve(root_id.as_deref())?;
+    pack_ready(&shared, &root)?;
+    instance_import::mrpack::official::begin(shared.clone(), root, request)
+}
+
+/// Closing a download view retires pending ownership before asking the task to
+/// cancel, so a completion racing this command cannot resurrect its input.
+#[tauri::command]
+pub fn instance_pack_release(source_id: String, state: State<'_, Arc<Shared>>) {
+    if let Some(id) = state.pack_confirmations.release_source(&source_id) {
+        let _ = state.tasks.cancel(&id);
+    }
+}
+
+#[tauri::command]
+pub async fn instance_pack_prepare(
+    root_id: Option<String>,
+    source_id: String,
+    name: String,
+    optional_paths: Option<Vec<String>>,
+    state: State<'_, Arc<Shared>>,
+) -> Result<LocalPackPlan, String> {
+    let shared = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = {
+            let _operation = shared.operations.lock().unwrap();
+            crate::require_network_submission(&shared)?;
+            let root = shared.config.resolve(root_id.as_deref())?;
+            pack_ready(&shared, &root)?;
+            new_name(&shared, &root, &name)?;
+            root
+        };
+        let plan = instance_import::mrpack::official::prepare(
+            &shared.pack_confirmations,
+            &root,
+            &shared.project,
+            &source_id,
+            &name,
+            optional_paths.as_deref(),
+            &shared.closing,
+        )?;
+        finish_prepare(&shared, &root, &name, true, LocalPackPlan::Pack(plan))
+    })
+    .await
+    .map_err(|_| "检查官方整合包的任务意外退出".to_string())?
+}
+
+#[tauri::command]
+pub async fn instance_pack_start(
+    root_id: Option<String>,
+    source_id: String,
+    name: String,
+    revision: String,
+    state: State<'_, Arc<Shared>>,
+) -> Result<Value, String> {
+    let shared = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = shared.operations.lock().unwrap();
+        crate::require_network_submission(&shared)?;
+        let root = shared.config.resolve(root_id.as_deref())?;
+        pack_ready(&shared, &root)?;
+        new_name(&shared, &root, &name)?;
+        instance_import::mrpack::official::start(shared.clone(), root, source_id, name, revision)
+    })
+    .await
+    .map_err(|_| "提交官方整合包安装的任务意外退出".to_string())?
+}
+
+#[tauri::command]
 pub async fn instance_import_start(
     root_id: Option<String>,
     source: String,

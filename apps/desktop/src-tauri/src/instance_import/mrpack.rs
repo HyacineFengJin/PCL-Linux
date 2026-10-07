@@ -25,6 +25,8 @@ mod formats;
 mod manifest;
 #[path = "mrpack/mirror.rs"]
 pub(crate) mod mirror;
+#[path = "mrpack/official.rs"]
+pub(crate) mod official;
 #[path = "mrpack/service.rs"]
 pub(crate) mod service;
 #[path = "mrpack/transfer.rs"]
@@ -94,11 +96,26 @@ struct Binding {
     root: PathBuf,
     root_key: Key,
     versions_key: Option<Key>,
-    source: PathBuf,
+    source: Source,
     source_snapshot: Snapshot,
     archive_limit: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     inner: Option<InnerBinding>,
+}
+/// Local paths are re-opened to detect replacement. Official inputs have no
+/// pathname authority: their opaque ID refers to a held, verified anonymous FD.
+#[derive(Clone, Serialize, PartialEq, Eq)]
+enum Source {
+    Local(PathBuf),
+    Official(String),
+}
+impl Source {
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::Local(path) => path.as_os_str().len(),
+            Self::Official(id) => id.len(),
+        }
+    }
 }
 #[derive(Clone, Serialize)]
 struct InnerBinding {
@@ -214,6 +231,7 @@ struct CheckedPack {
     bundled: Option<formats::BundledCore>,
     rebuild_profile: Option<Vec<u8>>,
     inner: Option<HeldInnerArchive>,
+    official: Option<std::sync::Arc<official::Input>>,
 }
 /// The original selected source is always `CheckedPack.file`. The inner input
 /// is process-owned anonymous content authority; no pathname can recreate it.
@@ -285,7 +303,7 @@ fn prepare_checked_with_stage(
         root: root.to_owned(),
         root_key,
         versions_key,
-        source: source.to_owned(),
+        source: Source::Local(source.to_owned()),
         source_snapshot: before.clone(),
         archive_limit: limit,
         inner: None,
@@ -426,6 +444,7 @@ fn prepare_checked_with_stage(
         bundled,
         rebuild_profile,
         inner,
+        official: None,
     })
 }
 
@@ -603,11 +622,16 @@ impl PackPlan {
         let (root_key, versions_key) = root_scope(&self.binding.root, &self.name)?;
         if root_key != self.binding.root_key
             || versions_key != self.binding.versions_key
-            || hash_file(
-                source_file(&self.binding.source, self.binding.archive_limit)?,
-                self.binding.archive_limit,
-                Some(cancel),
-            )? != self.binding.source_snapshot
+            || match &self.binding.source {
+                Source::Local(path) => {
+                    hash_file(
+                        source_file(path, self.binding.archive_limit)?,
+                        self.binding.archive_limit,
+                        Some(cancel),
+                    )? != self.binding.source_snapshot
+                }
+                Source::Official(_) => false,
+            }
         {
             return Err(super::changed());
         }
@@ -646,17 +670,26 @@ impl CheckedPack {
     }
     fn recheck_source(&self, cancel: &std::sync::atomic::AtomicBool) -> Result<()> {
         super::check(cancel)?;
+        let _reader = self
+            .official
+            .as_ref()
+            .map(|input| input.reader.lock().unwrap());
         let before = &self.plan.binding.source_snapshot;
         if hash_file(
             self.file.try_clone().map_err(super::error)?,
             self.plan.binding.archive_limit,
             Some(cancel),
         )? != *before
-            || hash_file(
-                source_file(&self.plan.binding.source, self.plan.binding.archive_limit)?,
-                self.plan.binding.archive_limit,
-                Some(cancel),
-            )? != *before
+            || match &self.plan.binding.source {
+                Source::Local(path) => {
+                    hash_file(
+                        source_file(path, self.plan.binding.archive_limit)?,
+                        self.plan.binding.archive_limit,
+                        Some(cancel),
+                    )? != *before
+                }
+                Source::Official(_) => self.file.metadata().map_err(super::error)?.nlink() != 0,
+            }
         {
             return Err(super::changed());
         }
@@ -676,11 +709,12 @@ impl CheckedPack {
     fn recheck_source_stamp(&self) -> Result<()> {
         let expected = &self.plan.binding.source_snapshot.stamp;
         if Stamp::of(&self.file.metadata().map_err(super::error)?) != *expected
-            || Stamp::of(
-                &open_source(&self.plan.binding.source)?
-                    .metadata()
-                    .map_err(super::error)?,
-            ) != *expected
+            || match &self.plan.binding.source {
+                Source::Local(path) => {
+                    Stamp::of(&open_source(path)?.metadata().map_err(super::error)?) != *expected
+                }
+                Source::Official(_) => self.file.metadata().map_err(super::error)?.nlink() != 0,
+            }
         {
             return Err(super::changed());
         }

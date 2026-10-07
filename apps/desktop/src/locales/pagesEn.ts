@@ -6,7 +6,8 @@ const messages = {
   "context.cut": "Cut",
   "context.paste": "Paste",
   "context.selectAll": "Select all",
-  "context.failed": "The text action did not complete. Try the keyboard shortcut.",
+  "context.failed":
+    "The text action did not complete. Try the keyboard shortcut.",
   "download.release": "Release",
   "download.snapshot": "Snapshot",
   "download.legacy": "Legacy",
@@ -295,6 +296,9 @@ const messages = {
   "import.taskMissing": "No import task was received; check again and retry",
   "import.planChanged": "The import plan does not match this name; check again",
   "instance.enterName": "Enter instance name",
+  "import.officialChecking":
+    "Checking the modpack and reading its installation contents…",
+  "import.officialDownloading": "Downloading the modpack…",
   "import.start": "Start import",
   "import.nameLabel": "Imported instance name",
   "import.content": "Import content",
@@ -303,7 +307,8 @@ const messages = {
     "A new instance folder will be created. Select it in the instance list after import completes.",
   "import.invalidPlan":
     "The import check returned an invalid format; check again",
-  "import.mrpackReadonly": "This pack can be inspected but cannot be installed yet. See the requirements below.",
+  "import.mrpackReadonly":
+    "This pack can be inspected but cannot be installed yet. See the requirements below.",
   "import.readyGame": "Ready Minecraft directory (.zip)",
   "import.previewStale":
     "The name or optional files changed. The previous result remains below; check again to update it.",

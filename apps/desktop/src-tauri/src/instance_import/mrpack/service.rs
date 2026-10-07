@@ -2,7 +2,8 @@
 //!
 //! Confirmation owns the source FD and provider-resolved core. Claim transfers
 //! it to one queued worker; the cache TTL does not expire submitted intent.
-//! No destination write or pack download happens before the worker's turn.
+//! Official archive inputs may be downloaded for confirmation. Game content
+//! writes and pack dependency downloads wait for the installation worker's turn.
 //! The transaction owns cleanup. Launcher references are checked at admission
 //! and commit; long hashing/network work never holds the operations mutex.
 use super::*;
@@ -36,6 +37,7 @@ pub(crate) struct ConfirmationCache {
     entries: Mutex<VecDeque<Record>>,
     budget: Arc<Mutex<ConfirmationUsage>>,
     active: Mutex<BTreeMap<PathBuf, String>>,
+    pub(super) inputs: official::Inputs,
 }
 #[derive(Default)]
 struct ConfirmationUsage {
@@ -49,7 +51,7 @@ struct Record {
     expires: Instant,
     authority: ConfirmedPack,
 }
-struct Lease {
+pub(super) struct Lease {
     budget: Arc<Mutex<ConfirmationUsage>>,
     bytes: usize,
     fds: usize,
@@ -71,6 +73,11 @@ impl Drop for Lease {
 pub(crate) struct Preparation {
     lease: Option<Lease>,
     budget: Arc<Mutex<ConfirmationUsage>>,
+}
+impl Preparation {
+    pub(super) fn into_lease(mut self) -> Lease {
+        self.lease.take().unwrap()
+    }
 }
 impl Drop for Preparation {
     fn drop(&mut self) {
@@ -111,6 +118,30 @@ struct ConfirmedCore {
     installer: Installer,
 }
 impl ConfirmationCache {
+    #[cfg(test)]
+    pub(super) fn input_usage(&self) -> (usize, usize, u64, usize) {
+        let usage = self.budget.lock().unwrap();
+        (usage.fds, usage.bytes, usage.inner_bytes, usage.preparing)
+    }
+    pub(crate) fn release_source(&self, id: &str) -> Option<String> {
+        if id.len() > 256 {
+            return None;
+        }
+        let task = self.inputs.release(id);
+        let source = Source::Official(id.into());
+        self.entries
+            .lock()
+            .unwrap()
+            .retain(|record| record.authority.checked.plan.binding.source != source);
+        task
+    }
+    /// Source inputs share the same retained disk/FD budget as nested packs.
+    /// Reservation precedes the HTTP body; the lease then follows every Arc
+    /// owner through confirmation, queueing and publication.
+    pub(super) fn reserve_input(&self, preparation: &mut Preparation, size: u64) -> Result<()> {
+        let lease = preparation.lease.as_mut().unwrap();
+        self.resize_lease(lease, 1, MAX_ONE, size)
+    }
     pub(crate) fn pending_projection(&self, revision: &str) -> PendingProjection<'_> {
         PendingProjection {
             cache: self,
@@ -217,7 +248,7 @@ impl ConfirmationCache {
         }
         super::super::check(cancel)?;
         let lease = preparation.lease.as_mut().unwrap();
-        let mut checked = prepare_checked_with_stage(
+        let checked = prepare_checked_with_stage(
             Path::new(&root.path),
             source,
             name,
@@ -232,6 +263,20 @@ impl ConfirmationCache {
                 input_staging(project, Path::new(&root.path))?.anonymous()
             },
         )?;
+        self.confirm_checked(preparation, root, project, checked, cancel)
+    }
+    pub(super) fn confirm_checked(
+        &self,
+        mut preparation: Preparation,
+        root: &GameRoot,
+        project: &Path,
+        mut checked: CheckedPack,
+        cancel: &AtomicBool,
+    ) -> Result<PackPlan> {
+        if !Arc::ptr_eq(&preparation.budget, &self.budget) {
+            return Err("整合包检查 admission 与确认缓存不符".into());
+        }
+        let lease = preparation.lease.as_mut().unwrap();
         if !checked.plan.preview.blockers.is_empty() {
             return Ok(checked.plan);
         }
@@ -324,11 +369,28 @@ impl ConfirmationCache {
             id: id.into(),
         })
     }
+    #[cfg(test)]
     fn claim(
         &self,
         root: &GameRoot,
         project: &Path,
         source: &Path,
+        name: &str,
+        token: &str,
+    ) -> Result<ConfirmedPack> {
+        self.claim_source(
+            root,
+            project,
+            &Source::Local(source.to_owned()),
+            name,
+            token,
+        )
+    }
+    fn claim_source(
+        &self,
+        root: &GameRoot,
+        project: &Path,
+        source: &Source,
         name: &str,
         token: &str,
     ) -> Result<ConfirmedPack> {
@@ -346,7 +408,7 @@ impl ConfirmationCache {
         if a.root_id != root.id
             || a.project != project
             || a.checked.plan.binding.root != Path::new(&root.path)
-            || a.checked.plan.binding.source != source
+            || &a.checked.plan.binding.source != source
             || a.checked.plan.name != name
         {
             return Err("整合包确认与所选目录、文件或实例名称不符".into());
@@ -354,7 +416,7 @@ impl ConfirmationCache {
         Ok(entries.remove(at).unwrap().authority)
     }
 }
-fn input_staging(project: &Path, game_root: &Path) -> Result<Dir> {
+pub(super) fn input_staging(project: &Path, game_root: &Path) -> Result<Dir> {
     let project_dir = Dir::open(project)?;
     let namespace = project_dir.optional(".pcl-linux")?;
     let inputs = namespace
@@ -401,7 +463,7 @@ impl Drop for ActiveOperation<'_> {
         }
     }
 }
-fn token() -> Result<String> {
+pub(super) fn token() -> Result<String> {
     let mut bytes = [0u8; 24];
     File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut bytes))
@@ -466,7 +528,7 @@ fn footprint(c: &CheckedPack) -> usize {
             .map(|s| s.capacity() + 128)
             .sum::<usize>()
         + c.plan.binding.root.as_os_str().len()
-        + c.plan.binding.source.as_os_str().len()
+        + c.plan.binding.source.heap_bytes()
         + 2048
         + c.bundled.as_ref().map_or(0, |b| {
             b.metadata.capacity()
@@ -530,10 +592,22 @@ pub(crate) fn start(
     name: String,
     revision: String,
 ) -> Result<serde_json::Value> {
-    let authority =
-        shared
-            .pack_confirmations
-            .claim(&root, &shared.project, &source, &name, &revision)?;
+    start_source(shared, root, Source::Local(source), name, revision)
+}
+pub(super) fn start_source(
+    shared: Arc<Shared>,
+    root: GameRoot,
+    source: Source,
+    name: String,
+    revision: String,
+) -> Result<serde_json::Value> {
+    let authority = shared.pack_confirmations.claim_source(
+        &root,
+        &shared.project,
+        &source,
+        &name,
+        &revision,
+    )?;
     let scope = TaskScope::root(Path::new(&root.path))?;
     if shared.tasks.list().iter().any(|t| {
         !t.stage.is_terminal() && t.root_id == root.id && t.instance_id.as_deref() == Some(&name)
@@ -609,6 +683,9 @@ fn execute(
     // Revalidate the captured directory identity immediately before beginning
     // the durable private build; root identity alone is insufficient.
     authority.checked.recheck_source(&cancel)?;
+    if let Some(input) = &authority.checked.official {
+        official::recheck_evidence(input, &cancel)?;
+    }
     target(&authority)?;
     let mut operation = super::super::build::BuildOperation::begin_bound(
         Path::new(&root.path),
@@ -762,6 +839,16 @@ fn execute(
             }
         }
     };
+    if let Some(input) = &authority.checked.official {
+        // Metadata may change during a long core/dependency build. Recheck
+        // outside the operations lock, before the irreversible publication.
+        if let Err(error) = official::recheck_evidence(input, &cancel) {
+            return match operation.abort() {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(format!("{error}；清理失败：{cleanup}")),
+            };
+        }
+    }
     let result = operation.publish_checked(
         sealed,
         &cancel,
@@ -832,6 +919,12 @@ fn extract_override(
     mut destination: File,
     cancel: &AtomicBool,
 ) -> Result<File> {
+    // try_clone shares the input offset. All readers of an official input,
+    // including concurrent re-confirmations, participate in the same gate.
+    let _reader = checked
+        .official
+        .as_ref()
+        .map(|input| input.reader.lock().unwrap());
     let mut zip = super::super::archive::checked_zip(checked.content_file()?)?;
     let mut input = zip
         .by_name(&f.archive_path)

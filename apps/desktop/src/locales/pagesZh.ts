@@ -274,13 +274,16 @@ const messages = {
   "import.taskMissing": "未收到导入任务，请重新检查后重试",
   "import.planChanged": "导入计划与当前名称不一致，请重新检查",
   "instance.enterName": "输入实例名称",
+  "import.officialChecking": "正在校验整合包并读取安装内容…",
+  "import.officialDownloading": "正在下载整合包…",
   "import.start": "开始导入",
   "import.nameLabel": "导入实例名称",
   "import.content": "导入内容",
   "ui.existingFiles": "已有文件",
   "import.help": "将创建新的实例文件夹。导入完成后可在实例列表中选择它。",
   "import.invalidPlan": "导入检查结果的格式无效，请重新检查",
-  "import.mrpackReadonly": "此整合包目前只能检查，尚不能安装。下方列出了需要解决的项目。",
+  "import.mrpackReadonly":
+    "此整合包目前只能检查，尚不能安装。下方列出了需要解决的项目。",
   "import.readyGame": "完整游戏目录 (.zip)",
   "import.previewStale":
     "名称或可选文件已改变，以下保留上次检查结果；请重新检查更新结果。",

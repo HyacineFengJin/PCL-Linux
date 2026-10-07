@@ -160,6 +160,7 @@ impl Downloads {
             snapshot.kind,
             TaskKind::Install
                 | TaskKind::ModpackInstall
+                | TaskKind::ModpackPrepare
                 | TaskKind::InstanceReset
                 | TaskKind::InstanceExport
                 | TaskKind::InstanceRename

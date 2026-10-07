@@ -345,6 +345,12 @@
 .ce-instance-file-dialog > .ce-instance-plan-warning {
   color: #9b8554;
 }
+/* Official titles are publisher text. Bound this separate source summary so a
+ * long title cannot push the name field or confirmation actions off-screen. */
+.ce-instance-file-dialog > .ce-pack-source {
+  max-height: 63px;
+  overflow-y: auto;
+}
 /* The mrpack list may be long. Keep CE title/name/actions outside its scroll
  * area so readonly rechecks and Close remain reachable at minimum window size. */
 .ce-instance-file-dialog:has(.ce-mrpack-preview) {

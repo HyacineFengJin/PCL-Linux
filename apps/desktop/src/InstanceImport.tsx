@@ -12,6 +12,11 @@ import {
   useInstanceOperationScope,
 } from "./instanceOperationUi";
 import "./instance-operations.css";
+import {
+  downloadPackSource,
+  releasePackSource,
+  type OfficialPackRequest,
+} from "./officialPackSource";
 
 export function instanceImportNameError(
   name: string,
@@ -43,14 +48,23 @@ type ImportDraft = {
   pack: InstancePackImportPlan | null;
   optionalPaths: string[];
   error: string;
+  sourceLabel?: string;
 };
 
 function isPackPlan(
   plan: InstanceImportPlan | null,
 ): plan is InstancePackImportPlan {
-  return !!plan && [
-    "modrinth", "curseforge", "mcbbs", "hmcl", "multimc", "ready_game",
-  ].includes(plan.format || "");
+  return (
+    !!plan &&
+    [
+      "modrinth",
+      "curseforge",
+      "mcbbs",
+      "hmcl",
+      "multimc",
+      "ready_game",
+    ].includes(plan.format || "")
+  );
 }
 
 function discardConfirmation(api: Api, plan: InstanceImportPlan | null) {
@@ -76,10 +90,12 @@ function checkImportPlan(plan: InstanceImportPlan, name: string) {
   // Unknown formats cannot fall through to the old ZIP writer. A true flag
   // alone is insufficient: native authority must be a one-use pack token.
   if (
-    !isPackPlan(plan) || typeof plan.installable !== "boolean" || !plan.preview ||
-    (plan.installable && (
-      !plan.revision.startsWith("pack-confirm-v1:") || plan.preview.blockers?.length !== 0
-    ))
+    !isPackPlan(plan) ||
+    typeof plan.installable !== "boolean" ||
+    !plan.preview ||
+    (plan.installable &&
+      (!plan.revision.startsWith("pack-confirm-v1:") ||
+        plan.preview.blockers?.length !== 0))
   )
     throw new Error(t("import.invalidPlan"));
   const preview = plan.preview;
@@ -136,6 +152,7 @@ export function InstanceImport({
   onTaskStart,
   onClose,
   onNotify,
+  official,
 }: {
   api: Api;
   scopeKey: string;
@@ -145,6 +162,7 @@ export function InstanceImport({
   onTaskStart: (id: string) => void;
   onClose: () => void;
   onNotify: (message: string) => void;
+  official?: { request: OfficialPackRequest; name: string };
 }) {
   const { scope, current, allowed } = useInstanceOperationScope(
     api,
@@ -164,6 +182,14 @@ export function InstanceImport({
   const names = useRef(occupiedNames);
   names.current = occupiedNames;
   const callbacks = useRef({ onTaskStart, onClose, onNotify });
+  const officialSource = useRef<{ scope: object; id: string } | null>(null);
+  const [downloadMessage, setDownloadMessage] = useState<{
+    scope: object;
+    text: string;
+  } | null>(null);
+  function releaseSource(id: string) {
+    releasePackSource(api, id);
+  }
   callbacks.current = { onTaskStart, onClose, onNotify };
   function setDraft(next: ImportDraft | null) {
     draftRef.current = next;
@@ -181,11 +207,36 @@ export function InstanceImport({
     operation.current = null;
     closed.current = scope;
     discardConfirmation(api, draftRef.current?.plan ?? null);
+    if (officialSource.current?.scope === scope)
+      releaseSource(officialSource.current.id);
     setActivity(null);
     setDraft(null);
     callbacks.current.onClose();
   }
   useEffect(() => {
+    if (official) {
+      setDraft({
+        scope,
+        source: "",
+        name: official.name,
+        plan: null,
+        pack: null,
+        optionalPaths: [],
+        error: "",
+        sourceLabel: official.request.file_name || "",
+      });
+      return () => {
+        if (
+          operation.current?.scope === scope &&
+          operation.current.kind === "start"
+        )
+          return;
+        if (draftRef.current?.scope === scope)
+          discardConfirmation(api, draftRef.current.plan);
+        if (officialSource.current?.scope === scope)
+          releaseSource(officialSource.current.id);
+      };
+    }
     const token = { scope, kind: "pick" as const, token: Symbol() };
     operation.current = token;
     setActivity(token);
@@ -247,7 +298,10 @@ export function InstanceImport({
       instanceImportNameError(submitted.name, names.current)
     )
       return;
-    const canStart = !!submitted.plan && (submitted.plan.format === undefined || (isPackPlan(submitted.plan) && submitted.plan.installable));
+    const canStart =
+      !!submitted.plan &&
+      (submitted.plan.format === undefined ||
+        (isPackPlan(submitted.plan) && submitted.plan.installable));
     const token = {
       scope,
       kind: canStart ? ("start" as const) : ("prepare" as const),
@@ -260,13 +314,19 @@ export function InstanceImport({
       draftRef.current === submitted &&
       operation.current === token;
     let prepared: InstanceImportPlan | null = null;
+    let sourceId = submitted.source;
+    let inputReady = !!sourceId;
+    let sourceLabel = submitted.sourceLabel;
     try {
       if (canStart && submitted.plan) {
-        const result = await api<{ id: string }>("instance_import_start", {
-          source: submitted.source,
-          name: submitted.name,
-          revision: submitted.plan.revision,
-        });
+        const result = await api<{ id: string }>(
+          official ? "instance_pack_start" : "instance_import_start",
+          {
+            ...(official ? { sourceId } : { source: submitted.source }),
+            name: submitted.name,
+            revision: submitted.plan.revision,
+          },
+        );
         if (!ownsReply()) return;
         if (!result.id) throw new Error(t("import.taskMissing"));
         setDraft(null);
@@ -274,13 +334,29 @@ export function InstanceImport({
         callbacks.current.onTaskStart(result.id);
         callbacks.current.onClose();
       } else {
-        const plan = await api<InstanceImportPlan>("instance_import_prepare", {
-          source: submitted.source,
-          name: submitted.name,
-          ...(submitted.pack
-            ? { optionalPaths: [...submitted.optionalPaths] }
-            : {}),
-        });
+        if (official && !sourceId) {
+          const acquired = await downloadPackSource(api, official.request, {
+            current: ownsReply,
+            adopt: (id) => {
+              sourceId = id;
+              officialSource.current = { scope, id };
+            },
+            progress: (text) => setDownloadMessage({ scope, text }),
+          });
+          if (!acquired) return;
+          inputReady = true;
+          sourceLabel = acquired.label;
+        }
+        const plan = await api<InstanceImportPlan>(
+          official ? "instance_pack_prepare" : "instance_import_prepare",
+          {
+            ...(official ? { sourceId } : { source: submitted.source }),
+            name: submitted.name,
+            ...(submitted.pack
+              ? { optionalPaths: [...submitted.optionalPaths] }
+              : {}),
+          },
+        );
         prepared = plan;
         if (!ownsReply()) {
           discardConfirmation(api, plan);
@@ -289,6 +365,8 @@ export function InstanceImport({
         checkImportPlan(plan, submitted.name);
         setDraft({
           ...submitted,
+          source: sourceId,
+          sourceLabel,
           plan,
           pack: isPackPlan(plan) ? plan : null,
           optionalPaths: isPackPlan(plan)
@@ -301,12 +379,23 @@ export function InstanceImport({
       }
     } catch (error) {
       discardConfirmation(api, prepared ?? submitted.plan);
+      if (official && (!inputReady || !current() || closed.current === scope)) {
+        releaseSource(sourceId);
+        if (!inputReady) sourceId = "";
+      }
       if (ownsReply())
-        setDraft({ ...submitted, plan: null, error: String(error) });
+        setDraft({
+          ...submitted,
+          source: sourceId,
+          sourceLabel,
+          plan: null,
+          error: String(error),
+        });
     } finally {
       if (operation.current === token) {
         operation.current = null;
         if (current()) setActivity(null);
+        setDownloadMessage(null);
       }
     }
   }
@@ -344,7 +433,8 @@ export function InstanceImport({
           ? t("ui.submitting")
           : working === "prepare"
             ? t("ui.checking")
-            : visible.plan && (!isPackPlan(visible.plan) || visible.plan.installable)
+            : visible.plan &&
+                (!isPackPlan(visible.plan) || visible.plan.installable)
               ? t("import.start")
               : preview
                 ? t("ui.recheck")
@@ -354,11 +444,22 @@ export function InstanceImport({
       onConfirm={() => void submit()}
       onClose={close}
     >
+      {visible.sourceLabel && (
+        <p className="ce-instance-plan-warning ce-pack-source">
+          Modrinth · {visible.sourceLabel}
+        </p>
+      )}
+      {downloadMessage?.scope === scope && working && (
+        <p role="status">{downloadMessage.text}</p>
+      )}
       <input
         className="ce-field"
         aria-label={t("import.nameLabel")}
         value={visible.name}
-        disabled={working === "start"}
+        disabled={
+          working === "start" ||
+          (!!official && working === "prepare" && !visible.source)
+        }
         onChange={(event) => {
           const previous = draftRef.current;
           if (
@@ -367,7 +468,7 @@ export function InstanceImport({
             previous.scope !== scope ||
             (operation.current?.scope === scope &&
               operation.current.kind === "start")
-            )
+          )
             return;
           discardConfirmation(api, previous.plan);
           setDraft({
@@ -397,14 +498,18 @@ export function InstanceImport({
             {preview && (
               <>
                 <dt>{t("import.format")}</dt>
-                <dd>{({
-                  modrinth: "Modrinth (.mrpack / .zip)",
-                  curseforge: "CurseForge (.zip)",
-                  mcbbs: "MCBBS (.zip)",
-                  hmcl: "HMCL (.zip)",
-                  multimc: "MultiMC / Prism (.zip)",
-                  ready_game: t("import.readyGame"),
-                })[visible.pack!.format]}</dd>
+                <dd>
+                  {
+                    {
+                      modrinth: "Modrinth (.mrpack / .zip)",
+                      curseforge: "CurseForge (.zip)",
+                      mcbbs: "MCBBS (.zip)",
+                      hmcl: "HMCL (.zip)",
+                      multimc: "MultiMC / Prism (.zip)",
+                      ready_game: t("import.readyGame"),
+                    }[visible.pack!.format]
+                  }
+                </dd>
               </>
             )}
             <dt>{t("resources.modpacks")}</dt>

@@ -5,7 +5,7 @@ use crate::modrinth_install::provider::{self, ApiFile, HttpProvider, Provider};
 use sha2::{Digest, Sha512};
 
 #[derive(Debug)]
-pub(super) struct Authority {
+pub(crate) struct Authority {
     pub plan: SavePlan,
     pub file: ApiFile,
 }
@@ -14,7 +14,29 @@ pub(super) fn validate_request(request: &SaveRequest) -> Result<()> {
     provider::id(&request.version_id)?;
     provider::file_name(&request.file_name)
 }
-pub(super) async fn resolve(provider: &impl Provider, request: SaveRequest) -> Result<Authority> {
+pub(super) async fn resolve(
+    provider: &(impl Provider + ?Sized),
+    request: SaveRequest,
+) -> Result<Authority> {
+    resolve_for(provider, request, None).await
+}
+/// Direct installation requires the official project type in addition to the
+/// exact version/file identity used by standalone Save.
+pub(crate) async fn resolve_pack(
+    provider: &(impl Provider + ?Sized),
+    request: SaveRequest,
+) -> Result<Authority> {
+    let authority = resolve_for(provider, request, Some("modpack")).await?;
+    if !authority.file.filename.ends_with(".mrpack") || authority.file.size > 512 * 1024 * 1024 {
+        return Err("请选择不超过 512 MiB 的官方 .mrpack 整合包文件".into());
+    }
+    Ok(authority)
+}
+async fn resolve_for(
+    provider: &(impl Provider + ?Sized),
+    request: SaveRequest,
+    project_type: Option<&str>,
+) -> Result<Authority> {
     validate_request(&request)?;
     let (project, version) = tokio::try_join!(
         provider.project(&request.project_id),
@@ -22,6 +44,7 @@ pub(super) async fn resolve(provider: &impl Provider, request: SaveRequest) -> R
     )?;
     provider::validate_version(&version)?;
     if project.id != request.project_id
+        || project_type.is_some_and(|kind| project.project_type != kind)
         || version.project_id != request.project_id
         || version.id != request.version_id
         || project.title.len() > 2048

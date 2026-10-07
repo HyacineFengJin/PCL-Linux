@@ -204,6 +204,7 @@ const resourceWrites = new Set([
   "instance_export_start",
   "instance_export_config_save",
   "instance_import_start",
+  "instance_pack_start",
   "instance_import_recover",
   "instance_delete_start",
   "instance_restore_start",
@@ -254,6 +255,9 @@ const rootCommands = new Set([
   "instance_export_config_save",
   "instance_import_pick",
   "instance_import_prepare",
+  "instance_pack_download",
+  "instance_pack_prepare",
+  "instance_pack_start",
   "instance_import_start",
   "instance_import_recover",
   "instance_delete_prepare",
@@ -2620,6 +2624,7 @@ function App() {
                       key={`${rootKey}:${resource.source}:${resource.project_id || resource.local_path}`}
                       api={rootApi}
                       resource={resource}
+                      occupiedNames={data?.instances.map((instance) => instance.id) || []}
                       onNotify={notify}
                       scopeKey={rootId || ""}
                       selectedInstance={selected || null}

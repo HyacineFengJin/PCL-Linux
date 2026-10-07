@@ -16,6 +16,7 @@ RH 中的 R 代表 Rust，H 来自维护者的 GitHub 名称；RH 也呼应黎�
 - 游戏版本扫描、搜索、选择与实例设置。
 - 实例描述、内置图标、列表分类与收藏管理，以及可恢复的物理实例重命名。
 - 已有实例的组件重置、核心备份与中断恢复；按内容选择导出和导入本地 ZIP，并保存导出配置。
+- Modrinth 社区整合包直接安装：官方 `.mrpack` 下载与校验，实例名、组件和可选内容确认，同名实例保护。
 - 本地 ZIP / mrpack 整合包识别与安装：PCL 导出、Modrinth、HMCL、MCBBS、MultiMC / Prism、完整游戏目录和单层带启动器归档；自定义实例名称、可选文件与中断恢复。
 - 实例删除移入可恢复区域，保留实例资料，并支持恢复原目录。
 - 本地模组单个／批量启禁，模组、资源包与光影包导入，以及可撤销的删除。
@@ -31,7 +32,7 @@ RH 中的 R 代表 Rust，H 来自维护者的 GitHub 名称；RH 也呼应黎�
 - 可分别开启 Minecraft 正式版与快照更新提醒，按官方发布时间判断新版本并保存已读记录。
 - 工具箱自定义 URL 下载、成就图片预览与保存、本地皮肤头像 PNG 生成。
 
-项目仍在开发中，目前支持游戏与上述加载器安装、已有游戏启动、本地资源管理、Modrinth 资源安装与模组更新。本地整合包格式及限制见[使用指南](docs/USAGE.md#导入本地整合包)。仅含模组编号的 CurseForge 包暂不能自动补齐；OptiFine、LabyMod 自动安装、社区详情页直接安装整合包尚未提供；部分早期版本暂不支持自动安装。Microsoft 正版登录暂未开放，服务接入由项目维护者完成。
+项目仍在开发中，目前支持游戏与上述加载器安装、已有游戏启动、本地资源管理、Modrinth 资源安装与模组更新。本地整合包格式及限制见[使用指南](docs/USAGE.md#导入本地整合包)。仅含模组编号的 CurseForge 包暂不能自动补齐；OptiFine、LabyMod 自动安装尚未提供；部分早期版本暂不支持自动安装。Microsoft 正版登录暂未开放，服务接入由项目维护者完成。
 
 ## 构建与运行
 
@@ -83,7 +84,7 @@ Local management includes multiple game directories, instance display preference
 
 Local ZIP/mrpack import detects PCL exports, Modrinth, HMCL, MCBBS, MultiMC/Prism and complete game directories. Single-layer launcher archives are also recognized, including the exact HMCL bundled-package layout. Supported packs install under a custom instance name with optional-file choices, checked downloads and recoverable publication. CurseForge manifests are recognized, but packs requiring remote CurseForge file IDs cannot yet be completed automatically; custom launch commands and unsupported loader layouts are reported before installation.
 
-Modrinth mods, resource packs and shaders can be installed with required dependencies, SHA-512 verification and exact-content reuse. Local Modrinth mods support compatible release updates, required-dependency planning, disabled-state preservation and recoverable replacement with persistent undo. Some legacy layouts, OptiFine/LabyMod installation, and online modpacks are not yet available.
+Modrinth mods, resource packs and shaders can be installed with required dependencies, SHA-512 verification and exact-content reuse. Local Modrinth mods support compatible release updates, required-dependency planning, disabled-state preservation and recoverable replacement with persistent undo. Modrinth modpacks can also be downloaded directly from version details, reviewed with a custom instance name and optional-file choices, and installed as new instances. Some legacy layouts and OptiFine/LabyMod installation are not yet available.
 
 Microsoft sign-in is not yet available. The project maintainers are responsible for completing the service integration.
 

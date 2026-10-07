@@ -29,6 +29,7 @@ export function taskNeedsBootstrap(
   if (
     [
       "resource_save",
+      "modpack_prepare",
       "toolbox_download",
       "launcher_logs",
       "instance_export",

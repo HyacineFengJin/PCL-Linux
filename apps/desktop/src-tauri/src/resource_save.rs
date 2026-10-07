@@ -3,7 +3,7 @@
 //! staging belongs to the chosen filesystem, then a task-owned cancellation
 //! gate precedes no-replacement publication. No instance or cache is touched.
 #[path = "resource_save/authority.rs"]
-mod authority;
+pub(crate) mod authority;
 #[path = "resource_save/files.rs"]
 mod files;
 #[path = "resource_save/model.rs"]

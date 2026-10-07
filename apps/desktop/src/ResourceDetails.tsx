@@ -17,6 +17,7 @@ import { Collapse } from "./Collapse";
 import type { Api, Instance } from "./types";
 import { ResourceInstall } from "./ResourceInstall";
 import { ResourceSave } from "./ResourceSave";
+import { InstanceImport } from "./InstanceImport";
 import { ResourceFavorite } from "./LauncherFavorites";
 import { LauncherNavigationContext } from "./useLauncherPreferences";
 import type { ResourceInstallRequest } from "./resourceInstallPlan";
@@ -254,6 +255,7 @@ export function ResourceDetails({
   saveStartDisabledReason,
   onTaskStart,
   onResourceDetails,
+  occupiedNames = [],
 }: {
   api: Api;
   resource: ResourceSummary;
@@ -266,6 +268,7 @@ export function ResourceDetails({
   saveStartDisabled?: boolean;
   saveStartDisabledReason?: string;
   onTaskStart: (id: string) => void;
+  occupiedNames?: string[];
   onResourceDetails: (resource: ResourceSummary) => void;
 }) {
   const saveAvailable = useContext(
@@ -306,12 +309,9 @@ export function ResourceDetails({
   );
   const [packChoice, setPackChoice] = useState<Version | null>(null);
   const [instanceName, setInstanceName] = useState("");
-  const [nameError, setNameError] = useState("");
   const requestIdentity = useRef("");
   const requestGeneration = useRef(0);
   const dependencyRequests = useRef(new Set<string>());
-  const nameInput = useRef<HTMLInputElement>(null);
-  const previouslyFocused = useRef<HTMLElement | null>(null);
   const selectedCard = useRef<HTMLElement>(null);
   const installButton = useRef<HTMLButtonElement>(null);
   const source = resource.source ?? "Modrinth";
@@ -514,16 +514,6 @@ export function ResourceDetails({
     }
   }, [api, dependencyKey, details, modrinth, dependencyRetry]);
 
-  useEffect(() => {
-    if (!packChoice) return;
-    previouslyFocused.current = document.activeElement as HTMLElement;
-    nameInput.current?.focus();
-    nameInput.current?.select();
-    return () => {
-      previouslyFocused.current?.focus();
-    };
-  }, [packChoice]);
-
   async function openLink(url: string) {
     if (!url) {
       onNotify(t("resource.providerUnavailable", { source }));
@@ -549,18 +539,17 @@ export function ResourceDetails({
   }
   function chooseVersion(version: Version, groupTitle: string) {
     setSelected({ version, title: groupTitle });
-    setFileChoice(null);
+    if (selected?.version.id !== version.id) setFileChoice(null);
     setInstallChoice(null);
     setSaveChoice(null);
     setSelectedOpen(true);
-    if (pack) {
+    if (pack && modrinth && native && !disabled && scopeKey) {
       setInstanceName(
         title
           .replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ")
           .trim()
           .slice(0, 100),
       );
-      setNameError("");
       setPackChoice(version);
     } else {
       window.requestAnimationFrame(() =>
@@ -1012,12 +1001,17 @@ export function ResourceDetails({
                     <button
                       className="ce-button primary"
                       disabled={
-                        !pack &&
-                        (!native ||
-                          !saveAvailable ||
-                          saveDisabled ||
-                          !modrinth ||
-                          !selectedFile)
+                        pack
+                          ? !native ||
+                            disabled ||
+                            !modrinth ||
+                            !scopeKey ||
+                            !selectedFile?.filename.endsWith(".mrpack")
+                          : !native ||
+                            !saveAvailable ||
+                            saveDisabled ||
+                            !modrinth ||
+                            !selectedFile
                       }
                       title={
                         !pack && (!native || !saveAvailable)
@@ -1187,85 +1181,26 @@ export function ResourceDetails({
           onNotify={onNotify}
         />
       )}
-      {packChoice && (
-        <div
-          className="modal-shade rd-name-shade"
-          onClick={() => setPackChoice(null)}
-        >
-          <form
-            className="rd-name-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="rd-name-title"
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setPackChoice(null);
-              }
-              if (event.key === "Tab") {
-                const controls = [
-                  ...event.currentTarget.querySelectorAll<HTMLElement>(
-                    "input, button",
-                  ),
-                ];
-                const first = controls[0],
-                  last = controls[controls.length - 1];
-                if (event.shiftKey && document.activeElement === first) {
-                  event.preventDefault();
-                  last?.focus();
-                } else if (!event.shiftKey && document.activeElement === last) {
-                  event.preventDefault();
-                  first?.focus();
-                }
-              }
-            }}
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (
-                !instanceName.trim() ||
-                /[\\/:*?"<>|\u0000-\u001f]/.test(instanceName) ||
-                instanceName.trim() === "." ||
-                instanceName.trim() === ".."
-              ) {
-                setNameError(t("instance.nameInvalid"));
-                return;
-              }
-              setPackChoice(null);
-              onNotify(t("resource.packUnavailable"));
-            }}
-          >
-            <h2 id="rd-name-title">{t("instance.enterName")}</h2>
-            <input
-              className="ce-field"
-              aria-label={t("instance.name")}
-              ref={nameInput}
-              maxLength={100}
-              value={instanceName}
-              onChange={(event) => {
-                setInstanceName(event.target.value);
-                setNameError("");
-              }}
-            />
-            {nameError && (
-              <div className="rd-name-error" role="alert">
-                {nameError}
-              </div>
-            )}
-            <div className="rd-name-actions">
-              <button className="ce-button primary" type="submit">
-                {t("ui.confirm")}
-              </button>
-              <button
-                className="ce-button"
-                type="button"
-                onClick={() => setPackChoice(null)}
-              >
-                {t("common.cancel")}
-              </button>
-            </div>
-          </form>
-        </div>
+      {packChoice && selectedFile && (
+        <InstanceImport
+          key={contextKey}
+          api={api}
+          scopeKey={contextKey}
+          native={native}
+          disabled={disabled}
+          occupiedNames={occupiedNames}
+          official={{
+            request: {
+              project_id: packChoice.project_id,
+              version_id: packChoice.id,
+              file_name: selectedFile.filename,
+            },
+            name: instanceName,
+          }}
+          onTaskStart={onTaskStart}
+          onClose={() => setPackChoice(null)}
+          onNotify={onNotify}
+        />
       )}
     </div>
   );

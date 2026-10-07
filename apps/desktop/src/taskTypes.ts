@@ -10,6 +10,7 @@ export type DownloadStatus = {
   kind?:
     | "install"
     | "modpack_install"
+    | "modpack_prepare"
     | "instance_reset"
     | "instance_export"
     | "instance_rename"
