@@ -53,6 +53,12 @@ impl Server {
                         Ok(size) => request.extend_from_slice(&buffer[..size]),
                     }
                 }
+                // A pooled HTTP client can abandon a connection before sending
+                // headers. EOF is not a query: dispatching it as "/" poisons
+                // the DNS fixture and turns a transport race into a panic.
+                if !request.windows(4).any(|value| value == b"\r\n\r\n") {
+                    continue;
+                }
                 let request = String::from_utf8_lossy(&request).into_owned();
                 captured.lock().unwrap().push(request.clone());
                 let target = request
@@ -84,7 +90,13 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        self.worker.take().unwrap().join().unwrap();
+        if let Err(error) = self.worker.take().unwrap().join() {
+            // Preserve a worker failure when it is the original failure, but
+            // never panic a second time while a failed assertion is unwinding.
+            if !thread::panicking() {
+                std::panic::resume_unwind(error);
+            }
+        }
     }
 }
 
@@ -118,6 +130,24 @@ fn resolver(server: &Server, fallback: DnsFallback) -> doh::DohResolver {
         fallback,
         Ok(vec!["127.0.0.1:0".parse().unwrap()]),
     )
+}
+
+#[tokio::test]
+async fn fixture_ignores_abandoned_and_incomplete_http_connections() {
+    let server = Server::new(|target| (200, reply(target, 120)));
+    drop(std::net::TcpStream::connect(server.address).unwrap());
+    let mut partial = std::net::TcpStream::connect(server.address).unwrap();
+    partial.write_all(b"GET /dns-query").unwrap();
+    drop(partial);
+
+    // The real queries queued behind the abandoned sockets must still succeed;
+    // the request count deliberately excludes connections with no HTTP request.
+    let resolver = resolver(&server, DnsFallback::FailClosed);
+    assert!(resolver
+        .resolve("fixture.invalid".parse().unwrap())
+        .await
+        .is_ok());
+    assert_eq!(server.count(), 2);
 }
 
 #[test]
@@ -530,10 +560,10 @@ async fn positive_dns_cache_evicts_after_its_fixed_capacity() {
     let server = Server::new(|target| (200, reply(target, 120)));
     let resolver = resolver(&server, DnsFallback::FailClosed);
     for index in 0..257 {
-        assert!(resolver
+        let result = resolver
             .resolve(format!("cache{index}.invalid").parse().unwrap())
-            .await
-            .is_ok());
+            .await;
+        assert!(result.is_ok(), "cache query {index}: {:?}", result.err());
     }
     assert_eq!(server.count(), 514);
     assert!(resolver
