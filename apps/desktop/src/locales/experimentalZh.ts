@@ -54,7 +54,7 @@ const messages = {
   "experimental.maker": "模组制作",
   "experimental.porter": "一键搬运",
   "experimental.extensionsHelp":
-    "数据型插件：功能卡片、页面导航与只读实例摘要。不兼容 PCL N / Nex 插件。",
+    "数据型插件支持功能卡片、页面导航与只读实例摘要。导入 PCL N / Nex 的 plugin.json 可查看兼容报告，目前不能安装或运行。",
   "experimental.makerHelp":
     "生成 Fabric 1.21.1 源码工程，修改源码、保护手写内容并恢复历史副本。",
   "experimental.porterHelp":
@@ -73,6 +73,32 @@ const messages = {
   "experimental.workspace": "工程工作区",
   "experimental.refresh": "刷新",
   "experimental.importExtension": "导入插件声明",
+  "experimental.compatTitle": "插件兼容报告",
+  "experimental.compatCannotInstall": "暂不支持安装",
+  "experimental.compatClose": "关闭",
+  "experimental.compatReadOnly":
+    "仅检查这份 JSON 声明；未安装、未执行插件代码，发布者身份与签名未经验证。",
+  "experimental.compatEcosystem": "插件体系",
+  "experimental.compatUndeclared": "未声明",
+  "experimental.compatEntry": "程序集入口",
+  "experimental.compatApi": "声明的 API 范围",
+  "experimental.compatCore": "声明的 PCL.Core 版本",
+  "experimental.compatServices": "声明的服务",
+  "experimental.compatDependencies": "声明的插件依赖",
+  "experimental.compatMixin": "Mixin 配置文件",
+  "experimental.compatPlatforms": "声明的平台限制",
+  "experimental.compatProbeOnly": "仅接口验证",
+  "experimental.compatUnavailable": "尚未提供",
+  "experimental.compat.n-probe-only":
+    "目前仅独立验证了 N SDK 0.2.5 的命令与双语设置页描述接口，尚未接入启动器运行。此插件的实际行为未验证。",
+  "experimental.compat.n-ui-unavailable":
+    "声明使用 N UI 服务或页面贡献。RH 尚未适配 Avalonia 页面、DirectInject 与宿主 UI 修改。",
+  "experimental.compat.n-native-unavailable":
+    "声明使用原生库；当前未加载，也未检查其平台兼容性。",
+  "experimental.compat.nex-host-unavailable":
+    "Nex 插件需要 PCL.Core 与其 Mixin/Bridge 环境。RH 尚未提供该环境，不能直接应用宿主补丁。",
+  "experimental.compat.ranges-unverified":
+    "这里只显示声明的版本范围、依赖和权限，不检查依赖是否已安装，也不验证完整上游格式或程序集内容。",
   "experimental.noExtensions": "尚未安装数据型插件",
   "experimental.publisher": "发布者（未经验证）",
   "experimental.required": "必需",

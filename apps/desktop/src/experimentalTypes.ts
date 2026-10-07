@@ -27,6 +27,41 @@ export type ExtensionReview = {
     currentlyGranted: boolean;
   }[];
 };
+/** Read-only foreign manifest projection. It deliberately has no review token. */
+export type ExtensionCompatibilityReport = {
+  kind: "compatibility-report";
+  ecosystem: "pcl-n" | "pcl-nex";
+  id: string;
+  name: string;
+  version: string;
+  publisher: string | null;
+  digest: string;
+  loadable: false;
+  codeExecuted: false;
+  signatureVerified: false;
+  entryAssembly: string;
+  entryType: string | null;
+  apiRange: string | null;
+  sdkProbeVersion: string | null;
+  requirements: {
+    id: string;
+    range: string;
+    required: boolean;
+    coverage: "probe-only" | "unavailable";
+  }[];
+  permissions: { id: string; reason: string; required: boolean }[];
+  dependencies: { id: string; range: string; required: boolean }[];
+  platformDeclarations: string[];
+  mixinConfigs: string[];
+  experimentalFeatures?: string[];
+  findings: (
+    | "n-probe-only"
+    | "n-ui-unavailable"
+    | "n-native-unavailable"
+    | "nex-host-unavailable"
+    | "ranges-unverified"
+  )[];
+};
 export type ExtensionCard = {
   extensionId: string;
   extensionName: string;

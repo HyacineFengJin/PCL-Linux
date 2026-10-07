@@ -55,7 +55,7 @@ const messages = {
   "experimental.maker": "Mod Maker",
   "experimental.porter": "Mod Porter",
   "experimental.extensionsHelp":
-    "Declarative extensions: cards, navigation and read-only instance summaries. PCL N / Nex plugins are unsupported.",
+    "Declarative extensions provide cards, navigation and read-only instance summaries. Import PCL N / Nex plugin.json files for compatibility reports; installation and execution are unavailable.",
   "experimental.makerHelp":
     "Generate Fabric 1.21.1 source projects, edit source, protect handwritten code and restore earlier copies.",
   "experimental.porterHelp":
@@ -74,6 +74,32 @@ const messages = {
   "experimental.workspace": "Project workspace",
   "experimental.refresh": "Refresh",
   "experimental.importExtension": "Import extension manifest",
+  "experimental.compatTitle": "Plugin compatibility report",
+  "experimental.compatCannotInstall": "Installation unavailable",
+  "experimental.compatClose": "Close",
+  "experimental.compatReadOnly":
+    "Only this JSON declaration was inspected. No plugin was installed or executed; publisher identity and signatures are unverified.",
+  "experimental.compatEcosystem": "Plugin ecosystem",
+  "experimental.compatUndeclared": "Not declared",
+  "experimental.compatEntry": "Assembly entry",
+  "experimental.compatApi": "Declared API range",
+  "experimental.compatCore": "Declared PCL.Core version",
+  "experimental.compatServices": "Declared services",
+  "experimental.compatDependencies": "Declared plugin dependencies",
+  "experimental.compatMixin": "Mixin configuration files",
+  "experimental.compatPlatforms": "Declared platform restrictions",
+  "experimental.compatProbeOnly": "Interface probe only",
+  "experimental.compatUnavailable": "Unavailable",
+  "experimental.compat.n-probe-only":
+    "Only N SDK 0.2.5 command and localized settings-page descriptors have been independently probed. Launcher execution is unavailable; this plugin's actual behavior is unverified.",
+  "experimental.compat.n-ui-unavailable":
+    "The declaration uses N UI services or contributions. RH has no adapter for Avalonia pages, DirectInject or host UI modification.",
+  "experimental.compat.n-native-unavailable":
+    "Native libraries are declared. They were not loaded or checked for platform compatibility.",
+  "experimental.compat.nex-host-unavailable":
+    "Nex plugins require PCL.Core and its Mixin/Bridge environment. RH does not provide that environment or apply host patches.",
+  "experimental.compat.ranges-unverified":
+    "Version ranges, dependencies and permissions are declaration text only. Installed dependencies, the full upstream schema and assembly contents are not validated.",
   "experimental.noExtensions": "No declarative extensions installed",
   "experimental.publisher": "Publisher (unverified)",
   "experimental.required": "Required",

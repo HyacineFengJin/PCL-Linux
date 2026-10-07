@@ -27,6 +27,7 @@ import {
 import { ExtensionHost } from "./extensions/src/host.mjs";
 import { readManifest } from "./extensions/src/manifest.mjs";
 import { readPackage } from "./extensions/src/package.mjs";
+import { inspectForeignManifest } from "./extensions/src/compatibility.mjs";
 import { AiPresets } from "./ai-presets.mjs";
 
 const code = path.dirname(fileURLToPath(import.meta.url));
@@ -262,7 +263,7 @@ async function dispatch(operation, a) {
     case "status":
       return {
         versions: {
-          extensions: "0.6",
+          extensions: "0.6.1",
           maker: "0.4",
           porter: "0.5.1",
           runtime: "v7",
@@ -283,8 +284,12 @@ async function dispatch(operation, a) {
     case "extensions_list":
       return { entries: extensions.list(), safeMode, warning: storeWarning };
     case "extensions_review": {
-      if (storeWarning) throw new Error(storeWarning);
       const source = a.path ? await boundedRead(a.path) : a.source;
+      // Foreign metadata never enters the install store or pending consent map.
+      // Inspection remains available even when the declarative store is damaged.
+      const compatibility = inspectForeignManifest(source);
+      if (compatibility) return compatibility;
+      if (storeWarning) throw new Error(storeWarning);
       const review = prepareExtension(source);
       if (pendingExtensions.size >= 64) pendingExtensions.clear();
       pendingExtensions.set(review.token, source);
