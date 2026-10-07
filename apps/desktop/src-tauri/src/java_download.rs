@@ -97,6 +97,7 @@ pub async fn install(
 ) -> Result<Installed> {
     let cancel = task.cancellation_token();
     check(&cancel)?;
+    report(task, 0, 0, 0, 0, 0, "正在获取 Java 版本信息".into());
     let lock = store.dir.lock(".java-install.lock")?;
     store.recover(&lock)?;
     let package = catalog::selected(&http, component, hash, &cancel).await?;

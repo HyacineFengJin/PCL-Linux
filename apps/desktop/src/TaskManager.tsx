@@ -32,6 +32,23 @@ function taskStepLabel(kind: DownloadStatus["kind"], step: DownloadStep) {
   }
   return step.label;
 }
+function javaFallbackSteps(status: DownloadStatus): DownloadStep[] {
+  const phases = ["java-metadata", "java-files", "java-probe", "java-publish"];
+  const current = Math.max(0, phases.indexOf(status.phase || "java-metadata"));
+  return phases.map((id, index) => {
+    const step: DownloadStep = {
+      id,
+      label: "",
+      state:
+        status.stage === "complete" || index < current
+          ? "complete"
+          : index === current && status.stage !== "queued"
+            ? "running"
+            : "pending",
+    };
+    return { ...step, label: taskStepLabel("java_install", step) };
+  });
+}
 const taskActionMessages: Partial<
   Record<NonNullable<DownloadStatus["kind"]>, MessageKey>
 > = {
@@ -344,16 +361,18 @@ function TaskCard({
                       ];
   const steps: DownloadStep[] = status.steps?.length
     ? status.steps
-    : fallbackLabels.map((label, index) => ({
-        id: `legacy-${index}`,
-        label,
-        state:
-          status.stage === "complete"
-            ? "complete"
-            : active && status.stage !== "queued" && index === current
-              ? "running"
-              : "pending",
-      }));
+    : status.kind === "java_install"
+      ? javaFallbackSteps(status)
+      : fallbackLabels.map((label, index) => ({
+          id: `legacy-${index}`,
+          label,
+          state:
+            status.stage === "complete"
+              ? "complete"
+              : active && status.stage !== "queued" && index === current
+                ? "running"
+                : "pending",
+        }));
   async function cancel() {
     if (
       !native ||
