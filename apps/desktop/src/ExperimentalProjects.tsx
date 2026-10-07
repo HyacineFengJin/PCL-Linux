@@ -19,6 +19,7 @@ import type {
   ProjectSourceSelection,
 } from "./experimentalProjectTypes";
 import { ExperimentalProjectFiles } from "./ExperimentalProjectFiles";
+import { ExperimentalProjectCompare } from "./ExperimentalProjectCompare";
 import { ExperimentalVersion } from "./ExperimentalVersion";
 import "./experimental.css";
 
@@ -550,12 +551,21 @@ export function ExperimentalProjects({
           onIndexed={setIndexEditable}
         />
       )}
+      {project && point && project.checkpoints.length > 1 && (
+        <ExperimentalProjectCompare
+          key={`compare:${project.id}:${project.revision}:${point.id}`}
+          api={api}
+          native={native}
+          project={project}
+          checkpointId={point.id}
+        />
+      )}
       {error && (
         <p className="experimental-error" role="alert">
           {error}
         </p>
       )}
-      <ExperimentalVersion version="0.6" />
+      <ExperimentalVersion version="0.7" />
     </div>
   );
 }

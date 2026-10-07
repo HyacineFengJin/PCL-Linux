@@ -235,7 +235,7 @@ export function ExperimentalMaker({
       >
         {t("experimental.addItem")}
       </button>
-      <ExperimentalVersion version="0.6" />
+      <ExperimentalVersion version="0.7" />
     </section>
   );
 }

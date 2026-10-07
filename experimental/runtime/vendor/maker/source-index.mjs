@@ -207,6 +207,44 @@ async function readText(source, name) {
   );
   return { entry, bytes, content };
 }
+/** Comparison classifies unsupported bytes explicitly. Receipt/read failures
+ * still throw: changed source must never masquerade as an encoding limitation.
+ * Decode the whole bounded file before taking a prefix, so invalid later bytes
+ * cannot turn into an apparently valid text comparison. No new edit grant.
+ */
+export async function readIndexPreview(source, { path: name }) {
+  const entry = source.snapshot.inventory.find((value) => value.path === name);
+  need(entry, "Select an indexed source file");
+  const supported = textFile(name);
+  const bytes = await verifiedFile(
+    source.workspace,
+    `${source.snapshot.directory}/${name}`,
+    entry,
+    supported,
+  );
+  if (!supported) return { ...entry, status: "unsupported_type" };
+  let content;
+  try {
+    content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      bytes,
+    );
+  } catch (error) {
+    if (error.code !== "ERR_ENCODING_INVALID_ENCODED_DATA") throw error;
+    return { ...entry, status: "unsupported_encoding" };
+  }
+  if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(content))
+    return { ...entry, status: "binary" };
+  let end = Math.min(bytes.length, INDEX_LIMITS.chunkBytes);
+  while (end < bytes.length && (bytes[end] & 0xc0) === 0x80) end--;
+  return {
+    ...entry,
+    status: "text",
+    content: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      bytes.subarray(0, end),
+    ),
+    truncated: end < bytes.length,
+  };
+}
 export async function readIndexFile(source, { path: name, offset = 0 }) {
   integer(offset, INDEX_LIMITS.fileBytes);
   const { entry, bytes } = await readText(source, name);

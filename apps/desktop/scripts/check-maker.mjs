@@ -180,7 +180,7 @@ test("null recipe remains editable; bilingual fields and component footer stay i
       tree,
       (node) => typeof node.type === "function" && node.props.version,
     )[0];
-    assert.equal(footer.props.version, "0.6");
+    assert.equal(footer.props.version, "0.7");
   }
   field(p.render(), p.i18n.t("experimental.ingredients")).props.onChange({
     target: { value: "minecraft:paper" },

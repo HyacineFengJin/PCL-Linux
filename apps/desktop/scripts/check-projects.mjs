@@ -19,6 +19,9 @@ function harness(api, retained, config = {}) {
   const opened = [],
     indexed = [];
   const react = {
+    useLayoutEffect(effect, deps) {
+      react.useEffect(effect, deps);
+    },
     useState(initial) {
       const index = cursor++;
       if (!(index in hooks)) hooks[index] = initial;
@@ -97,21 +100,30 @@ function harness(api, retained, config = {}) {
     cursor = 0;
     dirty = false;
     pending = [];
-    tree = config.files
+    tree = config.compare
       ? load(
-          path.join(source, "ExperimentalProjectFiles.tsx"),
-        ).ExperimentalProjectFiles({
+          path.join(source, "ExperimentalProjectCompare.tsx"),
+        ).ExperimentalProjectCompare({
           api,
-          native: true,
-          source: config.source,
-          onIndexed: (value) => indexed.push(value),
+          native: config.native ?? true,
+          project: config.project,
+          checkpointId: config.checkpointId,
         })
-      : component.ExperimentalProjects({
-          api,
-          native: true,
-          draft,
-          onOpen: (value) => opened.push(value),
-        });
+      : config.files
+        ? load(
+            path.join(source, "ExperimentalProjectFiles.tsx"),
+          ).ExperimentalProjectFiles({
+            api,
+            native: true,
+            source: config.source,
+            onIndexed: (value) => indexed.push(value),
+          })
+        : component.ExperimentalProjects({
+            api,
+            native: true,
+            draft,
+            onOpen: (value) => opened.push(value),
+          });
     for (const effect of pending) effect();
   }
   async function flush() {
@@ -130,6 +142,15 @@ function harness(api, retained, config = {}) {
     opened,
     replaceApi(next) {
       api = next;
+      render();
+    },
+    replaceComparison(project, checkpointId = project.checkpoints.at(-1)?.id) {
+      config.project = project;
+      config.checkpointId = checkpointId;
+      render();
+    },
+    disableNative() {
+      config.native = false;
       render();
     },
     indexed,
@@ -338,7 +359,7 @@ test("opening and AI continuation use the host-selected checkpoint and return it
   assert.equal(
     elements(ui.tree, (node) => node.type?.name === "ExperimentalVersion")[0]
       .props.version,
-    "0.6",
+    "0.7",
   );
   ui.close();
 });
@@ -681,4 +702,385 @@ test("source browser retires old API results and callbacks after replacement or 
   unmounted();
   await ui.flush();
   assert.equal(newCalls, 1);
+});
+
+function comparisonFixture() {
+  const record = {
+    ...project(),
+    checkpoints: [1, 2, 3].map((index) => ({
+      ...checkpoint,
+      id: "point-" + index,
+      label: "Version " + index,
+      fingerprint: String(index).repeat(64),
+    })),
+  };
+  const calls = [],
+    intercept = new Map();
+  const changed = {
+    path: "changed.java",
+    kind: "modified",
+    before: { bytes: 12, sha256: "old-hash" },
+    after: { bytes: 20, sha256: "new-hash" },
+  };
+  const binary = {
+    path: "image.png",
+    kind: "added",
+    before: null,
+    after: { bytes: 8, sha256: "image-hash" },
+  };
+  const identity = (args) => ({
+    id: args.id,
+    revision: args.expectedRevision,
+    baseCheckpointId: args.baseCheckpointId,
+    targetCheckpointId: args.targetCheckpointId,
+    baseFingerprint: record.checkpoints.find(
+      (point) => point.id === args.baseCheckpointId,
+    )?.fingerprint,
+    targetFingerprint: record.checkpoints.find(
+      (point) => point.id === args.targetCheckpointId,
+    )?.fingerprint,
+  });
+  function listing(args) {
+    const all = [
+      changed,
+      binary,
+      ...Array.from({ length: 50 }, (_, i) => ({
+        ...binary,
+        path: `src/Added${i}.java`,
+      })),
+    ];
+    const filtered = args.filter
+      ? all.filter((change) => change.path.includes(args.filter))
+      : all;
+    const page = filtered.slice(args.offset, args.offset + 50);
+    return {
+      ...identity(args),
+      counts: { added: 51, deleted: 0, modified: 1, unchanged: 3 },
+      totalChanges: all.length,
+      filteredCount: filtered.length,
+      changes: page,
+      offset: args.offset,
+      pageSize: 50,
+      nextOffset:
+        args.offset + page.length < filtered.length
+          ? args.offset + page.length
+          : null,
+    };
+  }
+  function preview(args) {
+    const change = args.path === binary.path ? binary : changed;
+    const metadata = {
+      status: "text",
+      truncated: true,
+      previewBytes: 12,
+      previewLines: 2,
+    };
+    return {
+      ...identity(args),
+      change,
+      status: args.path === binary.path ? "uncomparable" : "text",
+      before: change.before ? { ...change.before, ...metadata } : null,
+      after: {
+        ...change.after,
+        ...metadata,
+        ...(args.path === binary.path
+          ? { status: "unsupported_type", truncated: false }
+          : {}),
+      },
+      rows:
+        args.path === binary.path
+          ? []
+          : [
+              {
+                kind: "deleted",
+                beforeLine: 1,
+                afterLine: null,
+                text: "old source",
+              },
+              {
+                kind: "added",
+                beforeLine: null,
+                afterLine: 1,
+                text: "<script>new source</script>",
+              },
+            ],
+      limits: { bytes: 16384, lines: 200, rows: 400 },
+    };
+  }
+  async function api(command, { operation, args }) {
+    assert.equal(command, "experimental_call");
+    calls.push({ operation, args });
+    if (intercept.has(operation)) return intercept.get(operation)(args);
+    if (operation === "project_compare") return listing(args);
+    if (operation === "project_compare_file") return preview(args);
+    throw new Error(
+      "Comparison must not invoke mutation, AI, build or game APIs: " +
+        operation,
+    );
+  }
+  function ui() {
+    return harness(api, undefined, {
+      compare: true,
+      project: record,
+      checkpointId: "point-2",
+    });
+  }
+  return { record, calls, intercept, listing, preview, api, ui };
+}
+async function readComparison(ui, name) {
+  await change(ui, "experimental.file", name);
+  await click(ui, "experimental.comparePreview");
+}
+test("comparison sends version/revision references only, uses host paging/filter cursors and renders bounded read-only text and binary reasons", async () => {
+  const f = comparisonFixture(),
+    ui = f.ui();
+  await ui.flush();
+  assert.equal(f.calls.length, 0);
+  await click(ui, "experimental.compareVersions");
+  assert.deepEqual(f.calls[0].args, {
+    id: f.record.id,
+    expectedRevision: f.record.revision,
+    baseCheckpointId: "point-1",
+    targetCheckpointId: "point-2",
+    filter: "",
+    offset: 0,
+  });
+  await readComparison(ui, "changed.java");
+  const rendered = elements(ui.tree, (node) => node.type === "pre")[0];
+  assert.ok(rendered);
+  assert.match(content(rendered), /- 1:– old source/);
+  assert.match(content(rendered), /\+ –:1 <script>new source<\/script>/);
+  assert.equal(
+    elements(
+      ui.tree,
+      (node) => node.type === "script" || node.type === "textarea",
+    ).length,
+    0,
+  );
+  assert.match(content(ui.tree), /16384/);
+  assert.match(content(ui.tree), /200/);
+  await readComparison(ui, "image.png");
+  assert.equal(elements(ui.tree, (node) => node.type === "pre").length, 0);
+  assert.match(content(ui.tree), /二进制|Binary/);
+  await click(ui, "experimental.nextPage");
+  assert.equal(f.calls.at(-1).args.offset, 50);
+  await click(ui, "experimental.previousPage");
+  assert.equal(f.calls.at(-1).args.offset, 0);
+  await change(ui, "experimental.pathFilter", "changed");
+  assert.equal(button(ui, "experimental.nextPage").props.disabled, true);
+  await click(ui, "experimental.compareVersions");
+  assert.equal(f.calls.at(-1).args.filter, "changed");
+  assert.equal(f.calls.at(-1).args.offset, 0);
+  ui.close();
+});
+test("comparison retires prior render, selected-file and unmounted callbacks before any read admission", async () => {
+  const f = comparisonFixture(),
+    ui = f.ui();
+  await ui.flush();
+  await click(ui, "experimental.compareVersions");
+  const oldCompare = button(ui, "experimental.compareVersions").props.onClick;
+  const oldFile = field(ui, "experimental.file").props.onChange;
+  await change(ui, "experimental.file", "changed.java");
+  const preview = button(ui, "experimental.comparePreview").props.onClick;
+  await change(ui, "experimental.file", "image.png");
+  const before = f.calls.length;
+  oldCompare();
+  oldFile({ target: { value: "changed.java" } });
+  preview();
+  await ui.flush();
+  assert.equal(f.calls.length, before);
+  assert.equal(field(ui, "experimental.file").props.value, "image.png");
+  const unmounted = button(ui, "experimental.comparePreview").props.onClick;
+  ui.close();
+  unmounted();
+  await ui.flush();
+  assert.equal(f.calls.length, before);
+});
+test("a delayed comparison and error cannot restore the old pair or filter", async () => {
+  const f = comparisonFixture(),
+    ui = f.ui(),
+    delayed = deferred();
+  await ui.flush();
+  f.intercept.set("project_compare", () => delayed.promise);
+  button(ui, "experimental.compareVersions").props.onClick();
+  field(ui, "experimental.compareTarget").props.onChange({
+    target: { value: "point-3" },
+  });
+  await ui.flush();
+  delayed.resolve(f.listing(f.calls[0].args));
+  await ui.flush();
+  assert.equal(field(ui, "experimental.compareTarget").props.value, "point-3");
+  assert.equal(
+    elements(
+      ui.tree,
+      (node) => node.type === "option" && node.props.value === "changed.java",
+    ).length,
+    0,
+  );
+  let reject;
+  f.intercept.set(
+    "project_compare",
+    () =>
+      new Promise((_, fail) => {
+        reject = fail;
+      }),
+  );
+  button(ui, "experimental.compareVersions").props.onClick();
+  field(ui, "experimental.pathFilter").props.onChange({
+    target: { value: "new-filter" },
+  });
+  await ui.flush();
+  reject(new Error("obsolete comparison error"));
+  await ui.flush();
+  assert.equal(content(ui.tree).includes("obsolete comparison error"), false);
+  assert.equal(field(ui, "experimental.pathFilter").props.value, "new-filter");
+  ui.close();
+});
+test("a delayed file preview cannot overwrite a newer queued file selection", async () => {
+  const f = comparisonFixture(),
+    ui = f.ui(),
+    delayed = deferred();
+  await ui.flush();
+  await click(ui, "experimental.compareVersions");
+  await change(ui, "experimental.file", "changed.java");
+  f.intercept.set("project_compare_file", () => delayed.promise);
+  button(ui, "experimental.comparePreview").props.onClick();
+  field(ui, "experimental.file").props.onChange({
+    target: { value: "image.png" },
+  });
+  await ui.flush();
+  delayed.resolve(f.preview(f.calls.at(-1).args));
+  await ui.flush();
+  assert.equal(field(ui, "experimental.file").props.value, "image.png");
+  assert.equal(elements(ui.tree, (node) => node.type === "pre").length, 0);
+  f.intercept.delete("project_compare_file");
+  await click(ui, "experimental.comparePreview");
+  assert.match(content(ui.tree), /二进制|Binary/);
+  ui.close();
+});
+test("replacement APIs, projects, revisions and disabled native scopes retire old comparison requests", async () => {
+  for (const replacement of ["api", "project", "revision", "native"]) {
+    const f = comparisonFixture(),
+      ui = f.ui(),
+      delayed = deferred();
+    await ui.flush();
+    f.intercept.set("project_compare", () => delayed.promise);
+    const oldClick = button(ui, "experimental.compareVersions").props.onClick;
+    oldClick();
+    await ui.flush();
+    let newCalls = 0;
+    if (replacement === "api")
+      ui.replaceApi(async (_, { args }) => {
+        newCalls++;
+        return f.listing(args);
+      });
+    else if (replacement === "native") ui.disableNative();
+    else
+      ui.replaceComparison({
+        ...f.record,
+        ...(replacement === "project"
+          ? { id: "next-project" }
+          : { revision: "new-revision" }),
+      });
+    await ui.flush();
+    delayed.resolve(f.listing(f.calls[0].args));
+    await ui.flush();
+    oldClick();
+    await ui.flush();
+    assert.equal(f.calls.length, 1);
+    assert.equal(newCalls, 0);
+    assert.equal(
+      elements(
+        ui.tree,
+        (node) => node.type === "option" && node.props.value === "changed.java",
+      ).length,
+      0,
+    );
+    assert.equal(
+      button(ui, "experimental.compareVersions").props.disabled,
+      replacement === "native",
+    );
+    ui.close();
+  }
+});
+test("comparison rejects wrong source fingerprints and file identity before rendering results", async () => {
+  const f = comparisonFixture(),
+    ui = f.ui();
+  await ui.flush();
+  f.intercept.set("project_compare", (args) => ({
+    ...f.listing(args),
+    baseFingerprint: "wrong",
+  }));
+  await click(ui, "experimental.compareVersions");
+  assert.match(content(ui.tree), /不一致|does not match/);
+  assert.equal(
+    elements(
+      ui.tree,
+      (node) => node.type === "option" && node.props.value === "changed.java",
+    ).length,
+    0,
+  );
+  f.intercept.delete("project_compare");
+  await click(ui, "experimental.compareVersions");
+  await change(ui, "experimental.file", "changed.java");
+  f.intercept.set("project_compare_file", (args) => ({
+    ...f.preview(args),
+    change: { ...f.preview(args).change, path: "wrong.java" },
+  }));
+  await click(ui, "experimental.comparePreview");
+  assert.match(content(ui.tree), /不一致|does not match/);
+  assert.equal(elements(ui.tree, (node) => node.type === "pre").length, 0);
+  ui.close();
+});
+test("same-checkpoint selection and duplicate queued comparison events do not admit extra reads", async () => {
+  const f = comparisonFixture(),
+    ui = f.ui(),
+    delayed = deferred();
+  await ui.flush();
+  await change(ui, "experimental.compareBase", "point-2");
+  assert.equal(button(ui, "experimental.compareVersions").props.disabled, true);
+  button(ui, "experimental.compareVersions").props.onClick();
+  await ui.flush();
+  assert.equal(f.calls.length, 0);
+  await change(ui, "experimental.compareBase", "point-1");
+  f.intercept.set("project_compare", () => delayed.promise);
+  const click = button(ui, "experimental.compareVersions").props.onClick;
+  click();
+  click();
+  await ui.flush();
+  assert.equal(f.calls.length, 1);
+  ui.close();
+  delayed.resolve(f.listing(f.calls[0].args));
+  await ui.flush();
+});
+
+test("project manager comparison uses the saved revision and selected checkpoint while notes remain a local draft", async () => {
+  const f = comparisonFixture();
+  async function api(_, { operation }) {
+    if (operation === "status") return { jobs: [] };
+    if (operation === "projects_list") return { projects: [f.record] };
+    throw new Error("No comparison or mutation is implicit: " + operation);
+  }
+  const ui = harness(api);
+  await ui.flush();
+  selectProject(ui, f.record.name);
+  await ui.flush();
+  await change(ui, "experimental.projectNotes", "Unsaved design note");
+  await change(ui, "experimental.checkpoint", "point-2");
+  const child = elements(
+    ui.tree,
+    (node) => node.type?.name === "ExperimentalProjectCompare",
+  )[0];
+  assert.ok(child);
+  assert.equal(child.props.project.revision, f.record.revision);
+  assert.equal(child.props.checkpointId, "point-2");
+  assert.equal(
+    child.key,
+    `compare:${f.record.id}:${f.record.revision}:point-2`,
+  );
+  assert.equal(
+    field(ui, "experimental.projectNotes").props.value,
+    "Unsaved design note",
+  );
+  ui.close();
 });
