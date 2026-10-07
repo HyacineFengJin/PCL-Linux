@@ -2151,6 +2151,8 @@ mod integration_tests {
     use std::thread;
     use tasks::{TaskKind, TaskOutcome, TaskTarget};
 
+    #[path = "content_scope.rs"]
+    mod content_scope;
     #[path = "resource_updates.rs"]
     mod resource_updates;
 

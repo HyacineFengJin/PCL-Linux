@@ -1239,9 +1239,9 @@ export function InstancePanel({
               <span>{t("instance.isolation")}</span>
               <CeSelect
                 className="ce-field"
-                value={instance.isolated ? t("ui.on") : t("ui.off")}
+                value={instance.isolated ? "on" : "off"}
                 disabled
-                title={t("common.unavailable")}
+                title={t("settings.autoIsolation")}
               >
                 <option value="on">{t("ui.on")}</option>
                 <option value="off">{t("ui.off")}</option>

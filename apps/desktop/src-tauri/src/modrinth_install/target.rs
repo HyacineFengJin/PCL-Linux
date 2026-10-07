@@ -403,10 +403,7 @@ pub(super) fn capture(
     let root = Dir::open(&root_path)?;
     let project_dir = Dir::open(&project)?;
     let initial_profiles = profiles(&root, id, cancel)?;
-    let instance = pcl_core::scan_instances(&root_path)?
-        .into_iter()
-        .find(|i| i.id == id)
-        .ok_or("未找到所选实例")?;
+    let instance = pcl_core::scan_instance(&root_path, id)?.ok_or("未找到所选实例")?;
     if profiles(&root, id, cancel)? != initial_profiles {
         return Err("实例JSON在读取期间变化，请重新检查".into());
     }

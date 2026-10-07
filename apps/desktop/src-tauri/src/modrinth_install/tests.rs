@@ -596,6 +596,29 @@ fn target_edits_including_resource_collisions_invalidate_preparation() {
 }
 
 #[test]
+fn unsafe_isolation_marker_returns_its_error_and_scope_changes_retire_the_target() {
+    let fixture = Fixture::new();
+    let before = fixture.target();
+    let marker = fixture.root.join("versions/sample/options.txt");
+    std::os::unix::fs::symlink("missing", &marker).unwrap();
+    let error = target::capture(
+        &fixture.root,
+        &fixture.project,
+        "root-fixture",
+        "sample",
+        &AtomicBool::new(false),
+    )
+    .unwrap_err();
+    assert!(error.contains("options.txt"));
+    assert!(target::check(&before, &AtomicBool::new(false))
+        .unwrap_err()
+        .contains("options.txt"));
+    fs::remove_file(marker).unwrap();
+    fs::remove_dir(fixture.root.join("versions/sample/mods")).unwrap();
+    assert!(target::check(&before, &AtomicBool::new(false)).is_err());
+}
+
+#[test]
 fn queued_confirmation_rejects_new_profile_and_inventory_before_artifact_transfer() {
     use crate::tasks::{TaskKind, TaskOutcome, TaskScope, TaskTarget, Tasks};
     for profile_change in [false, true] {

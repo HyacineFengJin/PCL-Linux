@@ -154,7 +154,7 @@ export function SettingsPanel({
           <Field
             dropdown
             label={t("settings.isolation")}
-            value={t("settings.allIsolated")}
+            value={t("settings.autoIsolation")}
           />
           <Field
             dropdown

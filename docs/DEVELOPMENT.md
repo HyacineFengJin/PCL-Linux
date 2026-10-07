@@ -22,6 +22,7 @@
 | Minecraft 核心 | `crates/core/src/lib.rs` | 版本识别、继承、依赖和启动参数 |
 | Java 核心 | `crates/core/src/java.rs` | 有限时探测、发现、架构与版本策略、启动选择 |
 | 游戏启动选项 | `GameLaunchFields.tsx`、`crates/core/src/launch_options.rs` | 全局窗口尺寸、Java 地址偏好、类型校验和参数替换 |
+| 游戏内容目录 | `crates/core/src/content_scope.rs` | 自动隔离标记、内容作用域、各文件服务共用的判断 |
 | 下载与安装 | `crates/install/src/`、`resolved.rs` | 网络请求、校验缓存、原版与加载器安装、固定提供者证据 |
 | 本地整合包 | `instance_import/mrpack/`、`instance_import/build.rs`、`publication.rs` | 格式适配、原生一次性确认、私有构建和可恢复提交 |
 | Modrinth 安装 | `modrinth_install/` | 官方元数据、兼容与必需依赖规划、实例快照、匿名网络暂存 |
@@ -82,6 +83,14 @@ v2 设置在普通启动时备份并迁移。已有改名 journal 的引用载�
 窗口尺寸只影响游戏参数规则中的 `has_custom_resolution`，不改变库选择或内容目录。核心展开新版条件参数或旧版参数后统一替换 `--width` / `--height`，防止重复尺寸；默认模式保留原参数。地址偏好在主类之前替换冲突的 JVM 属性，使用 `preferIPv6Addresses` 决定地址顺序，并保持 `preferIPv4Stack=false` 以允许双协议连接。属性含义见 [Java 网络属性说明](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/net/doc-files/net-properties.html)。
 
 前端自定义尺寸是未提交的本地草稿；只有明确保存才更新窗口字段。IP 或其他偏好修订变化不能重置尺寸草稿，旧修订或卸载页面的事件不能重新提交。对应回归覆盖偏好读写、备份导入、启动快照，以及新旧版本参数和账号令牌脱敏。
+
+## 内容目录的所有权
+
+`content_scope::automatic_scope` 统一四个隔离标记与共享/实例目录的决定；每个调用者提供自己的文件探测。所有标记都要读取，已有普通 `mods` 不能遮住后面的坏链接或读取错误。只有不存在表示缺少标记，符号链接和特殊文件不能被解释为共享目录。
+
+核心扫描与启动通过只读路径适配器 `inspect` 判定；启动在 Java 探测之前捕获内容目录，并在准备结束时重检隔离状态。`scan_instance` 单独读取所选实例、保留具体错误，资源页和社区目标检查不再从过滤后的实例列表推断“未找到”。其他实例的损坏仍由批量扫描报告独立列出。
+
+ZIP 导出的 `Scanner` 与资源信息的 `Binding` 继续使用各自的描述符探测、缺失记录和身份快照，把分类交给共用规则；不能用核心的路径读替换这些证据。`ContentScope::relative_base` 只提供经过名称校验的布局，不授予文件操作权限。已有资源、更新、导入和改名恢复记录保持原格式和提交时的目录绑定；恢复时不能因当前隔离状态改变而重定向旧事务。
 
 ## ZIP 导入与实例删除
 

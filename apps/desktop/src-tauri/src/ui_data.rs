@@ -264,15 +264,9 @@ pub(crate) fn resource_metadata_from_file(
 
 pub fn resource_dir(root: &Path, id: &str, kind: &str) -> Result<PathBuf, String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
-    let instance = pcl_core::scan_instances(&root)?
-        .into_iter()
-        .find(|v| v.id == id)
-        .ok_or("未找到所选版本")?;
-    let base = if instance.isolated {
-        root.join("versions").join(id)
-    } else {
-        root.clone()
-    };
+    let instance = pcl_core::scan_instance(&root, id)?.ok_or("未找到所选版本")?;
+    let scope = pcl_core::content_scope::ContentScope::from_isolated(instance.isolated);
+    let base = root.join(scope.relative_base(id)?);
     let child = match kind {
         "mods" => "mods",
         "saves" => "saves",

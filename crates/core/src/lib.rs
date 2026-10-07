@@ -1,4 +1,5 @@
 //! Native launch planning for installed Mojang-format instances.
+pub mod content_scope;
 pub mod java;
 pub mod launch_options;
 use launch_options::{LaunchOptions, WindowSize};
@@ -206,12 +207,6 @@ fn metadata(root: &Path, id: &str, visiting: &mut HashSet<String>) -> Result<Val
     visiting.remove(id);
     Ok(data)
 }
-fn isolated(root: &Path, id: &str) -> Result<bool> {
-    let folder = safe_join(root, format!("versions/{id}"))?;
-    Ok(["mods", "saves", "config", "options.txt"]
-        .iter()
-        .any(|name| folder.join(name).exists()))
-}
 fn required_java(data: &Value) -> u32 {
     data["javaVersion"]["majorVersion"].as_u64().unwrap_or(8) as u32
 }
@@ -299,7 +294,7 @@ pub fn scan_instances_report(root: &Path) -> Result<ScanReport> {
             });
             continue;
         };
-        match scan_instance(&root, id) {
+        match scan_instance_at_root(&root, id) {
             Ok(Some(instance)) => report.instances.push(instance),
             Ok(None) => {}
             Err(message) => report.issues.push(ScanIssue {
@@ -314,7 +309,19 @@ pub fn scan_instances_report(root: &Path) -> Result<ScanReport> {
         .sort_by(|a, b| a.id.cmp(&b.id).then(a.message.cmp(&b.message)));
     Ok(report)
 }
-fn scan_instance(root: &Path, id: &str) -> Result<Option<Instance>> {
+/// Read one selected instance without discarding its scan error or making it
+/// depend on every other instance in the game directory.
+pub fn scan_instance(root: &Path, id: &str) -> Result<Option<Instance>> {
+    identifier(id)?;
+    let root = fs::canonicalize(root).map_err(err)?;
+    if !root.is_dir() {
+        return Err("Game root is not a directory".into());
+    }
+    safe_join(&root, "versions")?;
+    scan_instance_at_root(&root, id)
+}
+
+fn scan_instance_at_root(root: &Path, id: &str) -> Result<Option<Instance>> {
     identifier(id)?;
     let version_folder = safe_join(root, format!("versions/{id}"))?;
     if !version_folder.is_dir() {
@@ -325,12 +332,9 @@ fn scan_instance(root: &Path, id: &str) -> Result<Option<Instance>> {
     }
     let data = metadata(root, id, &mut HashSet::new())?;
     let loader = loader_description(&data);
-    let isolated = isolated(root, id)?;
-    let folder = if isolated {
-        version_folder
-    } else {
-        root.to_path_buf()
-    };
+    let content_scope = content_scope::inspect(root, id)?;
+    let isolated = content_scope.is_isolated();
+    let folder = content_scope::verified_base(root, id, content_scope)?;
     let mods = safe_join(&folder, "mods")?;
     let mut mod_count = 0;
     if mods.is_dir() {
@@ -717,6 +721,8 @@ fn build_launch_plan_inner(
     }
     let root = fs::canonicalize(root).map_err(err)?;
     let data = metadata(&root, id, &mut HashSet::new())?;
+    let game_scope = content_scope::inspect(&root, id)?;
+    let game_dir = content_scope::verified_base(&root, id, game_scope)?;
     let context = RuleContext::current();
     let mut classpath = vec![];
     let mut native_jars = vec![];
@@ -844,11 +850,6 @@ fn build_launch_plan_inner(
                 .unwrap_or(&[]),
         )?;
     }
-    let game_dir = if isolated(&root, id)? {
-        safe_join(&root, format!("versions/{id}"))?
-    } else {
-        root.clone()
-    };
     let mut uuid = md5::compute(format!("OfflinePlayer:{player}")).0;
     uuid[6] = (uuid[6] & 0x0f) | 0x30;
     uuid[8] = (uuid[8] & 0x3f) | 0x80;
@@ -942,6 +943,11 @@ fn build_launch_plan_inner(
     let mut game_args = expand(&raw_game, &replacements, &argument_context)?;
     options.apply_game(&mut game_args);
     args.extend(game_args);
+    // Java probing and native preparation may take time. A newly added/removed
+    // marker must fail preparation rather than silently switch its game data.
+    if content_scope::inspect(&root, id)? != game_scope {
+        return Err("实例隔离目录在准备期间变化，请重新启动".into());
+    }
     let log_path = safe_join(&root, format!(".pcl-linux/logs/{id}.log"))?;
     Ok(LaunchPlan {
         java,

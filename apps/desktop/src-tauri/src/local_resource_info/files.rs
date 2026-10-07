@@ -3,6 +3,7 @@
 //! chooser or writer admission is held during bulk reads. Fingerprints match the
 //! resource row format, while SHA256 detects content edits between confirmation.
 use crate::launcher_local::filesystem::{check_file, component, Dir, Stamp};
+use pcl_core::content_scope::{automatic_scope, ContentScope, MarkerState};
 use sha2::{Digest, Sha256};
 use std::{
     ffi::CString,
@@ -158,14 +159,25 @@ fn marker(folder: &Dir, name: &str) -> Result<Option<Marker>, String> {
         };
     }
     let stat = unsafe { stat.assume_init() };
-    if stat.st_mode & libc::S_IFMT == libc::S_IFLNK {
-        return Err("实例隔离标记含有符号链接，暂不导出".into());
-    }
     Ok(Some(Marker {
         device: stat.st_dev,
         inode: stat.st_ino,
         mode: stat.st_mode,
     }))
+}
+fn isolation_snapshot(folder: &Dir) -> Result<(ContentScope, Vec<Option<Marker>>), String> {
+    let mut markers = Vec::new();
+    let scope = automatic_scope(|name| {
+        let found = marker(folder, name)?;
+        let state = match found.as_ref().map(|m| m.mode & libc::S_IFMT) {
+            None => MarkerState::Missing,
+            Some(libc::S_IFREG | libc::S_IFDIR) => MarkerState::Present,
+            Some(_) => MarkerState::Unsupported,
+        };
+        markers.push(found);
+        Ok(state)
+    })?;
+    Ok((scope, markers))
 }
 pub(super) struct Binding {
     pub folder: Dir,
@@ -205,13 +217,8 @@ impl Binding {
         if !data.is_object() {
             return Err("实例元数据格式无效".into());
         }
-        let markers = ["mods", "saves", "config", "options.txt"]
-            .iter()
-            .map(|name| marker(&instance, name))
-            .collect::<Result<Vec<_>, _>>()?;
-        // Match core's actual isolation rule: existence of any of these four
-        // markers, with links refused rather than followed to an unrelated path.
-        let folder = if markers.iter().any(Option::is_some) {
+        let (scope, markers) = isolation_snapshot(&instance)?;
+        let folder = if scope.is_isolated() {
             instance.child(kind)?
         } else {
             root.child(kind)?
@@ -238,14 +245,11 @@ impl Binding {
             return Err("游戏或实例目录已变化，请刷新后重新导出".into());
         }
         self.json.check(&instance, &format!("{}.json", self.id))?;
-        let markers = ["mods", "saves", "config", "options.txt"]
-            .iter()
-            .map(|name| marker(&instance, name))
-            .collect::<Result<Vec<_>, _>>()?;
+        let (scope, markers) = isolation_snapshot(&instance)?;
         if markers != self.markers {
             return Err("实例隔离配置已变化，请刷新后重新导出".into());
         }
-        let folder = if markers.iter().any(Option::is_some) {
+        let folder = if scope.is_isolated() {
             instance.child(&self.kind)?
         } else {
             root.child(&self.kind)?

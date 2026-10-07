@@ -115,6 +115,7 @@ const messages = {
   "settings.sizeWidth": "Window width",
   "settings.sizeHeight": "Window height",
   "settings.saveSize": "Save size",
+  "settings.autoIsolation": "Detect from instance contents",
   "settings.sizeInvalid":
     "Enter integer dimensions: width 320–16384 and height 240–16384 pixels",
   "settings.ipv4": "Prefer IPv4",

@@ -109,6 +109,7 @@ const messages = {
   "settings.sizeWidth": "窗口宽度",
   "settings.sizeHeight": "窗口高度",
   "settings.saveSize": "保存尺寸",
+  "settings.autoIsolation": "根据实例内容目录自动识别",
   "settings.sizeInvalid":
     "宽度应为 320–16384，高度应为 240–16384 像素，请输入整数",
   "settings.ipv4": "优先 IPv4",

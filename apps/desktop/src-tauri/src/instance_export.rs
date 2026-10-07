@@ -1,5 +1,6 @@
 //! Local, snapshot-checked ZIP export. Callers authorize the captured root and
 //! serialize this task with game/launcher writers. No source file is changed.
+use pcl_core::content_scope::{automatic_scope, MarkerState};
 use pcl_install::{InstallStep, Progress};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1247,15 +1248,14 @@ pub fn prepare(root: &Path, id: &str, request: ExportRequest) -> Result<ExportPl
     let mut versions = BTreeMap::new();
     collect_version(&mut scanner, root, id, &mut BTreeSet::new(), &mut versions)?;
     let instance_dir = format!("versions/{id}");
-    let mut isolated = false;
-    for marker in ["mods", "saves", "config", "options.txt"] {
-        if let Some(stamp) = scanner.metadata(&join(&instance_dir, marker))? {
-            if !stamp.is_dir() && !stamp.is_file() {
-                return Err("游戏目录隔离标记是符号链接或特殊文件，无法安全导出".into());
-            }
-            isolated = true;
-        }
-    }
+    let scope = automatic_scope(|marker| {
+        Ok(match scanner.metadata(&join(&instance_dir, marker))? {
+            None => MarkerState::Missing,
+            Some(stamp) if stamp.is_dir() || stamp.is_file() => MarkerState::Present,
+            Some(_) => MarkerState::Unsupported,
+        })
+    })?;
+    let isolated = scope.is_isolated();
     let game = if isolated { instance_dir.as_str() } else { "" };
     let game_dir = scanner.directory(game)?;
     let game_stamp = game_dir.stamp()?;
