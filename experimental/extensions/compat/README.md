@@ -1,14 +1,16 @@
 # 插件兼容检查与开发验证
 
-启动器可从「插件管理 → 导入插件声明」读取 N/Nex 的 `plugin.json`。这里只显示有边界的元数据，不读取程序集或 Mixin 文件，不生成安装授权。SHA-256 标识声明内容，不证明发布者身份或签名有效。
+启动器可从「插件管理 → 导入声明或检查插件包」读取 N/Nex 的 `plugin.json` 或受支持的 `.pnp` / `.pclx` 包。这里只显示有边界的元数据，不读取程序集或 Mixin 数据流，不生成安装授权。SHA-256 标识声明内容，不证明整个包的完整性、发布者身份或签名有效。
 
 命令行提供同样的只读检查：
 
 ```sh
 node experimental/extensions/compat/inspect.mjs /path/to/plugin.json
+node experimental/extensions/compat/inspect.mjs /path/to/package.pnp
+node experimental/extensions/compat/inspect.mjs /path/to/package.pclx
 ```
 
-报告包括服务的必需/可选声明、权限理由、依赖版本文本、入口和 Mixin 配置。N 的 `pcl.commands` 和 `pcl.notifications` 只标记为「接口验证」；该标记不意味着所选插件可以安装。版本范围没有求解，程序集、平台适配和完整上游格式没有验证。市场、`.pnp`/`.pclx` 解包、签名校验与外部插件运行尚未开放。
+报告包括服务的必需/可选声明、权限理由、依赖版本文本、入口和 Mixin 配置。N 的 `pcl.commands` 和 `pcl.notifications` 只标记为「接口验证」；该标记不意味着所选插件可以安装。版本范围没有求解，程序集、平台适配和完整上游格式没有验证。包读取支持的固定格式和限制见 [包清单检查范围](PACKAGES.md)；目录、声明和所读 JSON 的校验不验证其他载荷或签名。市场、包安装/解包、签名校验与外部插件运行尚未开放。
 
 ## N SDK ABI 验证工具
 

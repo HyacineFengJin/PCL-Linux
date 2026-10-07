@@ -7,6 +7,8 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { inspectForeignManifest } from '../src/compatibility.mjs';
+import { inspectForeignPackage } from '../src/foreign-package.mjs';
+import { makeArchive, nexEntries } from './fixtures/foreign-archives.mjs';
 
 const desktop = fileURLToPath(new URL('../../../apps/desktop/', import.meta.url));
 const requireDesktop = createRequire(path.join(desktop, 'package.json'));
@@ -36,9 +38,11 @@ test('real report dialog is localized, escapes plugin text and cannot approve in
     await writeFile(modulePath, compiled.outputFiles[0].text);
     const { render, zh, en } = requireDesktop(modulePath);
     assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort());
-    const report = inspectForeignManifest(JSON.stringify({ id: 'example.mixin', name: '<script>alert(1)</script>',
-      version: '1.0.0', entryAssembly: 'lib/Plugin.dll', mixinConfig: 'mixins/base.json' }));
-    for (const language of ['zh-CN', 'en-US']) {
+    const manifest = { id: 'example.mixin', name: '<script>alert(1)</script>',
+      version: '1.0.0', entryAssembly: 'lib/DoNotLoad.dll', mixinConfig: 'mixins/base.json' };
+    const reports = [inspectForeignManifest(JSON.stringify(manifest)),
+      await inspectForeignPackage(makeArchive(nexEntries(manifest)), 'pclx')];
+    for (const report of reports) for (const language of ['zh-CN', 'en-US']) {
       const html = render(report, language);
       assert.match(html, /role="dialog"/);
       assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
@@ -48,6 +52,13 @@ test('real report dialog is localized, escapes plugin text and cannot approve in
       assert.ok(html.includes(language === 'zh-CN' ? '插件兼容报告' : 'Plugin compatibility report'));
       assert.doesNotMatch(html, /experimental\.compat/);
       assert.ok(html.includes('mixins/base.json'));
+      assert.ok(html.includes(language === 'zh-CN' ? '清单 SHA-256' : 'Manifest SHA-256'));
+      if (report.archive) {
+        assert.ok(html.includes('.pclx'));
+        assert.ok(html.includes(language === 'zh-CN' ? '声明的展开大小' : 'Declared expanded size'));
+        assert.ok(html.includes(language === 'zh-CN' ? '数据流未读取' : 'streams are unread'));
+      }
+
     }
     delete requireDesktop.cache[modulePath];
   } finally { await rm(work, { recursive: true, force: true }); }

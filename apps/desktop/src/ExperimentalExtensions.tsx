@@ -408,7 +408,7 @@ export function ExperimentalExtensions({
           />
           <span>{t("experimental.safeMode")}</span>
         </label>
-        <ExperimentalVersion version="0.6.1" />
+        <ExperimentalVersion version="0.6.2" />
       </section>
       {error && (
         <p className="experimental-error" role="alert">
@@ -610,6 +610,22 @@ export function ExtensionCompatibilityDialog({
             </>
           )}
         </dl>
+        {report.archive && (
+          <>
+            <h3>
+              {t("experimental.compatArchive")} · .{report.archive.format}
+            </h3>
+            <p>{t("experimental.compatArchiveUnverified")}</p>
+            <dl className="experimental-summary">
+              <dt>{t("experimental.compatArchiveSize")}</dt>
+              <dd>{report.archive.bytes}</dd>
+              <dt>{t("experimental.compatArchiveEntries")}</dt>
+              <dd>{report.archive.entryCount}</dd>
+              <dt>{t("experimental.compatArchiveDeclaredSize")}</dt>
+              <dd>{report.archive.declaredUncompressedBytes}</dd>
+            </dl>
+          </>
+        )}
         <ul>
           {report.findings.map((code) => (
             <li key={code}>{t(`experimental.compat.${code}`)}</li>
@@ -680,7 +696,7 @@ export function ExtensionCompatibilityDialog({
           </>
         )}
         <p className="experimental-origin experimental-digest">
-          SHA-256: {report.digest}
+          {t("experimental.compatManifestDigest")}: {report.digest}
         </p>
       </div>
     </InstanceOperationDialog>

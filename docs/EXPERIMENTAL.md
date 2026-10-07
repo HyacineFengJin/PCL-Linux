@@ -4,7 +4,7 @@
 
 插件系统分为「插件管理」和「插件市场」；市场当前仅为留白页面，尚未开放。
 
-## 插件系统 · 0.6.1
+## 插件系统 · 0.6.2
 
 导入 JSON 声明或 `.pclext` JSON 包，检查名称、发布者及请求权限，再选择授权并安装。发布者身份未经验证。
 
@@ -20,7 +20,11 @@
 
 这是数据型插件系统，不执行插件代码。实例摘要不包含目录、账号或登录令牌。示例声明见 [Instance Compass](../experimental/extensions/examples/instance-compass.json)。
 
-同一导入入口可选择 PCL N 或 Nex 插件的 **`plugin.json`**，打开只读兼容报告，查看声明的程序集入口、服务、权限、插件依赖及 Mixin 配置。报告不会安装或执行插件，不授予权限，也不验证签名、完整上游格式、依赖是否已安装或程序集实际行为。N 的 Avalonia/DirectInject 页面以及 Nex 的 PCL.Core/Mixin 环境尚未适配；`.pnp`、`.pclx` 包不能直接导入。
+同一导入入口可选择 PCL N 或 Nex 插件的 **`plugin.json`**，或受支持的 **`.pnp` / `.pclx` 包**，打开只读兼容报告，查看声明的程序集入口、服务、权限、插件依赖及 Mixin 配置。包检查只读取目录、ZIP 头和固定 JSON 元数据，不提取到安装目录；程序集、Mixin、签名及公钥数据流不会被读取。报告没有安装授权，不执行插件代码，不验证发布者、签名、其他载荷内容或完整上游兼容性。
+
+包须包含根部唯一的 `plugin.json`，不超过 32 MiB、128 个条目；每份 JSON 最多展开 64 KiB。仅支持单卷 ZIP32 的 Stored/Deflate 子集；拒绝链接、危险或重复路径、加密、ZIP64、额外字段、包尾注释、未知格式版本及容量/压缩比超限。N 包的包、签名、文件表和清单版本仅支持 1；Nex 不支持旧脚本入口和显式版本化封装。其余边界和固定官方格式依据见 [包清单检查范围](../experimental/extensions/compat/PACKAGES.md)。报告里的 SHA-256 标识清单，不能用作整个包的完整性或签名结论。
+
+N 的 Avalonia/DirectInject 页面以及 Nex 的 PCL.Core/Mixin 环境尚未适配；这些外部插件仍不能安装或运行。
 
 提供独立的 [开发验证工具](../experimental/extensions/compat/README.md)：用 N SDK 0.2.5 原始 Hello 源码验证命令及双语设置页描述接口，另用 RH 自写夹具验证通知服务到纯文本卡片模型的映射。该工具不随启动器启动；通知卡片尚未接入桌面运行，也不表示完整 N 插件已兼容。
 
