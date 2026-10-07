@@ -24,7 +24,7 @@ RH 中的 R 代表 Rust，H 来自维护者的 GitHub 名称；RH 也呼应黎�
 - 本地模组单个／批量启禁，模组、资源包与光影包导入，以及可撤销的删除。
 - 多游戏目录登记、切换、排序与显示名称管理，使用系统文件夹选择器。
 - Mojang 官方 Java 运行时下载、校验与任务取消，Java 自动匹配、手动添加与全局／单实例选择，以及全局和单实例内存设置。
-- 版本继承、依赖库与 Linux 原生库解析。
+- 版本继承、依赖库解析；启动核心支持 Windows／Linux／macOS 平台规则和原生库分类。
 - 游戏进程管理、退出状态与日志查看。
 - PCL CE 风格导航、账号侧栏、实例修改／导出、资源详情及任务管理界面。
 - 启动器外观、媒体、功能隐藏、简体中文／English、设置备份与本地诊断。
@@ -35,6 +35,8 @@ RH 中的 R 代表 Rust，H 来自维护者的 GitHub 名称；RH 也呼应黎�
 - 工具箱自定义 URL 下载、成就图片预览与保存、本地皮肤头像 PNG 生成。
 
 项目仍在开发中，目前支持游戏与上述加载器安装、已有游戏启动、本地资源管理、Modrinth 资源安装与模组更新。本地整合包格式及限制见[使用指南](docs/USAGE.md#导入本地整合包)。仅含模组编号的 CurseForge 包暂不能自动补齐；OptiFine、LabyMod 自动安装尚未提供；部分早期版本暂不支持自动安装。Microsoft 正版登录暂未开放，服务接入由项目维护者完成。
+
+完整桌面应用当前支持 Linux；Windows 和 macOS 正在适配，尚无可用发行包。核心模块的支持范围与独立检查入口见[平台支持](docs/PLATFORMS.md)。
 
 ## 构建与运行
 
@@ -81,6 +83,8 @@ npm run dev --prefix apps/desktop
 ## English
 
 PCL RH is a Rust-based launcher for Minecraft: Java Edition, currently available for Linux and built with Rust, Tauri 2, React, and TypeScript. It installs vanilla, Fabric, and modern Forge/NeoForge versions with custom instance names, launches existing game installations, and displays game logs. Mojang Java runtimes can be downloaded and verified from Settings. Java can be selected automatically or registered manually, with global and per-instance choices. Tasks support cancellation and incomplete-file cleanup.
+
+Windows and macOS adaptation has started in the portable core. Complete desktop builds for those platforms are not yet available; see [platform support](docs/PLATFORMS.md) for the implemented scope and independent core checks.
 
 Local management includes multiple game directories, instance display preferences, physical renaming with reference migration and recovery, mod toggling, resource imports, and recoverable removal. Supported existing instances can reset their loader components with core backups and interruption recovery, or export selected content to a local ZIP. The launcher can import its own local ZIP exports under a custom name and restore recoverably deleted instances.
 

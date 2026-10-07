@@ -54,11 +54,9 @@ struct Available {
     version: Version,
 }
 pub fn platform() -> Result<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => Ok("linux"),
-        ("linux", "x86") => Ok("linux-i386"),
-        _ => Err("Mojang 当前未提供本平台的 Java 运行时，请手动添加系统 Java".into()),
-    }
+    pcl_core::platform::Platform::current()?
+        .mojang_java_platform()
+        .ok_or_else(|| "Mojang 当前未提供本平台的 Java 运行时，请手动添加系统 Java".into())
 }
 pub fn sha1(hash: &str) -> Result<()> {
     if hash.len() != 40

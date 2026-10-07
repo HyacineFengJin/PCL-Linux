@@ -704,20 +704,22 @@ fn absolute_relative_and_nested_content_symlinks_are_retained_and_rejected() {
             shared
         };
         symlink(&target, &mods).unwrap();
-        let before = pcl_core::scan_instances(&f.root)
-            .unwrap()
-            .into_iter()
-            .find(|i| i.id == "old")
-            .unwrap();
+        // Automatic content scope now reports a linked marker as a scan issue.
+        // Refusing rename must preserve that evidence and every other instance;
+        // treating the unsafe instance as a normal scan result would hide it.
+        let before = pcl_core::scan_instances_report(&f.root).unwrap();
+        assert!(!before.instances.iter().any(|i| i.id == "old"));
+        assert!(before
+            .issues
+            .iter()
+            .any(|issue| issue.id == "old" && issue.message.contains("符号链接")));
         assert!(f.plan_error().contains("符号链接"));
         assert_eq!(fs::read_link(&mods).unwrap(), target);
-        let after = pcl_core::scan_instances(&f.root)
-            .unwrap()
-            .into_iter()
-            .find(|i| i.id == "old")
-            .unwrap();
-        assert_eq!(before.isolated, after.isolated);
-        assert_eq!(before.mod_count, after.mod_count);
+        let after = pcl_core::scan_instances_report(&f.root).unwrap();
+        assert_eq!(
+            serde_json::to_value(before).unwrap(),
+            serde_json::to_value(after).unwrap()
+        );
         f.assert_content("old");
     }
     let f = Fixture::new();

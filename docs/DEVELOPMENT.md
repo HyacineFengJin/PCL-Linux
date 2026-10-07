@@ -20,6 +20,7 @@
 | 文件操作 | `resource_ops.rs`、`instance_reset.rs`、`instance_export.rs`、`instance_import.rs`、`instance_delete.rs` | 本地资源事务、组件重置、ZIP 导出/导入、实例删除恢复 |
 | 任务协调 | `tasks.rs`、`tasks/schedule.rs`、`tasks/scope.rs`、`downloads.rs` | 并发/队列、物理路径互斥、取消与结束、带修订号的集合投影 |
 | Minecraft 核心 | `crates/core/src/lib.rs` | 版本识别、继承、依赖和启动参数 |
+| 平台与元数据规则 | `crates/core/src/platform.rs`、`rules.rs` | 系统／架构词汇、原生库与 Java 布局、安装和启动共用的规则 |
 | Java 核心 | `crates/core/src/java.rs` | 有限时探测、发现、架构与版本策略、启动选择 |
 | 游戏启动选项 | `GameLaunchFields.tsx`、`crates/core/src/launch_options.rs` | 全局窗口尺寸、Java 地址偏好、类型校验和参数替换 |
 | 游戏内容目录 | `crates/core/src/content_scope.rs` | 自动隔离标记、内容作用域、各文件服务共用的判断 |
@@ -32,6 +33,8 @@
 | 百宝箱文件与图片 | `toolbox_download/`、`toolbox_images/`、`local_resource_info/` | 用户选择的目标、下载取消、图片像素与只读元数据快照 |
 
 表中未写目录的 Rust 文件位于 `apps/desktop/src-tauri/src/`；TSX 文件位于 `apps/desktop/src/`。现有桌面和前端 `main` 仍承担较多协调工作；新增业务应先确定职责归属，避免继续堆入页面或命令函数。
+
+跨平台范围见[平台支持](PLATFORMS.md)。`core::platform` 只描述平台与路径布局，不拥有文件事务权限；桌面的 `platform.rs` 仍负责系统选择器，二者职责不同。`rules::RuleContext` 同时服务安装依赖筛选和启动参数；现代 native classifier 进一步约束系统与架构，旧版 native 表按 Mojang 的 `linux` / `windows` / `osx` 键选择。生产调用始终取当前编译目标，测试可提供显式平台。不要用另一个平台的规则结果驱动本机文件事务。
 
 ## 以实例改名为例
 

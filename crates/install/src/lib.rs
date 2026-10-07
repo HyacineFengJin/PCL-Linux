@@ -601,6 +601,7 @@ impl Installer {
                 return Err("暂不支持旧版本的虚拟资源或 resources 资源布局".into());
             }
             downloads.push(index);
+            let platform = pcl_core::platform::Platform::current()?;
             let mut natives = vec![];
             for lib in metadata["libraries"]
                 .as_array()
@@ -621,10 +622,7 @@ impl Installer {
                             art["path"].as_str().ok_or("Library lacks path")?
                         ),
                     )?;
-                    if ["natives-linux", "linux-x86_64", "linux-aarch_64"]
-                        .iter()
-                        .any(|marker| lib["name"].as_str().unwrap_or("").contains(marker))
-                    {
+                    if platform.native_artifact(lib["name"].as_str().unwrap_or(""))? {
                         natives.push((
                             d.relative.clone(),
                             lib["extract"]["exclude"]
@@ -635,15 +633,7 @@ impl Installer {
                     }
                     downloads.push(d);
                 }
-                if let Some(class) = lib["natives"]["linux"].as_str() {
-                    let class = class.replace(
-                        "${arch}",
-                        if cfg!(target_pointer_width = "64") {
-                            "64"
-                        } else {
-                            "32"
-                        },
-                    );
+                if let Some(class) = platform.legacy_native_classifier(lib)? {
                     let art = &lib["downloads"]["classifiers"][class];
                     let d = artifact(
                         art,

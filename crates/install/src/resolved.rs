@@ -388,15 +388,9 @@ impl Installer {
             if !library["downloads"]["artifact"].is_null() {
                 validate_library_artifact(&library["downloads"]["artifact"])?;
             }
-            if let Some(class) = library["natives"]["linux"].as_str() {
-                let class = class.replace(
-                    "${arch}",
-                    if cfg!(target_pointer_width = "64") {
-                        "64"
-                    } else {
-                        "32"
-                    },
-                );
+            if let Some(class) =
+                pcl_core::platform::Platform::current()?.legacy_native_classifier(library)?
+            {
                 validate_library_artifact(&library["downloads"]["classifiers"][class])?;
             }
         }

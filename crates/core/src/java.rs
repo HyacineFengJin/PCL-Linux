@@ -14,6 +14,7 @@ use std::{
 type Result<T> = std::result::Result<T, String>;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(unix)]
 const OUTPUT_LIMIT: usize = 64 * 1024;
 const MAX_CANDIDATES: usize = 64;
 const MAX_DISCOVERY_PATHS: usize = 256;
@@ -107,17 +108,7 @@ fn major_version(value: &str) -> Option<u32> {
 }
 
 fn normalized_arch(arch: &str) -> Option<&'static str> {
-    match arch.trim().to_ascii_lowercase().as_str() {
-        "amd64" | "x86_64" | "x64" => Some("x86_64"),
-        "x86" | "i386" | "i486" | "i586" | "i686" => Some("x86"),
-        "aarch64" | "arm64" => Some("aarch64"),
-        "arm" | "arm32" | "armv7" | "armv7l" => Some("arm"),
-        "riscv64" => Some("riscv64"),
-        "ppc64" | "powerpc64" => Some("powerpc64"),
-        "ppc64le" | "powerpc64le" => Some("powerpc64le"),
-        "s390x" => Some("s390x"),
-        _ => None,
-    }
+    crate::platform::Architecture::parse(arch).map(crate::platform::Architecture::name)
 }
 
 fn parse_runtime(path: &Path, output: &str) -> Result<JavaRuntime> {
@@ -184,42 +175,76 @@ pub fn catalog(project: &Path, root: Option<&Path>, extras: &[String]) -> Result
 }
 
 fn discovery_paths(project: &Path, root: Option<&Path>) -> Vec<PathBuf> {
+    let Ok(platform) = crate::platform::Platform::current() else {
+        return Vec::new();
+    };
     let mut paths = Vec::new();
     let mut bases = vec![project.to_path_buf(), project.join("PCL-Linux")];
     bases.extend(root.map(Path::to_path_buf));
     for base in bases {
         for runtime in ["runtime", "runtime-21", "runtime-25"] {
-            paths.push(base.join(runtime).join("bin/java"));
+            paths.extend(platform.java_paths(&base.join(runtime)));
         }
     }
     paths.extend(managed_runtime_paths(project));
     if let Some(home) = std::env::var_os("JAVA_HOME") {
-        paths.push(PathBuf::from(home).join("bin/java"));
+        paths.extend(platform.java_paths(&PathBuf::from(home)));
     }
     if let Some(path) = std::env::var_os("PATH") {
         paths.extend(
             std::env::split_paths(&path)
                 .take(MAX_DISCOVERY_PATHS / 2)
-                .map(|p| p.join("java")),
+                .map(|p| p.join(platform.java_executable())),
         );
     }
-    if let Ok(entries) = fs::read_dir("/usr/lib/jvm") {
-        let mut system: Vec<_> = entries
-            .take(MAX_DISCOVERY_PATHS / 2)
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path().join("bin/java"))
-            .collect();
-        system.sort();
-        paths.extend(system);
+    for directory in system_java_directories(platform.os) {
+        if paths.len() >= MAX_DISCOVERY_PATHS {
+            break;
+        }
+        if let Ok(entries) = fs::read_dir(directory) {
+            let mut system: Vec<_> = entries
+                .take((MAX_DISCOVERY_PATHS - paths.len()).min(MAX_DISCOVERY_PATHS / 2))
+                .filter_map(|entry| entry.ok())
+                .flat_map(|entry| platform.java_paths(&entry.path()))
+                .collect();
+            system.sort();
+            paths.extend(system);
+        }
     }
     paths.truncate(MAX_DISCOVERY_PATHS);
     paths
+}
+
+fn system_java_directories(os: crate::platform::OperatingSystem) -> Vec<PathBuf> {
+    use crate::platform::OperatingSystem;
+    match os {
+        OperatingSystem::Linux => vec!["/usr/lib/jvm".into()],
+        OperatingSystem::MacOs => vec!["/Library/Java/JavaVirtualMachines".into()],
+        OperatingSystem::Windows => ["ProgramFiles", "ProgramFiles(x86)"]
+            .into_iter()
+            .filter_map(std::env::var_os)
+            .flat_map(|base| {
+                [
+                    "Java",
+                    "Eclipse Adoptium",
+                    "Microsoft",
+                    "Amazon Corretto",
+                    "BellSoft",
+                    "Zulu",
+                ]
+                .map(|vendor| PathBuf::from(&base).join(vendor))
+            })
+            .collect(),
+    }
 }
 
 /// Published managed runtimes also remain discoverable if a crash happened
 /// after the directory commit but before the registry addition was saved.
 /// Private stages and unrelated folders never become automatic candidates.
 pub fn managed_runtime_paths(project: &Path) -> Vec<PathBuf> {
+    let Ok(platform) = crate::platform::Platform::current() else {
+        return Vec::new();
+    };
     let directory = project.join(".pcl-rust/java");
     if !fs::symlink_metadata(&directory).is_ok_and(|m| m.file_type().is_dir()) {
         return Vec::new();
@@ -247,8 +272,10 @@ pub fn managed_runtime_paths(project: &Path) -> Vec<PathBuf> {
             {
                 return None;
             }
-            Some(entry.path().join("bin/java"))
+            Some(platform.java_paths(&entry.path()))
         })
+        .flatten()
+        .filter(|path| path.is_file())
         .collect();
     paths.sort();
     paths.truncate(MAX_CANDIDATES);

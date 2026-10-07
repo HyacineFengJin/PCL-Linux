@@ -2,8 +2,11 @@
 pub mod content_scope;
 pub mod java;
 pub mod launch_options;
+pub mod platform;
+mod rules;
 use launch_options::{LaunchOptions, WindowSize};
 use regex::Regex;
+use rules::RuleContext;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -100,18 +103,29 @@ pub fn identifier(id: &str) -> Result<()> {
     if id.is_empty() || id == "." || id == ".." || id.contains(['/', '\\', ':', '\0']) {
         return Err(format!("Unsafe metadata identifier: {id:?}"));
     }
+    #[cfg(windows)]
+    if platform::windows_reserved_component(id) {
+        return Err(format!("Unsafe Windows metadata identifier: {id:?}"));
+    }
     Ok(())
 }
 /// Reject traversal and symlink escapes, including when only a parent already exists.
 pub fn safe_join(base: &Path, relative: impl AsRef<Path>) -> Result<PathBuf> {
     let relative = relative.as_ref();
     if relative.as_os_str().is_empty()
-        || relative.to_string_lossy().contains(['\\', '\0'])
+        || relative.to_string_lossy().contains('\0')
+        || (!cfg!(windows) && relative.to_string_lossy().contains('\\'))
         || relative
             .components()
             .any(|c| !matches!(c, Component::Normal(_)))
     {
         return Err(format!("Unsafe metadata path: {}", relative.display()));
+    }
+    #[cfg(windows)]
+    for component in relative.components() {
+        if let Component::Normal(name) = component {
+            identifier(name.to_str().ok_or("Metadata path is not UTF-8")?)?;
+        }
     }
     let result = base.join(relative);
     let canonical_base = fs::canonicalize(base).map_err(err)?;
@@ -370,76 +384,6 @@ fn scan_instance_at_root(root: &Path, id: &str) -> Result<Option<Instance>> {
         isolated,
     }))
 }
-struct RuleContext {
-    arch: &'static str,
-    release: String,
-    custom_resolution: bool,
-}
-impl RuleContext {
-    fn current() -> Self {
-        Self {
-            arch: std::env::consts::ARCH,
-            release: fs::read_to_string("/proc/sys/kernel/osrelease")
-                .unwrap_or_default()
-                .trim()
-                .into(),
-            custom_resolution: false,
-        }
-    }
-    fn matches(&self, rule: &Value) -> Result<bool> {
-        let os = &rule["os"];
-        if os["name"].as_str().is_some_and(|name| name != "linux") {
-            return Ok(false);
-        }
-        for (field, value) in [("arch", self.arch), ("version", self.release.as_str())] {
-            if let Some(pattern) = os[field].as_str() {
-                let regex =
-                    Regex::new(pattern).map_err(|e| format!("Invalid OS rule regex: {e}"))?;
-                if !regex.is_match(value) {
-                    return Ok(false);
-                }
-            }
-        }
-        // Only custom resolution is currently supported. Demo and quick-play
-        // remain false in both online and offline launch modes.
-        Ok(!rule["features"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .any(|(name, v)| {
-                let actual = name == "has_custom_resolution" && self.custom_resolution;
-                v.as_bool().is_none_or(|expected| expected != actual)
-            }))
-    }
-    fn allowed(&self, entry: &Value) -> Result<bool> {
-        let Some(rules) = entry.get("rules").and_then(Value::as_array) else {
-            return Ok(true);
-        };
-        let mut allow = false;
-        for rule in rules {
-            if self.matches(rule)? {
-                allow = text(rule, "action") == "allow";
-            }
-        }
-        Ok(allow)
-    }
-    fn library_allowed(&self, lib: &Value) -> Result<bool> {
-        let name = text(lib, "name");
-        if self.arch == "x86_64"
-            && ["linux-aarch", "linux-arm"]
-                .iter()
-                .any(|s| name.contains(s))
-        {
-            return Ok(false);
-        }
-        if self.arch == "aarch64"
-            && (name.contains("linux-x86") || name.ends_with(":natives-linux"))
-        {
-            return Ok(false);
-        }
-        self.allowed(lib)
-    }
-}
 fn maven_path(name: &str) -> Result<String> {
     let (name, extension) = name.split_once('@').unwrap_or((name, "jar"));
     let p: Vec<_> = name.split(':').collect();
@@ -468,6 +412,15 @@ fn library_path(root: &Path, artifact: &Value, name: &str) -> Result<PathBuf> {
     safe_join(root, format!("libraries/{relative}"))
 }
 pub fn extract_natives(archive: &Path, target: &Path, excludes: &[Value]) -> Result<()> {
+    extract_natives_for(archive, target, excludes, platform::Platform::current()?)
+}
+
+fn extract_natives_for(
+    archive: &Path,
+    target: &Path,
+    excludes: &[Value],
+    platform: platform::Platform,
+) -> Result<()> {
     let file = fs::File::open(archive).map_err(err)?;
     let mut jar = zip::ZipArchive::new(file).map_err(|e| format!("{}: {e}", archive.display()))?;
     for i in 0..jar.len() {
@@ -491,14 +444,7 @@ pub fn extract_natives(archive: &Path, target: &Path, excludes: &[Value]) -> Res
         let Some(name) = enclosed.file_name().and_then(|v| v.to_str()) else {
             continue;
         };
-        let shared_object = name.ends_with(".so")
-            || name.split_once(".so.").is_some_and(|(_, suffix)| {
-                !suffix.is_empty()
-                    && suffix
-                        .split('.')
-                        .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
-            });
-        if !shared_object {
+        if !platform.native_filename(name) {
             continue;
         }
         if entry.size() > 256 * 1024 * 1024 {
@@ -723,7 +669,7 @@ fn build_launch_plan_inner(
     let data = metadata(&root, id, &mut HashSet::new())?;
     let game_scope = content_scope::inspect(&root, id)?;
     let game_dir = content_scope::verified_base(&root, id, game_scope)?;
-    let context = RuleContext::current();
+    let context = RuleContext::current()?;
     let mut classpath = vec![];
     let mut native_jars = vec![];
     let mut missing = vec![];
@@ -740,23 +686,12 @@ fn build_launch_plan_inner(
             } else {
                 // Modern native artifacts remain on the classpath as well as being extracted.
                 classpath.push(path.clone());
-                if name.contains("natives-linux")
-                    || name.contains("linux-x86_64")
-                    || name.contains("linux-aarch_64")
-                {
+                if context.platform.native_artifact(name)? {
                     native_jars.push((path, lib.clone()));
                 }
             }
         }
-        if let Some(classifier) = lib["natives"]["linux"].as_str() {
-            let classifier = classifier.replace(
-                "${arch}",
-                if cfg!(target_pointer_width = "64") {
-                    "64"
-                } else {
-                    "32"
-                },
-            );
+        if let Some(classifier) = context.platform.legacy_native_classifier(lib)? {
             let native = &lib["downloads"]["classifiers"][&classifier];
             let path = library_path(&root, native, &format!("{name}:{classifier}"))?;
             if !path.is_file() {
@@ -876,13 +811,15 @@ fn build_launch_plan_inner(
         ("launcher_version", "0.1.0".into()),
         (
             "classpath",
-            classpath
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(":"),
+            std::env::join_paths(&classpath)
+                .map_err(|error| format!("Invalid Java classpath: {error}"))?
+                .into_string()
+                .map_err(|_| "Java classpath is not UTF-8")?,
         ),
-        ("classpath_separator", ":".into()),
+        (
+            "classpath_separator",
+            context.platform.classpath_separator().into(),
+        ),
         (
             "library_directory",
             root.join("libraries").display().to_string(),
@@ -923,7 +860,7 @@ fn build_launch_plan_inner(
                 "${classpath}".into(),
             ]
         });
-    let mut argument_context = RuleContext::current();
+    let mut argument_context = context;
     argument_context.custom_resolution = options.custom_resolution();
     if let WindowSize::Custom { width, height } = options.window {
         replacements.insert("resolution_width", width.to_string());
@@ -971,6 +908,7 @@ mod tests {
             .tempdir_in(base)
             .unwrap()
     }
+    #[cfg(unix)]
     #[test]
     fn partial_scan_retains_valid_entries_and_reports_damaged_or_escaping_entries() {
         let root = fixture_dir();
@@ -1016,6 +954,7 @@ mod tests {
             .contains("escapes"));
         assert_eq!(scan_instances(root.path()).unwrap()[0].id, "Good");
     }
+    #[cfg(unix)]
     #[test]
     fn scan_rejects_versions_boundary_escape_and_excludes_escaping_mods() {
         let root = fixture_dir();
@@ -1133,7 +1072,10 @@ mod tests {
     #[test]
     fn rules_obey_order_os_and_false_features() {
         let context = RuleContext {
-            arch: "x86_64",
+            platform: platform::Platform {
+                os: platform::OperatingSystem::Linux,
+                arch: platform::Architecture::X86_64,
+            },
             release: "6.8.0".into(),
             custom_resolution: false,
         };
@@ -1167,6 +1109,7 @@ mod tests {
         );
         assert_eq!(merged["arguments"]["game"], json!(["base", "child"]));
     }
+    #[cfg(unix)]
     #[test]
     fn traversal_and_symlink_escape_rejected() {
         let root = fixture_dir();
@@ -1214,6 +1157,7 @@ mod tests {
             "base"
         );
     }
+    #[cfg(unix)]
     #[test]
     fn modern_nested_natives_are_flattened() {
         use std::io::Write;
@@ -1243,7 +1187,16 @@ mod tests {
         let mut old_handle = fs::File::open(&library).unwrap();
         use std::os::unix::fs::MetadataExt;
         let old_inode = old_handle.metadata().unwrap().ino();
-        extract_natives(&archive, &target, &[json!("META-INF/")]).unwrap();
+        extract_natives_for(
+            &archive,
+            &target,
+            &[json!("META-INF/")],
+            platform::Platform {
+                os: platform::OperatingSystem::Linux,
+                arch: platform::Architecture::X86_64,
+            },
+        )
+        .unwrap();
         assert_eq!(fs::read(&library).unwrap(), b"native");
         assert_ne!(fs::metadata(&library).unwrap().ino(), old_inode);
         let mut old_contents = Vec::new();
@@ -1338,5 +1291,5 @@ mod launch_options_tests;
 
 /// Apply the same Linux library rules used by launch planning.
 pub fn library_allowed(lib: &Value) -> Result<bool> {
-    RuleContext::current().library_allowed(lib)
+    RuleContext::current()?.library_allowed(lib)
 }

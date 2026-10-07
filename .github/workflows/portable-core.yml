@@ -1,0 +1,38 @@
+name: Portable core
+
+on:
+  push:
+    branches: [master]
+    paths: ['crates/core/**', 'crates/auth/**', 'crates/network/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/portable-core.yml']
+  pull_request:
+    paths: ['crates/core/**', 'crates/auth/**', 'crates/network/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/portable-core.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portable-core-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-core:
+    name: Core / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Test portable crates on their native host
+        run: cargo +stable test --locked -p pcl-core -p pcl-network -p pcl-auth
+      - name: Report host toolchain
+        run: rustc +stable -vV
+      # Desktop/install transactions still require Linux APIs. This job tests
+      # genuine portable crates; it is not evidence of a Windows/macOS app build.
