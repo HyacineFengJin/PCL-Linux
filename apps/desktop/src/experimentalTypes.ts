@@ -1,4 +1,8 @@
 import type { Api } from "./types";
+import type {
+  PorterSource,
+  PorterDomainResult,
+} from "./experimentalPorterTypes";
 export type ExperimentalPage = "extensions" | "maker" | "porter";
 export type ToolsPage =
   "toolbox" | ExperimentalPage | "ai" | "marketplace" | "projects";
@@ -93,6 +97,7 @@ export type JobView = {
   error?: { message: string };
   artifacts: Artifact[];
   reviews: string[];
+  porterSource?: PorterSource;
 };
 export type ReviewView = {
   reviewId: string;
@@ -104,6 +109,7 @@ export type ReviewView = {
     changes?: { path: string; unified_diff: string }[];
     warnings?: string[];
     locked_files?: string[];
+    domain_recipe?: PorterDomainResult;
   };
 };
 export type PiCatalogModel = {
@@ -207,6 +213,16 @@ export type ExperimentalOperation =
   | "maker_review"
   | "porter_recipe"
   | "porter_review"
+  | "porter_origin_resolve"
+  | "porter_projects"
+  | "porter_project_create"
+  | "porter_project_read"
+  | "porter_project_message"
+  | "porter_project_message_resolve"
+  | "porter_project_source"
+  | "porter_project_archive"
+  | "porter_project_configure"
+  | "porter_project_round"
   | "review_read"
   | "review_apply"
   | "review_cancel"

@@ -86,6 +86,88 @@ const messages = {
     "生成 Fabric 1.21.1 源码工程，修改源码、保护手写内容并恢复历史副本。",
   "experimental.porterHelp":
     "评估迁移风险，预览并应用有限的元数据和 Java API 补丁。不是通用一键转换。",
+  "experimental.porterSkipped": "未导入的文件（不会出现在补丁副本中）",
+  "experimental.porterOfflineCatalog":
+    "目标来自离线快照；列出版本不表示模组、加载器或依赖已兼容。",
+  "experimental.porterIdentifierDeclaration":
+    "我确认源码为 Fabric / Yarn 1.20.6，目标为 Fabric / Yarn 1.21。此声明随任务保存。",
+  "experimental.porterSupported": "受支持的有限规则",
+  "experimental.porterMetadataScope":
+    "Fabric → NeoForge：仅把 5 个身份与展示字段映射到已有的 NeoForge TOML 模板，不迁移入口、依赖或加载器行为。",
+  "experimental.porterIdentifierScope":
+    "Identifier：仅支持 Fabric / Yarn 1.20.6 → 1.21，需明确声明源码配置，并导入固定为 1.20.6 的 gradle.properties。只改写能确认类型、参数为直接字符串字面量的构造调用；歧义和其他语法保留为人工事项。",
+  "experimental.porterCopyBoundary":
+    "只创建已导入文本的新副本；跳过的二进制资源不会复制。不能直接转换 JAR，不自动构建，也不代表搬运完成。",
+  "experimental.porterGrantHelp":
+    "文件授权在提交任务时固定。构建脚本与工具链文件只能分析，不能由补丁修改。",
+  "experimental.porterValidationBoundary":
+    "未编译、未运行游戏，语义等价性尚未验证。补丁可生成不代表完整模组可用；依赖、Mixin、资源、客户端与服务端仍须核对。",
+  "experimental.porterBlockers": "阻碍完整迁移的事项",
+  "experimental.porterNoBlockers": "未检测到明确阻碍，仍须人工审查和运行验证。",
+  "experimental.porterWarnings": "风险与限制",
+  "experimental.porterEvidence": "查看源码证据（静态匹配）",
+  "experimental.porterDependencies": "依赖约束（目标兼容性未验证）",
+  "experimental.porterUnverified": "未验证",
+  "experimental.porterJobSnapshot":
+    "补丁使用当前选中任务提交时的文本、目标与文件授权；重新导入或修改上方配置只用于新任务。",
+  "experimental.porterNoGrants":
+    "此任务没有补丁文件授权。请在导入区明确选择允许修改的文件，再提交新任务。",
+  "experimental.porterManagement": "搬运管理",
+  "experimental.porterManagementHelp":
+    "持续保存搬运项目、需求、问题与历史副本。每轮处理结束后，仍可继续讨论和维护。",
+  "experimental.porterNewProject": "新建搬运项目",
+  "experimental.porterBrowseMods": "前往模组下载页选择",
+  "experimental.porterCreateFromResource": "创建搬运项目",
+  "experimental.porterArchived": "已归档",
+  "experimental.porterAwaiting": "等待你的答复",
+  "experimental.porterNeedsSource": "等待导入对应源码",
+  "experimental.porterReviewRequired": "待继续处理或验证",
+  "experimental.porterNoProjects":
+    "还没有搬运项目。可以从模组详情、项目链接或本地源码开始。",
+  "experimental.porterUnreadable":
+    "有 {count} 个项目无法读取，原文件已保留。请修复记录后重试。",
+  "experimental.porterPreviousJobs": "查看既有任务记录",
+  "experimental.porterConfiguration": "项目配置与源码基础",
+  "experimental.porterProjectName": "项目名称",
+  "experimental.porterGoal": "搬运目标与要求",
+  "experimental.porterOriginLink": "模组项目链接（可选）",
+  "experimental.porterResolveLink": "读取链接信息",
+  "experimental.porterSourceReference": "作者提供的源码入口",
+  "experimental.porterLinkReferenceOnly":
+    "已识别项目链接。目前只关联资料，不获取 CurseForge 或 MC 百科的文件；请自行确认并导入对应源码。",
+  "experimental.porterSourceStillRequired":
+    "已读取模组身份信息；仍需确认所选版本对应的源码，再导入本地目录。不会把 JAR 当作源码转换。",
+  "experimental.porterSaveConfiguration": "保存配置与文件授权",
+  "experimental.porterCreateAndStart": "创建项目并开始本轮",
+  "experimental.porterCreateWaiting": "创建项目，稍后导入源码",
+  "experimental.porterBaseline": "源码基础版本",
+  "experimental.porterContinue": "开始下一轮处理",
+  "experimental.porterArchive": "归档项目",
+  "experimental.porterUnarchive": "恢复项目",
+  "experimental.porterDiscussion": "项目讨论与问题",
+  "experimental.porterDiscussionHelp":
+    "补充需求、BUG、日志与测试反馈。AI 可提问并记录已处理、未处理和限制；答复后可开始下一轮。上下文保留项目目标、未解决需求与 BUG，以及容量范围内的近期讨论；全部记录仍可在这里查看。",
+  "experimental.porterUser": "你",
+  "experimental.porterAi": "AI",
+  "experimental.porterRecord": "项目记录",
+  "experimental.porter.completed": "本轮已处理（需核对）",
+  "experimental.porter.remaining": "尚未处理",
+  "experimental.porter.limitations": "不足与验证限制",
+  "experimental.porterModelUnverified": "模型提出的说明，尚未独立验证。",
+  "experimental.porterResolveIssue": "标记已解决",
+  "experimental.porterReopenIssue": "重新打开问题",
+  "experimental.porterMessageKind": "补充类型",
+  "experimental.porterRequest": "需求或意见",
+  "experimental.porterFeedback": "测试反馈或日志",
+  "experimental.porterNextRound":
+    "本轮继续使用提交时的讨论；新补充已保存，将用于后续处理。",
+  "experimental.porterAnswer": "保存答复",
+  "experimental.porterSend": "保存补充",
+  "experimental.porterRounds": "处理轮次与历史版本",
+  "experimental.porterCopies": "历史文本副本",
+  "experimental.porterUseCopy": "用此副本继续维护",
+  "experimental.porterUseCopyHelp":
+    "明确选择后，此文本副本成为后续处理的基础，旧记录与副本保留。重新导入上游源码会替换处理基础；目前不会自动合并上游更新或手写改动，请先在外部核对差异。",
   "experimental.open": "打开",
   "experimental.back": "返回实验功能",
   "experimental.engine": "基于 Pi",

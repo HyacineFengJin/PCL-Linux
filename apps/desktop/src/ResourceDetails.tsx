@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { Collapse } from "./Collapse";
 import type { Api, Instance } from "./types";
+import type { PorterIntake } from "./experimentalPorterTypes";
 import { ResourceInstall } from "./ResourceInstall";
 import { ResourceSave } from "./ResourceSave";
 import { InstanceImport } from "./InstanceImport";
@@ -255,6 +256,7 @@ export function ResourceDetails({
   saveStartDisabledReason,
   onTaskStart,
   onResourceDetails,
+  onPorter,
   occupiedNames = [],
 }: {
   api: Api;
@@ -270,6 +272,7 @@ export function ResourceDetails({
   onTaskStart: (id: string) => void;
   occupiedNames?: string[];
   onResourceDetails: (resource: ResourceSummary) => void;
+  onPorter?: (intake: Omit<PorterIntake, "id">) => void;
 }) {
   const saveAvailable = useContext(
     LauncherNavigationContext,
@@ -998,6 +1001,23 @@ export function ResourceDetails({
                     )}
                   </div>
                   <div className="rd-selected-actions">
+                    {onPorter &&
+                      modrinth &&
+                      (project?.project_type || resource.project_type) ===
+                        "mod" && (
+                        <button
+                          className="ce-button"
+                          disabled={!native}
+                          onClick={() =>
+                            onPorter({
+                              title: project?.title || resource.title,
+                              url: `https://modrinth.com/mod/${selected.version.project_id}/version/${selected.version.id}`,
+                            })
+                          }
+                        >
+                          {t("experimental.porterCreateFromResource")}
+                        </button>
+                      )}
                     <button
                       className="ce-button primary"
                       disabled={

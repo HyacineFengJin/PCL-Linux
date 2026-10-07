@@ -88,6 +88,14 @@ def main():
         if operation == 'porter.create_patch':
             return patches.create_patch(args['files'], args['replacements'], job_id=args['jobId'],
                                         permitted_paths=args['permittedPaths'], purpose=args['purpose'])
+        if operation in {'porter.propose_metadata', 'porter.propose_identifier'}:
+            recipes = module_at('pcl_porter.recipes', ROOT / 'porter' / 'recipes.py')
+            return recipes.propose_recipe(
+                args['files'], job_id=args['jobId'], permitted_paths=args['permittedPaths'],
+                recipe='metadata' if operation == 'porter.propose_metadata' else 'identifier',
+                target_id=args['targetId'], rights=args.get('rights', 'unknown'),
+                acknowledge_beta=args.get('acknowledgeBeta', False),
+                identifier_profile=args.get('identifierProfile'))
         return patches.apply_copy(args['files'], args['contract'], job_id=args['jobId'],
                                   approved_digest=args['approvedDigest'], permitted_paths=args['permittedPaths'])
     report = porter.analyze(args['files'], target_id=args.get('targetId', 'neoforge-26.3'),

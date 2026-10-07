@@ -133,7 +133,8 @@ export class LivePiProvider {
       unsubscribe = () => {},
       abortPromise,
       key,
-      failure;
+      failure,
+      awaitingUser;
     const counts = {
       modelTurns: 0,
       requests: 0,
@@ -281,7 +282,19 @@ export class LivePiProvider {
               "Credential-like tool input was refused",
             );
           await saveCounts();
-          return ctx.invoke(...args);
+          const result = await ctx.invoke(...args);
+          if (
+            ctx.job.profile === "porter" &&
+            args[1] === "porter.ask_user" &&
+            result.status === "awaiting_user"
+          ) {
+            // A host-persisted question is a successful round boundary. Abort
+            // the model loop so waiting for a human uses no provider calls or
+            // runtime admission. Only this registered tool can set the state.
+            awaitingUser = result;
+            controller.abort();
+          }
+          return result;
         },
       };
       const options = makePiSessionOptions(sdk, toolContext, {
@@ -330,6 +343,7 @@ export class LivePiProvider {
       };
       unsubscribe = session.subscribe((event) => {
         if (
+          !awaitingUser &&
           event.type === "message_end" &&
           event.message.role === "assistant" &&
           ["error", "aborted"].includes(event.message.stopReason)
@@ -381,6 +395,15 @@ export class LivePiProvider {
       if (ctx.signal.aborted)
         throw new RuntimeError("CANCELLED", "Job was cancelled");
       if (failure) throw failure;
+      if (awaitingUser)
+        return {
+          label: "PORTER_AWAITING_USER",
+          ...awaitingUser,
+          ...counts,
+          buildValidated: false,
+          runtimeValidated: false,
+          approvalGranted: false,
+        };
       if (error instanceof RuntimeError && SAFE_CODES.has(error.code))
         throw error;
       throw new RuntimeError(

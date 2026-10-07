@@ -216,6 +216,13 @@
   font-size: 11px;
   color: var(--ce-muted-text, #9099a4);
 }
+.experimental-porter-message {
+  border-bottom: 1px solid var(--ce-border, #d6e3f3);
+  padding: 10px 0 16px;
+}
+.experimental-porter-message .ce-button {
+  margin-top: 8px;
+}
 .experimental-engine-credit > p {
   margin: 0;
 }

@@ -89,6 +89,93 @@ const messages = {
     "Generate Fabric 1.21.1 source projects, edit source, protect handwritten code and restore earlier copies.",
   "experimental.porterHelp":
     "Assess migration risks and review limited metadata and Java API patches. This is not a general-purpose converter.",
+  "experimental.porterSkipped":
+    "Files not imported (excluded from patch copies)",
+  "experimental.porterOfflineCatalog":
+    "Targets come from an offline snapshot. A listed version does not establish mod, loader or dependency compatibility.",
+  "experimental.porterIdentifierDeclaration":
+    "I confirm Fabric / Yarn 1.20.6 source and a Fabric / Yarn 1.21 target. This declaration is saved with the job.",
+  "experimental.porterSupported": "Supported limited rules",
+  "experimental.porterMetadataScope":
+    "Fabric → NeoForge: map only five identity/display fields into an existing NeoForge TOML template. Entrypoints, dependencies and loader behavior are not migrated.",
+  "experimental.porterIdentifierScope":
+    "Identifier: Fabric / Yarn 1.20.6 → 1.21 only. Explicitly declare the source profile and import gradle.properties pinned to 1.20.6. Only resolved constructors with direct string literals are rewritten; ambiguous and other syntax remains for manual review.",
+  "experimental.porterCopyBoundary":
+    "Creates a new copy of imported text only; skipped binary assets are excluded. Direct JAR conversion and automatic builds are unsupported. A patch is not a completed port.",
+  "experimental.porterGrantHelp":
+    "File grants are frozen when submitting a job. Build scripts and toolchain files can be analyzed but cannot be patched.",
+  "experimental.porterValidationBoundary":
+    "No compilation or game run; semantic equivalence is unverified. An available patch does not establish a working mod. Dependencies, Mixins, resources, client and server behavior still need review.",
+  "experimental.porterBlockers": "Blockers to a complete port",
+  "experimental.porterNoBlockers":
+    "No explicit blocker detected; human review and runtime validation remain required.",
+  "experimental.porterWarnings": "Risks and limitations",
+  "experimental.porterEvidence": "Source evidence (static matches)",
+  "experimental.porterDependencies":
+    "Dependency constraints (target compatibility unverified)",
+  "experimental.porterUnverified": "Unverified",
+  "experimental.porterJobSnapshot":
+    "Patches use the selected job's submitted text, target and file grants. New imports and configuration changes above apply to new jobs.",
+  "experimental.porterNoGrants":
+    "This job has no patch file grants. Explicitly select files in the import section and submit a new job.",
+  "experimental.porterManagement": "Port management",
+  "experimental.porterManagementHelp":
+    "Keep port projects, requirements, issues and source copies. Continue discussion and maintenance after each round ends.",
+  "experimental.porterNewProject": "New port project",
+  "experimental.porterBrowseMods": "Choose from mod downloads",
+  "experimental.porterCreateFromResource": "Create port project",
+  "experimental.porterArchived": "Archived",
+  "experimental.porterAwaiting": "Awaiting your answer",
+  "experimental.porterNeedsSource": "Awaiting matching source",
+  "experimental.porterReviewRequired": "Needs more work or validation",
+  "experimental.porterNoProjects":
+    "No port projects yet. Start from mod details, a project link or local source.",
+  "experimental.porterUnreadable":
+    "{count} projects could not be read. Original files are retained; repair the records and retry.",
+  "experimental.porterPreviousJobs": "Existing job records",
+  "experimental.porterConfiguration":
+    "Project configuration and source baseline",
+  "experimental.porterProjectName": "Project name",
+  "experimental.porterGoal": "Port goal and requirements",
+  "experimental.porterOriginLink": "Mod project link (optional)",
+  "experimental.porterResolveLink": "Read link information",
+  "experimental.porterSourceReference": "Author-provided source link",
+  "experimental.porterLinkReferenceOnly":
+    "Project link recognized. CurseForge and MC百科 are reference links only; files are not fetched. Confirm and import the matching source yourself.",
+  "experimental.porterSourceStillRequired":
+    "Mod identity resolved. Confirm the source matching the selected release and import its local directory. JAR files are not converted into source.",
+  "experimental.porterSaveConfiguration": "Save configuration and file grants",
+  "experimental.porterCreateAndStart": "Create project and start round",
+  "experimental.porterCreateWaiting": "Create project; import source later",
+  "experimental.porterBaseline": "Source baseline",
+  "experimental.porterContinue": "Start next round",
+  "experimental.porterArchive": "Archive project",
+  "experimental.porterUnarchive": "Restore project",
+  "experimental.porterDiscussion": "Project discussion and issues",
+  "experimental.porterDiscussionHelp":
+    "Add requirements, BUG reports, logs and test feedback. AI can ask questions and record completed work, remaining work and limitations. Save an answer to start another round. Context retains the project goal, open requirements/BUGs and recent discussion within capacity; the full history remains visible here.",
+  "experimental.porterUser": "You",
+  "experimental.porterAi": "AI",
+  "experimental.porterRecord": "Project record",
+  "experimental.porter.completed": "Handled this round (review required)",
+  "experimental.porter.remaining": "Remaining work",
+  "experimental.porter.limitations": "Limitations and validation gaps",
+  "experimental.porterModelUnverified":
+    "Model-proposed explanation; not independently verified.",
+  "experimental.porterResolveIssue": "Mark resolved",
+  "experimental.porterReopenIssue": "Reopen issue",
+  "experimental.porterMessageKind": "Message type",
+  "experimental.porterRequest": "Requirement or suggestion",
+  "experimental.porterFeedback": "Test feedback or log",
+  "experimental.porterNextRound":
+    "This round keeps its submitted discussion. Your additions are saved for subsequent work.",
+  "experimental.porterAnswer": "Save answer",
+  "experimental.porterSend": "Save addition",
+  "experimental.porterRounds": "Rounds and version history",
+  "experimental.porterCopies": "Historical text copies",
+  "experimental.porterUseCopy": "Continue from this copy",
+  "experimental.porterUseCopyHelp":
+    "Explicitly selecting a copy makes it the next baseline. Earlier records and copies are retained. Importing upstream source replaces the baseline; upstream updates and handwritten changes are not automatically merged. Compare them externally first.",
   "experimental.open": "Open",
   "experimental.back": "Back to experimental features",
   "experimental.engine": "Based on Pi",

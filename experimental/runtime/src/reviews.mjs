@@ -93,6 +93,8 @@ export class HostReviewService {
       "porter.import_snapshot",
       "porter.create_patch",
       "porter.apply_copy",
+      "porter.propose_metadata",
+      "porter.propose_identifier",
     ];
     this.#supervisor = new SubprocessSupervisor({
       trustedCommands: Object.fromEntries(
@@ -362,6 +364,86 @@ export class HostReviewService {
       return result;
     });
   }
+  async getPorterSource(jobId) {
+    const job = await this.#store.load(jobId);
+    check(
+      job.profile === "porter",
+      "WRONG_WORKFLOW",
+      "Porter source requires a Porter job",
+    );
+    let source;
+    try {
+      source = await this.#source(jobId, "primary");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      // Analysis-only jobs have no write grants. Their frozen input remains
+      // readable after restart; current renderer drafts are never the baseline.
+      source = { files: job.input.files, permittedPaths: [] };
+    }
+    return bounded(
+      {
+        files: source.files,
+        permittedPaths: source.permittedPaths,
+        targetId: job.input.targetId,
+        identifierProfile: job.input.identifierProfile ?? null,
+      },
+      64_000,
+    );
+  }
+  async requestPorterRecipe(jobId, recipe) {
+    return this.#exclusive(jobId, async (job, workspace) => {
+      const result = await this.previewPorterRecipeFromTool(
+        { jobId, workspace },
+        recipe,
+      );
+      await this.#store.save(job);
+      return result;
+    });
+  }
+  async previewPorterRecipeFromTool(ctx, recipe) {
+    check(
+      ["metadata", "identifier"].includes(recipe),
+      "INVALID_RECIPE",
+      "Unknown migration recipe",
+    );
+    const job = await this.#store.load(ctx.jobId);
+    check(
+      job.profile === "porter",
+      "WRONG_WORKFLOW",
+      "Porter recipe requires a Porter job",
+    );
+    const source = await this.#source(job.id, "primary");
+    const result = await this.#bridge(
+      `porter.propose_${recipe}`,
+      {
+        files: source.files,
+        permittedPaths: source.permittedPaths,
+        jobId: job.id,
+        targetId: job.input.targetId,
+        rights: job.input.rights,
+        acknowledgeBeta: job.input.acknowledgeBeta,
+        identifierProfile: job.input.identifierProfile,
+      },
+      ctx.workspace,
+      ctx.signal,
+    );
+    if (result.proposal) {
+      // Do not reconstruct a generic text patch here: doing so discards the
+      // recipe's TODOs, version profile and validation limits before approval.
+      result.review = await this.#create(
+        job.id,
+        "porter_patch",
+        {
+          id: "primary",
+          revision: source.revision,
+          fingerprint: source.fingerprint,
+        },
+        {},
+        result.proposal,
+      );
+    }
+    return result;
+  }
   // Read-only host binding check used by bounded repair coordination. No approval.
   async assertRepairSource(jobId, reviewId, sourceOperationId) {
     const job = await this.#store.load(jobId);
@@ -415,6 +497,24 @@ export class HostReviewService {
       job.profile === "porter",
       "WRONG_WORKFLOW",
       "Porter review requires a Porter job",
+    );
+    check(
+      ["owner", "permission", "license-reviewed"].includes(job.input.rights),
+      "RIGHTS_REQUIRED",
+      "Declare source modification rights before proposing a patch",
+    );
+    const catalog = JSON.parse(
+      await fs.readFile(
+        new URL("../vendor/porter/catalog.json", import.meta.url),
+        "utf8",
+      ),
+    );
+    const target = catalog.targets.find((t) => t.id === job.input.targetId);
+    check(
+      target &&
+        (target.channel !== "beta" || job.input.acknowledgeBeta === true),
+      "TARGET_REVIEW_REQUIRED",
+      "Choose a supported target and explicitly accept beta status before proposing a patch",
     );
     const source = await this.#source(job.id, sourceId);
     const preview = await this.#bridge(

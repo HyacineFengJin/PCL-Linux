@@ -29,6 +29,7 @@ export class AgentRuntime {
       providerConfig: cloneJson(providerConfig, { maxBytes: 128_000, code: 'PROVIDER_CONFIG_TOO_LARGE' }) });
   }
   getJob(id) { return this.store.load(id); }
+  hasActiveJob(id) { return this.#active.has(id); }
   async getPublicJobSummary(id) { return projectPublicJobSummary(await this.getJob(id)); }
   start(id, { resume = false } = {}) {
     check(!this.#active.has(id), 'JOB_BUSY', 'Job is already active');

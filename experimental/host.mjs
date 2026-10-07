@@ -30,6 +30,8 @@ import { readPackage } from "./extensions/src/package.mjs";
 import { inspectForeignManifest } from "./extensions/src/compatibility.mjs";
 import { AiPresets } from "./ai-presets.mjs";
 import { MakerProjects } from "./runtime/vendor/maker/projects.mjs";
+import { PorterProjects } from "./porter-projects.mjs";
+import { resolvePorterOrigin } from "./porter-origins.mjs";
 
 const code = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(process.argv[2]);
@@ -40,6 +42,10 @@ const presets = await new AiPresets(root).init();
 // Per-job snapshots outlive edits, preset deletion and the engine's stop flag.
 // Keys never enter durable job input, receipts or renderer projections.
 const liveRuns = new Map();
+// Creation and grant registration happen before runtime.start(). Keep those
+// in-process jobs visible to admission/recovery until the runtime owns them.
+const pendingJobs = new Set();
+const hasCurrentJob = (id) => pendingJobs.has(id) || runtime.hasActiveJob(id);
 const adapters = registerDomainAdapters(createDefaultTools());
 const bridge = new SubprocessSupervisor({
   trustedCommands: Object.fromEntries(
@@ -49,16 +55,6 @@ const bridge = new SubprocessSupervisor({
         "read_source",
         path.join(code, "python-host.py"),
         "porter.read_directory",
-      ],
-      [
-        "metadata",
-        path.join(code, "runtime/src/adapters/python_bridge.py"),
-        "porter.propose_metadata",
-      ],
-      [
-        "identifier",
-        path.join(code, "runtime/src/adapters/python_bridge.py"),
-        "porter.propose_identifier",
       ],
     ].map(([name, script, operation]) => [
       name,
@@ -90,7 +86,13 @@ class TemplateProvider {
         spec: ctx.job.input.spec,
       });
     }
-    return ctx.invoke("inspect", "porter.inspect", ctx.job.input);
+    const { files, targetId, rights, acknowledgeBeta } = ctx.job.input;
+    return ctx.invoke("inspect", "porter.inspect", {
+      files,
+      targetId,
+      rights,
+      acknowledgeBeta,
+    });
   }
 }
 const live = new LivePiProvider({
@@ -104,7 +106,58 @@ const runtime = await new AgentRuntime({
   providers: [new TemplateProvider(), live],
 }).init();
 const reviews = new HostReviewService({ store: runtime.store });
+const porterProjects = await new PorterProjects(root, {
+  getJob: (id) => runtime.getJob(id),
+  hasActiveJob: hasCurrentJob,
+}).init();
 registerReviewPreviewTools(adapters.registry, reviews);
+for (const name of ["ask_user", "report_progress"]) {
+  const fields =
+    name === "ask_user"
+      ? ["question", "options"]
+      : ["summary", "completed", "remaining", "limitations"];
+  adapters.registry.register({
+    name: `porter.${name}`,
+    replaySafety: "manual",
+    description:
+      name === "ask_user"
+        ? "Persist a question for the user and end this project round. The user can answer and start a new round."
+        : "Record an unverified progress summary with completed work, remaining work and limitations in the Porter project.",
+    inputSchema: {
+      type: "object",
+      properties: Object.fromEntries(
+        fields.map((field) => [
+          field,
+          ["question", "summary"].includes(field)
+            ? { type: "string", maxLength: 2000 }
+            : {
+                type: "array",
+                maxItems: field === "options" ? 6 : 16,
+                items: {
+                  type: "string",
+                  maxLength: field === "options" ? 200 : 500,
+                },
+              },
+        ]),
+      ),
+      required: name === "ask_user" ? ["question"] : fields,
+      additionalProperties: false,
+    },
+    validate(args) {
+      if (
+        !args ||
+        typeof args !== "object" ||
+        Array.isArray(args) ||
+        Object.keys(args).some((k) => !fields.includes(k))
+      )
+        throw new Error("Invalid Porter discussion tool arguments");
+    },
+    execute: (args, ctx) =>
+      name === "ask_user"
+        ? porterProjects.askUser(ctx.jobId, args)
+        : porterProjects.reportProgress(ctx.jobId, args),
+  });
+}
 // The new Porter recipes operate on the snapshot and path grants imported by
 // the user. A model can propose changes, but cannot approve them or import files.
 for (const recipe of ["metadata", "identifier"]) {
@@ -125,27 +178,7 @@ for (const recipe of ["metadata", "identifier"]) {
         throw new Error("This tool takes no arguments");
     },
     async execute(_args, ctx) {
-      const files = await runtime.store.files(ctx.jobId);
-      const source = JSON.parse(
-        (await files.read("review-control/sources/primary.json")).content,
-      );
-      const result = await domain(recipe, {
-        files: source.files,
-        permittedPaths: source.permittedPaths,
-        jobId: ctx.jobId,
-      });
-      if (result.proposal) {
-        const replacements = Object.fromEntries(
-          result.proposal.changes.map((c) => [c.path, c.new_text]),
-        );
-        const review = await reviews.previewPorterFromTool(ctx, {
-          sourceId: "primary",
-          replacements,
-          purpose: result.proposal.purpose,
-        });
-        return { ...result, review };
-      }
-      return result;
+      return reviews.previewPorterRecipeFromTool(ctx, recipe);
     },
   });
 }
@@ -239,6 +272,9 @@ async function listJobs() {
       const job = await runtime.getJob(id);
       jobs.push({
         ...(await runtime.getPublicJobSummary(id)),
+        ...(["queued", "running"].includes(job.status) && !hasCurrentJob(id)
+          ? { status: "interrupted" }
+          : {}),
         mode: job.provider === "pcl-template" ? "template" : "live",
       });
     } catch {
@@ -271,12 +307,49 @@ async function startCapturedJob(job, preset) {
       .start(job.id)
       .catch(() => {})
       .finally(() => liveRuns.delete(job.id));
+    pendingJobs.delete(job.id);
   } catch (error) {
     liveRuns.delete(job.id);
+    pendingJobs.delete(job.id);
     await runtime.cancel(job.id);
     throw error;
   }
   return { jobId: job.id };
+}
+async function createPorterRound(input, permittedPaths, mode) {
+  if (
+    (await listJobs()).filter((j) => ["queued", "running"].includes(j.status))
+      .length >= 2
+  )
+    throw new Error("The shared runtime already has two active jobs");
+  const preset = mode === "live" ? presets.selected() : null;
+  if (mode === "live" && !preset)
+    throw new Error("Save and select an AI preset first");
+  const job = await runtime.createJob({
+    profile: "porter",
+    input,
+    provider: mode === "live" ? live.id : "pcl-template",
+  });
+  pendingJobs.add(job.id);
+  try {
+    if (permittedPaths.length)
+      await reviews.registerPorterSource(job.id, {
+        files: input.files,
+        permittedPaths,
+      });
+    if (preset) {
+      selection = preset.selection;
+      liveRuns.set(job.id, {
+        selection: preset.selection,
+        limits: preset.limits,
+      });
+    }
+    return job;
+  } catch (error) {
+    pendingJobs.delete(job.id);
+    await runtime.cancel(job.id);
+    throw error;
+  }
 }
 async function dispatch(operation, a) {
   if (closing && operation !== "shutdown")
@@ -287,7 +360,7 @@ async function dispatch(operation, a) {
         versions: {
           extensions: "0.6.1",
           maker: "0.5",
-          porter: "0.5.1",
+          porter: "0.6.0",
           runtime: "v7",
           pi: "1.0.4",
         },
@@ -505,6 +578,107 @@ async function dispatch(operation, a) {
       selection = null;
       await Promise.all([...liveRuns.keys()].map((id) => runtime.cancel(id)));
       return { liveConfigured: false, liveSelection: null };
+    case "porter_origin_resolve":
+      return resolvePorterOrigin(a.url);
+    case "porter_projects":
+      return porterProjects.list();
+    case "porter_project_read":
+      return porterProjects.read(a.projectId);
+    case "porter_project_create": {
+      const catalog = await domain("catalog", {});
+      if (!catalog.targets.some((t) => t.id === a.targetId))
+        throw new Error("Choose a target from the offline catalog");
+      const files = a.sourceId ? sourceImports.get(a.sourceId) : null;
+      if (a.sourceId && !files)
+        throw new Error("Re-import the source directory");
+      if (!files && !a.origin?.url)
+        throw new Error("Import source or provide a mod project link");
+      return porterProjects.create({
+        ...a,
+        source: files
+          ? { files, permittedPaths: a.permittedPaths || [] }
+          : null,
+      });
+    }
+    case "porter_project_message":
+      return porterProjects.addMessage(a.projectId, a);
+    case "porter_project_message_resolve":
+      return porterProjects.resolveMessage(a.projectId, a);
+    case "porter_project_archive":
+      return porterProjects.archive(a.projectId, a);
+    case "porter_project_configure": {
+      const catalog = await domain("catalog", {});
+      if (!catalog.targets.some((t) => t.id === a.targetId))
+        throw new Error("Choose a target from the offline catalog");
+      const current = await porterProjects.read(a.projectId);
+      const files = a.sourceId
+        ? sourceImports.get(a.sourceId)
+        : current.snapshot?.files;
+      if (a.sourceId && !files)
+        throw new Error("Re-import the source directory");
+      return porterProjects.configure(a.projectId, {
+        ...a,
+        source: files
+          ? { files, permittedPaths: a.permittedPaths || [] }
+          : null,
+      });
+    }
+    case "porter_project_source": {
+      let files, label;
+      if (a.sourceId) {
+        files = sourceImports.get(a.sourceId);
+        if (!files) throw new Error("Re-import the source directory");
+        label = "imported-source";
+      } else {
+        const bound = await artifact(a.jobId, a.operationId);
+        if (
+          bound.job.profile !== "porter" ||
+          bound.job.input.porterProject?.id !== a.projectId
+        )
+          throw new Error("The source copy belongs to a different project");
+        files = Object.fromEntries(
+          Object.entries(bound.snapshot.files).map(([name, bytes]) => [
+            name,
+            bytes.toString("utf8"),
+          ]),
+        );
+        label = `${a.jobId}:${a.operationId}`;
+      }
+      return porterProjects.setSource(a.projectId, {
+        revision: a.revision,
+        source: { files, label, permittedPaths: a.permittedPaths || [] },
+      });
+    }
+    case "porter_project_round": {
+      let created;
+      try {
+        await porterProjects.read(a.projectId);
+        const result = await porterProjects.beginRound(
+          a.projectId,
+          a,
+          async (...args) => {
+            created = await createPorterRound(...args);
+            return created;
+          },
+        );
+        void runtime
+          .start(result.jobId)
+          .catch(() => {})
+          .finally(async () => {
+            liveRuns.delete(result.jobId);
+            await porterProjects.reconcile(result.projectId).catch(() => {});
+          });
+        pendingJobs.delete(result.jobId);
+        return result;
+      } catch (error) {
+        if (created) {
+          pendingJobs.delete(created.id);
+          liveRuns.delete(created.id);
+          await runtime.cancel(created.id);
+        }
+        throw error;
+      }
+    }
     case "job_create": {
       if (
         !["maker", "porter"].includes(a.profile) ||
@@ -524,6 +698,11 @@ async function dispatch(operation, a) {
       if (a.profile === "porter") {
         files = sourceImports.get(a.sourceId);
         if (!files) throw new Error("Re-import the source directory");
+        if (
+          a.identifierProfile != null &&
+          a.identifierProfile !== "fabric-yarn-1.20.6-to-1.21-identifier-v1"
+        )
+          throw new Error("Choose the supported Identifier source profile");
       }
       const input =
         a.profile === "maker"
@@ -533,6 +712,9 @@ async function dispatch(operation, a) {
               targetId: a.targetId,
               rights: a.rights,
               acknowledgeBeta: a.acknowledgeBeta,
+              ...(a.identifierProfile
+                ? { identifierProfile: a.identifierProfile }
+                : {}),
               ...(a.mode === "live" ? { prompt: a.prompt } : {}),
             };
       // Template scanner rejects AI prompt as an unknown tool argument.
@@ -541,20 +723,39 @@ async function dispatch(operation, a) {
         input,
         provider: a.mode === "live" ? live.id : "pcl-template",
       });
-      if (files && a.permittedPaths?.length)
-        await reviews.registerPorterSource(job.id, {
-          files,
-          permittedPaths: a.permittedPaths,
-        });
+      pendingJobs.add(job.id);
+      try {
+        if (files && a.permittedPaths?.length)
+          await reviews.registerPorterSource(job.id, {
+            files,
+            permittedPaths: a.permittedPaths,
+          });
+      } catch (error) {
+        // A rejected grant must not consume shared capacity as an orphan queue.
+        pendingJobs.delete(job.id);
+        await runtime.cancel(job.id);
+        throw error;
+      }
       return startCapturedJob(job, preset);
     }
     case "job_read": {
       const job = await runtime.getJob(a.jobId);
       return {
         summary: await runtime.getPublicJobSummary(a.jobId),
+        ...(["queued", "running"].includes(job.status) && !hasCurrentJob(job.id)
+          ? {
+              summary: {
+                ...(await runtime.getPublicJobSummary(a.jobId)),
+                status: "interrupted",
+              },
+            }
+          : {}),
         mode: job.provider === "pcl-template" ? "template" : "live",
         result: job.result,
         error: job.error,
+        ...(job.profile === "porter"
+          ? { porterSource: await reviews.getPorterSource(job.id) }
+          : {}),
         artifacts: job.operations
           .filter(
             (op) => op.status === "completed" && op.result?.outputDirectory,
@@ -628,29 +829,7 @@ async function dispatch(operation, a) {
     case "porter_recipe": {
       if (!["metadata", "identifier"].includes(a.recipe))
         throw new Error("Unknown migration recipe");
-      const record = JSON.parse(
-        (
-          await (
-            await runtime.store.files(a.jobId)
-          ).read("review-control/sources/primary.json")
-        ).content,
-      );
-      const result = await domain(a.recipe, {
-        files: record.files,
-        permittedPaths: record.permittedPaths,
-        jobId: a.jobId,
-      });
-      if (result.proposal) {
-        const replacements = Object.fromEntries(
-          result.proposal.changes.map((c) => [c.path, c.new_text]),
-        );
-        result.review = await reviews.requestPorterPatch(a.jobId, {
-          sourceId: "primary",
-          replacements,
-          purpose: result.proposal.purpose,
-        });
-      }
-      return result;
+      return reviews.requestPorterRecipe(a.jobId, a.recipe);
     }
     case "porter_review":
       return reviews.requestPorterPatch(a.jobId, {

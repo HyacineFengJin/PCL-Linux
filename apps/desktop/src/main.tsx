@@ -75,6 +75,7 @@ import defaultSkin from "./assets/game-icons/steve.png";
 import { ExperimentalCards } from "./ExperimentalExtensions";
 import type { ExperimentalNavigate, ToolsPage } from "./experimentalTypes";
 import { ExperimentalTools, type ExperimentalDraft } from "./ExperimentalTools";
+import type { PorterIntake } from "./experimentalPorterTypes";
 import { ExperimentalAi } from "./ExperimentalAi";
 import {
   ExperimentalProjects,
@@ -848,6 +849,7 @@ function App() {
   const projectDraft = React.useRef(createProjectManagerDraft());
   const [experimentalSource, setExperimentalSource] =
     useState<ProjectSourceSelection>();
+  const [porterIntake, setPorterIntake] = useState<PorterIntake | null>(null);
   const experimentalDrafts = React.useRef<
     Partial<Record<"extensions" | "maker" | "porter", ExperimentalDraft>>
   >({});
@@ -2670,6 +2672,20 @@ function App() {
                       onResourceDetails={(next) =>
                         showResource(next, resourceOrigin)
                       }
+                      onPorter={
+                        launcher.isHidden("tools.porter")
+                          ? undefined
+                          : (intake) => {
+                              setExperimentalSource(undefined);
+                              setPorterIntake({
+                                ...intake,
+                                id: crypto.randomUUID(),
+                              });
+                              setScreen("home");
+                              setTab("tools");
+                              setToolsPage("porter");
+                            }
+                      }
                     />
                   ) : screen === "tasks" ? (
                     <>
@@ -2964,6 +2980,32 @@ function App() {
                             api={api}
                             native={native && !tasks.closing}
                             onNavigate={navigateExperimental}
+                            porterIntake={porterIntake}
+                            onPorterIntakeConsumed={() => setPorterIntake(null)}
+                            onPorterBrowseMods={
+                              launcher.isHidden("main.download")
+                                ? undefined
+                                : (origin) => {
+                                    setDownloadPage("mods");
+                                    setTab("download");
+                                    if (
+                                      origin?.provider === "modrinth" &&
+                                      /^[A-Za-z0-9]{8}$/.test(origin.projectId)
+                                    ) {
+                                      showResource({
+                                        project_id: origin.projectId,
+                                        title: origin.title || origin.projectId,
+                                        description: "",
+                                        icon_url: null,
+                                        categories: [],
+                                        display_categories: [],
+                                        versions: [],
+                                        project_type: "mod",
+                                        source: "Modrinth",
+                                      });
+                                    } else setScreen("home");
+                                  }
+                            }
                             onConfigureAi={
                               launcher.isHidden("tools.ai")
                                 ? undefined
