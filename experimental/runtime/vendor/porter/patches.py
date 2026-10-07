@@ -57,6 +57,11 @@ def permitted_set(paths) -> set[str]:
 def review_digest(contract: dict) -> str:
     return canonical_hash({k:v for k,v in contract.items() if k!='review_digest'})
 
+def text_diff(path: str, before: str, after: str) -> str:
+    """Keep EOF boundaries visible even when either text lacks a final newline."""
+    lines = difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True), fromfile='a/'+path, tofile='b/'+path)
+    return ''.join(line if line.endswith(('\n', '\r')) else line+'\n\\ No newline at end of file\n' for line in lines)
+
 def create_patch(files: dict, replacements: dict, *, job_id: str, permitted_paths: list[str], purpose: str) -> dict:
     validate_job(job_id)
     snap=imported_snapshot(files)
@@ -74,7 +79,9 @@ def create_patch(files: dict, replacements: dict, *, job_id: str, permitted_path
         validate_files({path:new_text})
         if files[path]==new_text:
             raise PatchError('Patch must change the selected text')
-        changes.append({'path':path,'base_sha256':sha(files[path]),'new_sha256':sha(new_text),'new_text':new_text,'unified_diff':''.join(difflib.unified_diff(files[path].splitlines(keepends=True),new_text.splitlines(keepends=True),fromfile='a/'+path,tofile='b/'+path))})
+        changes.append({'path':path,'base_sha256':sha(files[path]),'new_sha256':sha(new_text),'new_text':new_text,'unified_diff':text_diff(path, files[path], new_text)})
+    # Refuse an unmaterializable aggregate before presenting an approval.
+    imported_snapshot({**files, **replacements})
     contract={'contract_version':CONTRACT_VERSION,'job_id':job_id,'purpose':purpose,'source_snapshot':snap,'permitted_paths':sorted(allow),'changes':changes,'apply_mode':'new-imported-text-copy-only','validation':{'contract_checks':'required-at-apply','semantic_correctness':'not-established','build':'not-run','game':'not-run'},'not_a_general_mod_converter':True}
     contract['review_digest']=review_digest(contract)
     return contract
@@ -111,8 +118,11 @@ def apply_copy(files: dict, contract: dict, *, job_id: str, approved_digest: str
         validate_files({path:new})
         if sha(new) != c.get('new_sha256'):
             raise PatchError('Replacement hash mismatch')
-        actual_diff=''.join(difflib.unified_diff(files[path].splitlines(keepends=True),new.splitlines(keepends=True),fromfile='a/'+path,tofile='b/'+path))
-        if actual_diff != c.get('unified_diff'):
+        actual_diff=text_diff(path, files[path], new)
+        # Persisted v1 reviews used difflib's ambiguous missing-newline spelling.
+        # Their exact bytes and hashes still bind approval; retain apply support.
+        legacy_diff=''.join(difflib.unified_diff(files[path].splitlines(keepends=True),new.splitlines(keepends=True),fromfile='a/'+path,tofile='b/'+path))
+        if c.get('unified_diff') not in {actual_diff, legacy_diff}:
             raise PatchError('Preview no longer matches patch content')
         output[path]=new;changed.append(path)
     after=imported_snapshot(output)

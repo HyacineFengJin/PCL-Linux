@@ -21,9 +21,11 @@ def propose_identity_mapping(files:dict, *, job_id:str, permitted_paths:list[str
     if safe_name(source_path)!=source_path or safe_name(template_path)!=template_path:
         raise InputError('Source and template paths must be canonical relative paths')
     diagnostics=[]
-    result={'recipe_id':RECIPE_ID,'status':'blocked','scope':'identity-metadata-only','source_path':source_path,'destination_template_path':template_path,'mapped_fields':[],'diagnostics':diagnostics,'proposal':None,'full_port_status':'blocked-unvalidated','remaining_port_blockers':[],'references':SOURCES,'validation':{'json_parse':'not-run','toml_parse':'not-run','unmapped_template_fields':'not-run','compile':'not-run','game':'not-run','full_loader_port':'not-established'}}
+    result={'recipe_id':RECIPE_ID,'status':'blocked','scope':'identity-metadata-only','source_path':source_path,'destination_template_path':template_path,'mapped_fields':[],'diagnostics':diagnostics,'proposal':None,'full_port_status':'blocked-unvalidated','remaining_port_blockers':[{'code':'build-runtime-unvalidated','message':'Build, client, dedicated server, data/resources and runtime behavior remain unvalidated; metadata mapping cannot establish a complete port.'}],'references':SOURCES,'validation':{'json_parse':'not-run','toml_parse':'not-run','unmapped_template_fields':'not-run','compile':'not-run','game':'not-run','full_loader_port':'not-established'}}
     def note(code,message,severity='blocked'):
         diagnostics.append({'code':code,'message':message,'severity':severity})
+        if severity in {'blocked','manual-port-required'}:
+            result['remaining_port_blockers'].append({'code':code,'message':message})
     if source_path not in files or template_path not in files:
         note('existing-inputs-required','Both the source manifest and an existing explicitly provided destination template are required. This recipe cannot create new files.')
         return result
@@ -71,8 +73,6 @@ def propose_identity_mapping(files:dict, *, job_id:str, permitted_paths:list[str
     if any(fabric.get(k) for k in ('authors','contributors','contact','icon')):
         note('unmapped-display-attribution','Authors, contributors, contact and icon are outside this five-field recipe. Preserve credits/notices and review their display mapping separately.','review-required')
     if fabric.get('environment','*') != '*':note('unmapped-side','Fabric environment is not copied as a NeoForge side policy. Review client/server loading separately.','manual-port-required')
-    result['remaining_port_blockers']=[{'code':d['code'],'message':d['message']} for d in diagnostics if d['severity']=='manual-port-required']
-    result['remaining_port_blockers'].append({'code':'build-runtime-unvalidated','message':'Build, client, dedicated server, data/resources and runtime behavior remain unvalidated; metadata mapping cannot establish a complete port.'})
     note('loader-template-preserved','modLoader, loaderVersion, dependencies and all other template fields are preserved. Their suitability for the target is not verified here.','review-required')
     if any(d['severity']=='blocked' for d in diagnostics):return result
     # Only direct single-line string assignments in root/one [[mods]] are supported.
