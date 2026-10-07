@@ -19,7 +19,7 @@ import { ArrowUp } from "lucide-react";
 import type { Api, Settings } from "./types";
 import commandIcon from "./assets/game-icons/command.png";
 import lampTexture from "./assets/game-icons/redstone-lamp.png";
-import launcherIcon from "./assets/game-icons/launcher.png";
+import launcherIcon from "../../../assets/pcl-rh.png";
 
 import ltcAvatar from "./assets/credits/ltcatt.jpg";
 import communityAvatar from "./assets/credits/community.png";

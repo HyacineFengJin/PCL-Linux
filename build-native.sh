@@ -2,9 +2,7 @@
 set -eu
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$project_dir"
-if [ ! -f assets/pcl-linux.png ]; then
-    ./download-icon.sh
-fi
+./prepare-icon.sh
 npm ci --prefix apps/desktop --no-audit --no-fund
 # Pi stays in its own locked dependency tree; package lifecycle scripts are not needed.
 npm ci --prefix experimental/runtime --ignore-scripts --no-audit --no-fund

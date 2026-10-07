@@ -1,4 +1,5 @@
 import "./style.css";
+import rhMark from "../../../assets/branding/rh-mark.svg";
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -2028,7 +2029,7 @@ function App() {
                   ) : (
                     <>
                       <span className="wordmark">PCL</span>
-                      <span className="ce-badge">RH</span>
+                      <img className="rh-mark" src={rhMark} alt="RH" />
                     </>
                   )}
                 </div>

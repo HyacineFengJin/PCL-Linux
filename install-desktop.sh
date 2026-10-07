@@ -2,9 +2,7 @@
 set -eu
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-if [ ! -f "$project_dir/assets/pcl-linux.png" ]; then
-    "$project_dir/download-icon.sh"
-fi
+"$project_dir/prepare-icon.sh"
 applications_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 mkdir -p "$applications_dir"
 

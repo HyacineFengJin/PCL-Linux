@@ -103,13 +103,12 @@ button:not(:disabled):active {
   font-weight: 500;
   line-height: 1;
 }
-.ce-badge {
-  color: var(--ce-link, #2078da);
-  background: white;
-  font-size: 12px;
-  line-height: 18px;
-  border-radius: 4px;
-  padding: 0 2px;
+.rh-mark {
+  display: block;
+  width: 30px;
+  height: 20px;
+  flex: none;
+  object-fit: contain;
 }
 .titlebar nav {
   position: absolute;

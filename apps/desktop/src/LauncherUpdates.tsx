@@ -4,7 +4,7 @@ import type { LocalizationPreferences, MessageKey } from "./i18n";
 import { createTranslator } from "./i18n";
 import type { LauncherUpdateView } from "./launcherUpdateTypes";
 import { LauncherCard } from "./LauncherSettingsControls";
-import launcherIcon from "./assets/game-icons/launcher.png";
+import launcherIcon from "../../../assets/pcl-rh.png";
 import { InstanceOperationDialog } from "./instanceOperationUi";
 
 const stateKeys: Record<LauncherUpdateView["state"], MessageKey> = {

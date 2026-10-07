@@ -25,6 +25,7 @@ fn main() {
         "crates",
         "Cargo.toml",
         "Cargo.lock",
+        "assets",
     ])
     .is_some_and(|result| result.status.success() && result.stdout.is_empty());
     let commit = if clean {

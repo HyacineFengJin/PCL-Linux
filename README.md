@@ -1,5 +1,7 @@
 # PCL RH
 
+<img src="assets/pcl-rh.png" alt="PCL RH" width="128" />
+
 基于 Rust 的 Minecraft: Java Edition 启动器，当前提供 Linux 原生实现，采用 **Rust + Tauri 2 + React / TypeScript**，参考 PCL CE 的界面布局与交互理念。无需 .NET。启动器核心使用 Rust，实验功能使用本地 Node.js / Python 引擎。本项目独立开发，非 PCL CE 官方发行。
 
 RH 中的 R 代表 Rust，H 来自维护者的 GitHub 名称；RH 也呼应黎曼猜想（Riemann Hypothesis）。
@@ -36,7 +38,7 @@ RH 中的 R 代表 Rust，H 来自维护者的 GitHub 名称；RH 也呼应黎�
 
 ## 构建与运行
 
-需要 Rust/Cargo、Node.js 22.19+ / npm、Python 3.11+、GTK 3、WebKitGTK 4.1 及相关开发依赖。构建脚本还使用 curl。
+需要 Rust/Cargo、Node.js 22.19+ / npm、Python 3.11+、GTK 3、WebKitGTK 4.1 及相关开发依赖。
 
 ```sh
 git clone https://github.com/HyacineFengJin/PCL-RH.git
@@ -92,4 +94,6 @@ Experimental tools are available from Tools: declarative extensions, a Fabric so
 
 ## 致谢
 
-界面理念参考 [PCL CE](https://github.com/PCL-Community/PCL-CE)，认证流程参考 [HMCL](https://github.com/HMCL-dev/HMCL)。Linux 平台与服务分层参考 [PCL N Edition](https://github.com/PCL-N-Edition/PCL-N)。界面和 Rust 认证代码独立编写。本地桌面图标来源见[上游图标](https://github.com/PCL-Community/PCL-CE/blob/19805c446cfd17e92749124e3ab1c1832a291736/Plain%20Craft%20Launcher%202/Images/icon.ico)。
+项目图标及主要美术由 GPT 制作。Project icons and primary artwork are created with GPT.
+
+界面理念参考 [PCL CE](https://github.com/PCL-Community/PCL-CE)，认证流程参考 [HMCL](https://github.com/HMCL-dev/HMCL)。Linux 平台与服务分层参考 [PCL N Edition](https://github.com/PCL-N-Edition/PCL-N)。界面和 Rust 认证代码独立编写。
