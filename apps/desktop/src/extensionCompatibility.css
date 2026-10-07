@@ -1,0 +1,16 @@
+/* Foreign metadata is bounded by the inspector; long paths still wrap inside
+   the existing CE dialog rather than increasing its width. */
+.extension-compatibility {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.extension-compatibility dd {
+  min-width: 0;
+  margin-inline-start: 0;
+}
+.extension-compatibility ul {
+  padding-inline-start: 1.5em;
+}
+.extension-compatibility li + li {
+  margin-block-start: 0.5em;
+}

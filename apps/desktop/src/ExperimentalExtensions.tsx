@@ -3,10 +3,12 @@ import { useEffect, useRef, useState } from "react";
 import type { Api } from "./types";
 import { t, serviceError, type MessageKey } from "./i18n";
 import { InstanceOperationDialog } from "./instanceOperationUi";
+import "./extensionCompatibility.css";
 import {
   experimentalCall as call,
   type ExtensionEntry,
   type ExtensionReview,
+  type ExtensionCompatibilityReport,
   type ExtensionCard,
   type ExperimentalNavigate,
 } from "./experimentalTypes";
@@ -148,6 +150,8 @@ export function ExperimentalExtensions({
 }) {
   const [entries, setEntries] = useState<ExtensionEntry[]>([]),
     [review, setReview] = useState<ExtensionReview | null>(null),
+    [compatibility, setCompatibility] =
+      useState<ExtensionCompatibilityReport | null>(null),
     [grants, setGrants] = useState<string[]>([]);
   const [safeMode, setSafeMode] = useState(false),
     [busy, setBusy] = useState(false),
@@ -187,8 +191,15 @@ export function ExperimentalExtensions({
       if (live.current) setBusy(false);
     }
   }
-  function acceptReview(value: ExtensionReview) {
+  function acceptReview(value: ExtensionReview | ExtensionCompatibilityReport) {
     if (live.current) {
+      if ("kind" in value) {
+        setReview(null);
+        setGrants([]);
+        setCompatibility(value);
+        return;
+      }
+      setCompatibility(null);
       setReview(value);
       setGrants(
         value.capabilities.filter((c) => c.currentlyGranted).map((c) => c.id),
@@ -220,9 +231,13 @@ export function ExperimentalExtensions({
                 }>("experimental_choose", { kind: "extension" });
                 if (picked.status === "selected")
                   acceptReview(
-                    await call<ExtensionReview>(api, "extensions_review", {
-                      path: picked.path,
-                    }),
+                    await call<ExtensionReview | ExtensionCompatibilityReport>(
+                      api,
+                      "extensions_review",
+                      {
+                        path: picked.path,
+                      },
+                    ),
                   );
                 else if (picked.status === "unavailable")
                   throw new Error(picked.message);
@@ -254,7 +269,7 @@ export function ExperimentalExtensions({
           />
           <span>{t("experimental.safeMode")}</span>
         </label>
-        <ExperimentalVersion version="0.6" />
+        <ExperimentalVersion version="0.6.1" />
       </section>
       {error && (
         <p className="experimental-error" role="alert">
@@ -337,6 +352,12 @@ export function ExperimentalExtensions({
         slot="tools.cards"
         onNavigate={onNavigate}
       />
+      {compatibility && (
+        <ExtensionCompatibilityDialog
+          report={compatibility}
+          onClose={() => setCompatibility(null)}
+        />
+      )}
       {review && (
         <InstanceOperationDialog
           title={t("experimental.permissions")}
@@ -400,5 +421,132 @@ export function ExperimentalExtensions({
         </InstanceOperationDialog>
       )}
     </>
+  );
+}
+
+/** Descriptors are text only; the report has no grants or install token. The
+ * shared confirmation dialog keeps CE keyboard, focus and animation behavior. */
+export function ExtensionCompatibilityDialog({
+  report,
+  onClose,
+}: {
+  report: ExtensionCompatibilityReport;
+  onClose: () => void;
+}) {
+  const requirementKind = (required: boolean) =>
+    t(required ? "experimental.required" : "experimental.optional");
+  return (
+    <InstanceOperationDialog
+      title={t("experimental.compatTitle")}
+      titleId="experimental-compatibility-title"
+      busy={false}
+      committing={false}
+      confirmLabel={t("experimental.compatCannotInstall")}
+      cancelLabel={t("experimental.compatClose")}
+      confirmDisabled={true}
+      onConfirm={() => {}}
+      onClose={onClose}
+    >
+      <div className="extension-compatibility">
+        <h3>
+          {report.name} · {report.version}
+        </h3>
+        <p>{t("experimental.compatReadOnly")}</p>
+        <dl className="experimental-summary">
+          <dt>{t("experimental.compatEcosystem")}</dt>
+          <dd>{report.ecosystem === "pcl-n" ? "PCL N" : "PCL Nex"}</dd>
+          <dt>ID</dt>
+          <dd>{report.id}</dd>
+          <dt>{t("experimental.publisher")}</dt>
+          <dd>{report.publisher ?? t("experimental.compatUndeclared")}</dd>
+          <dt>{t("experimental.compatEntry")}</dt>
+          <dd>{report.entryAssembly}</dd>
+          {report.apiRange && (
+            <>
+              <dt>
+                {t(
+                  report.ecosystem === "pcl-n"
+                    ? "experimental.compatApi"
+                    : "experimental.compatCore",
+                )}
+              </dt>
+              <dd>{report.apiRange}</dd>
+            </>
+          )}
+        </dl>
+        <ul>
+          {report.findings.map((code) => (
+            <li key={code}>{t(`experimental.compat.${code}`)}</li>
+          ))}
+        </ul>
+        {report.requirements.length > 0 && (
+          <>
+            <h3>{t("experimental.compatServices")}</h3>
+            <ul>
+              {report.requirements.map((service) => (
+                <li key={service.id}>
+                  {service.id} · {service.range} ·{" "}
+                  {requirementKind(service.required)} ·{" "}
+                  {t(
+                    service.coverage === "probe-only"
+                      ? "experimental.compatProbeOnly"
+                      : "experimental.compatUnavailable",
+                  )}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+        {report.permissions.length > 0 && (
+          <>
+            <h3>{t("experimental.permissions")}</h3>
+            <ul>
+              {report.permissions.map((permission) => (
+                <li key={permission.id}>
+                  {permission.id} · {requirementKind(permission.required)}
+                  <p>{permission.reason}</p>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+        {report.dependencies.length > 0 && (
+          <>
+            <h3>{t("experimental.compatDependencies")}</h3>
+            <ul>
+              {report.dependencies.map((dependency) => (
+                <li key={dependency.id}>
+                  {dependency.id} · {dependency.range} ·{" "}
+                  {requirementKind(dependency.required)}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+        {report.mixinConfigs.length > 0 && (
+          <>
+            <h3>{t("experimental.compatMixin")}</h3>
+            <ul>
+              {report.mixinConfigs.map((config) => (
+                <li key={config}>{config}</li>
+              ))}
+            </ul>
+          </>
+        )}
+        {report.platformDeclarations.length > 0 && (
+          <>
+            <h3>{t("experimental.compatPlatforms")}</h3>
+            <ul>
+              {report.platformDeclarations.map((platform) => (
+                <li key={platform}>{platform}</li>
+              ))}
+            </ul>
+          </>
+        )}
+        <p className="experimental-origin experimental-digest">
+          SHA-256: {report.digest}
+        </p>
+      </div>
+    </InstanceOperationDialog>
   );
 }

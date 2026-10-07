@@ -4,7 +4,7 @@
 
 插件系统分为「插件管理」和「插件市场」；市场当前仅为留白页面，尚未开放。
 
-## 插件系统 · 0.6
+## 插件系统 · 0.6.1
 
 导入 JSON 声明或 `.pclext` JSON 包，检查名称、发布者及请求权限，再选择授权并安装。发布者身份未经验证。
 
@@ -16,7 +16,11 @@
 
 可以撤销权限、禁用插件、重新授权，或用安全模式暂停全部卡片。声明和授权保存在本地；更新声明内容需要再次确认。撤销必需权限会暂停插件，撤销可选权限会停用相应按钮。
 
-这是数据型插件系统，不执行插件代码，也不兼容 PCL N / Nex 插件。实例摘要不包含目录、账号或登录令牌。示例声明见 [Instance Compass](../experimental/extensions/examples/instance-compass.json)。
+这是数据型插件系统，不执行插件代码。实例摘要不包含目录、账号或登录令牌。示例声明见 [Instance Compass](../experimental/extensions/examples/instance-compass.json)。
+
+同一导入入口可选择 PCL N 或 Nex 插件的 **`plugin.json`**，打开只读兼容报告，查看声明的程序集入口、服务、权限、插件依赖及 Mixin 配置。报告不会安装或执行插件，不授予权限，也不验证签名、完整上游格式、依赖是否已安装或程序集实际行为。N 的 Avalonia/DirectInject 页面以及 Nex 的 PCL.Core/Mixin 环境尚未适配；`.pnp`、`.pclx` 包不能直接导入。
+
+提供独立的 [开发验证工具](../experimental/extensions/compat/README.md)：用 N SDK 0.2.5 原始 Hello 源码验证命令及双语设置页描述接口。该工具不随启动器启动，不表示完整 N 插件已兼容。
 
 ## AI 模组制作器 · 0.4
 
