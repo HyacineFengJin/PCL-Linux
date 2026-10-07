@@ -2,9 +2,10 @@
  * Form/source drafts are local until create/configure; project.snapshot is the
  * next baseline, while job.porterSource remains the selected round's input.
  * Reviews capture ownerJob and digest, even when a newer baseline exists.
- * Serialized actions pause polling; selection epochs discard stale UI replies.
+ * Callbacks and replies share a page/API/selection identity. Retiring the UI
+ * never cancels an admitted host transaction, but forbids subsequent UI calls.
  * Host revisions arbitrate user feedback, model tools and recovery writes. */
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { CeSelect } from "./CeSelect";
 import { t, formatDate, serviceError, type MessageKey } from "./i18n";
 import type { Api } from "./types";
@@ -35,8 +36,15 @@ import {
   type PorterIntake,
 } from "./experimentalPorterTypes";
 
+type PorterPageScope = {
+  api: Api;
+  native: boolean;
+  selection: string;
+  epoch: number;
+};
+
 export function ExperimentalPorterWorkspace({
-  api,
+  api: pageApi,
   native,
   drafts,
   onConfigureAi,
@@ -93,11 +101,57 @@ export function ExperimentalPorterWorkspace({
   const [operationId, setOperationId] = useState(""),
     [path, setPath] = useState(""),
     [fileText, setFileText] = useState("");
-  const [busy, setBusy] = useState(false),
-    [error, setError] = useState("");
+  const [error, setError] = useState("");
   const live = useRef(true),
-    working = useRef(false),
+    working = useRef<{ scope: PorterPageScope } | null>(null),
     epoch = useRef(0);
+  const selection = JSON.stringify([
+    projectId,
+    jobId,
+    newProject,
+    editing,
+    operationId,
+    path,
+    intake?.id,
+    review?.ownerJob,
+    review?.reviewId,
+    review?.reviewDigest,
+  ]);
+  const owner = useRef<PorterPageScope>({
+    api: pageApi,
+    native,
+    selection,
+    epoch: epoch.current,
+  });
+  if (
+    owner.current.api !== pageApi ||
+    owner.current.native !== native ||
+    owner.current.selection !== selection ||
+    owner.current.epoch !== epoch.current
+  )
+    owner.current = { api: pageApi, native, selection, epoch: epoch.current };
+  const scope = owner.current;
+  const current = () =>
+    live.current && owner.current === scope && epoch.current === scope.epoch;
+  const workingHere = () => working.current?.scope === scope;
+  const interactive = () => current() && !workingHere();
+  const [busyScope, setBusyScope] = useState<PorterPageScope | null>(null);
+  const busy = busyScope === scope;
+  // Guard every step of a multi-call action, including calls after an await.
+  // The first dispatched host write stays durable when this scope is retired.
+  const api = useMemo<Api>(
+    () => (command, args) => {
+      if (!current() || !scope.native)
+        return Promise.reject(new Error("Porter page request retired"));
+      return scope.api(command, args);
+    },
+    [scope],
+  );
+  function change(action: () => void, retire = false) {
+    if (!interactive()) return;
+    if (retire) epoch.current++;
+    action();
+  }
   const active = !!project?.activeRound;
   const artifact = job?.artifacts.find((a) => a.operationId === operationId);
   const legacy = status?.jobs.filter(
@@ -163,15 +217,15 @@ export function ExperimentalPorterWorkspace({
     live.current = true;
     return () => {
       live.current = false;
-      epoch.current++;
     };
   }, []);
   async function refreshList() {
+    if (!current()) return;
     const [engine, projects] = await Promise.all([
       call<EngineStatus>(api, "status"),
       call<PorterProjectList>(api, "porter_projects"),
     ]);
-    if (live.current) {
+    if (current()) {
       setStatus(engine);
       setListing(projects);
     }
@@ -180,7 +234,7 @@ export function ExperimentalPorterWorkspace({
     let valid = true,
       polling = false;
     async function poll() {
-      if (!native || polling || working.current) return;
+      if (!current() || !native || polling || workingHere()) return;
       polling = true;
       try {
         const [engine, projects, selected] = await Promise.all([
@@ -190,14 +244,14 @@ export function ExperimentalPorterWorkspace({
             ? call<PorterProject>(api, "porter_project_read", { projectId })
             : Promise.resolve(null),
         ]);
-        if (valid && !working.current) {
+        if (valid && current() && !workingHere()) {
           setStatus(engine);
           setListing(projects);
           setProject(selected);
           if (selected && !jobId) setJobId(selected.rounds.at(-1)?.jobId || "");
         }
       } catch (e) {
-        if (valid) setError(serviceError(e));
+        if (valid && current()) setError(serviceError(e));
       } finally {
         polling = false;
       }
@@ -214,26 +268,34 @@ export function ExperimentalPorterWorkspace({
     if (native)
       void call<{ targets: typeof targets }>(api, "catalog")
         .then((value) => {
-          if (valid) setTargets(value.targets);
+          if (valid && current()) setTargets(value.targets);
         })
         .catch((e) => {
-          if (valid) setError(serviceError(e));
+          if (valid && current()) setError(serviceError(e));
         });
     return () => {
       valid = false;
     };
   }, [api, native]);
   useEffect(() => {
-    let valid = true,
-      polling = false;
     setJob(null);
     setReport(null);
     setResult(null);
     setReview(null);
     setOperationId("");
     setPath("");
+  }, [pageApi, native, jobId]);
+  useEffect(() => {
+    // A new transport must read its own project and list before offering writes.
+    setProject(null);
+    setListing(null);
+    setStatus(null);
+  }, [pageApi, native]);
+  useEffect(() => {
+    let valid = true,
+      polling = false;
     async function poll() {
-      if (!native || !jobId || polling || working.current) return;
+      if (!current() || !native || !jobId || polling || workingHere()) return;
       polling = true;
       try {
         const value = await call<JobView>(api, "job_read", { jobId });
@@ -242,7 +304,7 @@ export function ExperimentalPorterWorkspace({
         const analysis = ["queued", "running"].includes(value.summary.status)
           ? null
           : await call<PorterReport | null>(api, "report_read", { jobId });
-        if (valid && !working.current) {
+        if (valid && current() && !workingHere()) {
           setJob(value);
           setReport(analysis);
           setOperationId(
@@ -250,7 +312,7 @@ export function ExperimentalPorterWorkspace({
           );
         }
       } catch (e) {
-        if (valid) setError(serviceError(e));
+        if (valid && current()) setError(serviceError(e));
       } finally {
         polling = false;
       }
@@ -275,10 +337,10 @@ export function ExperimentalPorterWorkspace({
         path,
       })
         .then((v) => {
-          if (valid) setFileText(v.content || "");
+          if (valid && current()) setFileText(v.content || "");
         })
         .catch((e) => {
-          if (valid) setError(serviceError(e));
+          if (valid && current()) setError(serviceError(e));
         });
     return () => {
       valid = false;
@@ -288,33 +350,34 @@ export function ExperimentalPorterWorkspace({
     action: () => Promise<T>,
     accept?: (value: T) => void,
   ) {
-    if (!native || working.current) return;
-    const captured = epoch.current;
-    working.current = true;
-    setBusy(true);
+    if (!interactive() || !native) return;
+    const run = { scope };
+    working.current = run;
+    setBusyScope(scope);
     setError("");
     try {
       const value = await action();
-      if (live.current && captured === epoch.current) {
+      if (current()) {
         accept?.(value);
         await refreshList();
       }
     } catch (e) {
-      if (live.current && captured === epoch.current) {
+      if (current()) {
         setError(serviceError(e));
         if (projectId)
           void call<PorterProject>(api, "porter_project_read", { projectId })
             .then((p) => {
-              if (live.current && captured === epoch.current) setProject(p);
+              if (current()) setProject(p);
             })
             .catch(() => {});
       }
     } finally {
-      working.current = false;
-      if (live.current) setBusy(false);
+      if (working.current === run) working.current = null;
+      if (current()) setBusyScope(null);
     }
   }
   function chooseProject(id: string) {
+    if (!interactive()) return;
     epoch.current++;
     setProjectId(id);
     setProject(null);
@@ -324,11 +387,22 @@ export function ExperimentalPorterWorkspace({
     setMessage("");
   }
   function chooseJob(id: string) {
+    if (!interactive() || id === jobId) return;
+    commitJobSelection(id);
+  }
+  // Accepted host replies may select their own round while the UI is busy.
+  // Public selection handlers must go through interactive() first.
+  function commitJobSelection(id: string) {
     epoch.current++;
     setJobId(id);
   }
+  function chooseLegacyJob(id: string) {
+    if (!interactive()) return;
+    chooseProject("");
+    setJobId(id);
+  }
   function beginNewProject() {
-    if (newProject) return;
+    if (!interactive() || newProject) return;
     epoch.current++;
     setNewProject(true);
     setEditing(false);
@@ -354,7 +428,8 @@ export function ExperimentalPorterWorkspace({
     };
   }
   function fillSettings() {
-    if (!project) return;
+    if (!interactive() || !project) return;
+    epoch.current++;
     setName(project.name);
     setGoal(project.goal);
     setTargetId(project.targetId);
@@ -399,7 +474,7 @@ export function ExperimentalPorterWorkspace({
         className="ce-field"
         value={mode}
         disabled={disabled}
-        onChange={(e) => setMode(e.target.value)}
+        onChange={(e) => change(() => setMode(e.target.value))}
       >
         <option value="template">{t("experimental.template")}</option>
         <option value="live" disabled={!status?.liveAvailable}>
@@ -424,14 +499,14 @@ export function ExperimentalPorterWorkspace({
           <button
             className="ce-button"
             disabled={busy || !onBrowseMods}
-            onClick={() => onBrowseMods?.()}
+            onClick={() => change(() => onBrowseMods?.())}
           >
             {t("experimental.porterBrowseMods")}
           </button>
           <button
             className="ce-button"
             disabled={busy || !onConfigureAi}
-            onClick={onConfigureAi}
+            onClick={() => change(() => onConfigureAi?.())}
           >
             {t("experimental.ai")}
           </button>
@@ -484,10 +559,7 @@ export function ExperimentalPorterWorkspace({
                   className="ce-button experimental-job"
                   key={j.jobId}
                   disabled={busy}
-                  onClick={() => {
-                    chooseProject("");
-                    chooseJob(j.jobId);
-                  }}
+                  onClick={() => chooseLegacyJob(j.jobId)}
                 >
                   <span>
                     {formatDate(j.updatedAt)} · {j.jobId.slice(0, 8)}
@@ -515,7 +587,7 @@ export function ExperimentalPorterWorkspace({
                 value={name}
                 maxLength={160}
                 disabled={disabled}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => change(() => setName(e.target.value))}
               />
             </label>
             <label className="ce-row">
@@ -526,7 +598,7 @@ export function ExperimentalPorterWorkspace({
                 maxLength={2000}
                 rows={3}
                 disabled={disabled}
-                onChange={(e) => setGoal(e.target.value)}
+                onChange={(e) => change(() => setGoal(e.target.value))}
               />
             </label>
             {!editing && (
@@ -539,10 +611,12 @@ export function ExperimentalPorterWorkspace({
                     maxLength={1000}
                     placeholder="Modrinth / CurseForge / MC百科"
                     disabled={disabled}
-                    onChange={(e) => {
-                      setOriginUrl(e.target.value);
-                      setOrigin(null);
-                    }}
+                    onChange={(e) =>
+                      change(() => {
+                        setOriginUrl(e.target.value);
+                        setOrigin(null);
+                      })
+                    }
                   />
                 </label>
                 <div className="ce-actions">
@@ -567,7 +641,7 @@ export function ExperimentalPorterWorkspace({
                   <button
                     className="ce-button"
                     disabled={busy || !onBrowseMods}
-                    onClick={() => onBrowseMods?.(origin)}
+                    onClick={() => change(() => onBrowseMods?.(origin))}
                   >
                     {t("experimental.porterBrowseMods")}
                   </button>
@@ -612,14 +686,16 @@ export function ExperimentalPorterWorkspace({
             allowed={allowed}
             identifierDeclared={identifierDeclared}
             disabled={disabled}
-            onTarget={(v) => {
-              setTargetId(v);
-              setIdentifierDeclared(false);
-            }}
-            onRights={setRights}
-            onBeta={setBeta}
-            onAllowed={setAllowed}
-            onIdentifierDeclared={setIdentifierDeclared}
+            onTarget={(v) =>
+              change(() => {
+                setTargetId(v);
+                setIdentifierDeclared(false);
+              })
+            }
+            onRights={(v) => change(() => setRights(v))}
+            onBeta={(v) => change(() => setBeta(v))}
+            onAllowed={(v) => change(() => setAllowed(v))}
+            onIdentifierDeclared={(v) => change(() => setIdentifierDeclared(v))}
             onImport={() =>
               void perform(
                 async () => {
@@ -726,7 +802,7 @@ export function ExperimentalPorterWorkspace({
                       setEditing(false);
                       setSource(null);
                       setDirectory("");
-                      if (!editing) chooseJob(v.jobId);
+                      if (!editing) commitJobSelection(v.jobId);
                       if ("startError" in v) setError(String(v.startError));
                     },
                   )
@@ -743,10 +819,12 @@ export function ExperimentalPorterWorkspace({
               <button
                 className="ce-button"
                 disabled={busy}
-                onClick={() => {
-                  setNewProject(false);
-                  setEditing(false);
-                }}
+                onClick={() =>
+                  change(() => {
+                    setNewProject(false);
+                    setEditing(false);
+                  }, true)
+                }
               >
                 {t("common.cancel")}
               </button>
@@ -807,7 +885,7 @@ export function ExperimentalPorterWorkspace({
                     },
                     (v) => {
                       setProject(v.project);
-                      chooseJob(v.jobId);
+                      commitJobSelection(v.jobId);
                     },
                   )
                 }
@@ -824,7 +902,7 @@ export function ExperimentalPorterWorkspace({
               <button
                 className="ce-button"
                 disabled={busy || !onBrowseMods}
-                onClick={() => onBrowseMods?.(project.origin)}
+                onClick={() => change(() => onBrowseMods?.(project.origin))}
               >
                 {t("experimental.porterBrowseMods")}
               </button>
@@ -935,7 +1013,7 @@ export function ExperimentalPorterWorkspace({
                       className="ce-button"
                       disabled={disabled || project.archived}
                       key={i}
-                      onClick={() => setMessage(option)}
+                      onClick={() => change(() => setMessage(option))}
                     >
                       {option}
                     </button>
@@ -949,7 +1027,7 @@ export function ExperimentalPorterWorkspace({
                 className="ce-field"
                 value={kind}
                 disabled={disabled}
-                onChange={(e) => setKind(e.target.value)}
+                onChange={(e) => change(() => setKind(e.target.value))}
               >
                 <option value="request">
                   {t("experimental.porterRequest")}
@@ -967,7 +1045,7 @@ export function ExperimentalPorterWorkspace({
               value={message}
               disabled={disabled || project.archived}
               aria-label={t("experimental.porterDiscussion")}
-              onChange={(e) => setMessage(e.target.value)}
+              onChange={(e) => change(() => setMessage(e.target.value))}
             />
             {active && (
               <p className="experimental-origin">
@@ -1122,7 +1200,10 @@ export function ExperimentalPorterWorkspace({
               className="ce-field"
               value={operationId}
               disabled={busy}
-              onChange={(e) => setOperationId(e.target.value)}
+              onChange={(e) =>
+                e.target.value !== operationId &&
+                change(() => setOperationId(e.target.value), true)
+              }
             >
               {job.artifacts.map((a) => (
                 <option key={a.operationId} value={a.operationId}>
@@ -1137,7 +1218,10 @@ export function ExperimentalPorterWorkspace({
               className="ce-field"
               value={path}
               disabled={busy}
-              onChange={(e) => setPath(e.target.value)}
+              onChange={(e) =>
+                e.target.value !== path &&
+                change(() => setPath(e.target.value), true)
+              }
             >
               {artifact?.files.map((p) => (
                 <option key={p} value={p}>
@@ -1206,11 +1290,12 @@ export function ExperimentalPorterWorkspace({
           confirmLabel={t("experimental.apply")}
           confirmDisabled={!native || review.status !== "pending"}
           onClose={() => {
-            if (busy) return;
+            if (!interactive()) return;
             void call(api, "review_cancel", {
               jobId: review.ownerJob,
               reviewId: review.reviewId,
             }).catch(() => {});
+            epoch.current++;
             setReview(null);
           }}
           onConfirm={() =>
