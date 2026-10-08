@@ -99,6 +99,10 @@ fn serve_fixture_connection(
     captured: &Mutex<Vec<String>>,
     handler: &impl Fn(&str) -> (u16, String),
 ) {
+    // accept() inherits nonblocking mode on Windows/BSD, but not Linux. The
+    // fixture's bounded blocking reads need an explicit mode on every host;
+    // a read timeout alone does not clear the inherited nonblocking flag.
+    socket.set_nonblocking(false).unwrap();
     socket
         .set_read_timeout(Some(Duration::from_secs(1)))
         .unwrap();
@@ -175,6 +179,38 @@ fn resolver(server: &Server, fallback: DnsFallback) -> doh::DohResolver {
         fallback,
         Ok(vec!["127.0.0.1:0".parse().unwrap()]),
     )
+}
+
+#[test]
+fn fixture_normalizes_inherited_nonblocking_mode_before_waiting_for_headers() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let (socket, _) = listener.accept().unwrap();
+    // Reproduce the accepted socket mode on Windows/BSD even on Linux, whose
+    // accept() does not inherit the listener's nonblocking flag.
+    socket.set_nonblocking(true).unwrap();
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let requests = captured.clone();
+    let (started, ready) = std::sync::mpsc::channel();
+    let worker = thread::spawn(move || {
+        started.send(()).unwrap();
+        serve_fixture_connection(socket, &requests, &|_| (200, "fixture".into()));
+    });
+    ready.recv_timeout(Duration::from_secs(1)).unwrap();
+    // TCP connection establishment does not guarantee that the first HTTP
+    // bytes are available yet. Keep that interval visible to the fixture.
+    thread::sleep(Duration::from_millis(30));
+    let sent = client.write_all(b"GET / HTTP/1.1\r\nHost: fixture\r\n\r\n");
+    let mut response = String::new();
+    let read = client.read_to_string(&mut response);
+    worker.join().unwrap();
+    assert!(sent.is_ok(), "{sent:?}");
+    assert!(read.is_ok(), "{read:?}");
+    assert!(response.ends_with("\r\n\r\nfixture"), "{response:?}");
+    assert_eq!(captured.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
